@@ -1,0 +1,18 @@
+services:
+  app:
+    build: ./backend
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data                          # SQLite DB + raw log files
+      - ./backend:/app                        # live-reload in dev
+      - ./frontend:/frontend                  # serve frontend static files
+      - ./tenants.jsonc:/config/tenants.jsonc:ro  # tenant credentials (read-only)
+    env_file:
+      - .env
+    environment:
+      - DB_PATH=/data/cpi_logs.db
+      - LOGS_DIR=/data/logs
+      - TENANTS_CONFIG=/config/tenants.jsonc
+      - FRONTEND_DIR=/frontend
+    restart: unless-stopped

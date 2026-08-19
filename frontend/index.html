@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="de" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CPI Log Explorer</title>
+  <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.10/dist/full.min.css" rel="stylesheet" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    [x-cloak]          { display: none !important; }
+    .log-row           { cursor: pointer; }
+    .log-row.selected td { background: oklch(var(--b3) / 0.8) !important; }
+    .font-mono-xs      { font-family: ui-monospace, monospace; font-size: 0.72rem; }
+  </style>
+</head>
+<body class="bg-base-200 min-h-screen" x-data="App()" x-cloak>
+
+<!-- ── Navbar ── -->
+<div class="navbar bg-base-100 shadow-md sticky top-0 z-50 px-4 gap-2">
+  <div class="flex-1 gap-2">
+    <span class="text-lg font-bold text-primary">🔍 CPI Log Explorer</span>
+  </div>
+  <div class="flex-none">
+    <ul class="menu menu-horizontal px-1 gap-1 text-sm">
+      <li><a :class="page==='browse'   && 'active'" @click="page='browse'">Browse</a></li>
+      <li><a :class="page==='fetch'    && 'active'" @click="page='fetch'">📥 Fetch</a></li>
+      <li><a :class="page==='stats'    && 'active'" @click="navigate('stats')">📊 Stats</a></li>
+      <li><a :class="page==='settings' && 'active'" @click="navigate('settings')">⚙ Settings</a></li>
+    </ul>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════ BROWSE ═══════════════════════════════════ -->
+<div x-show="page==='browse'" class="container mx-auto p-4 max-w-screen-xl">
+
+  <!-- Filter bar -->
+  <div class="card bg-base-100 shadow mb-4">
+    <div class="card-body p-3">
+      <div class="flex flex-wrap gap-2 items-end">
+        <div>
+          <label class="label py-0 pb-1"><span class="label-text text-xs">Tenant</span></label>
+          <select class="select select-bordered select-sm w-24" x-model="q.tenant">
+            <option value="">Alle</option>
+            <template x-for="t in tenants" :key="t.id">
+              <option :value="t.id" x-text="t.name"></option>
+            </template>
+          </select>
+        </div>
+        <div>
+          <label class="label py-0 pb-1"><span class="label-text text-xs">Level</span></label>
+          <select class="select select-bordered select-sm w-24" x-model="q.level">
+            <option value="">Alle</option>
+            <option>ERROR</option><option>WARN</option><option>INFO</option>
+          </select>
+        </div>
+        <div class="flex-1 min-w-36">
+          <label class="label py-0 pb-1"><span class="label-text text-xs">IFlow</span></label>
+          <input class="input input-bordered input-sm w-full" x-model="q.iflow" placeholder="filter…" @keydown.enter="search()" />
+        </div>
+        <div class="flex-1 min-w-36">
+          <label class="label py-0 pb-1"><span class="label-text text-xs">Suche</span></label>
+          <input class="input input-bordered input-sm w-full" x-model="q.grep" placeholder="Stichwort…" @keydown.enter="search()" />
+        </div>
+        <div>
+          <label class="label py-0 pb-1"><span class="label-text text-xs">Von</span></label>
+          <input type="date" class="input input-bordered input-sm w-34" x-model="q.date_from" />
+        </div>
+        <div>
+          <label class="label py-0 pb-1"><span class="label-text text-xs">Bis</span></label>
+          <input type="date" class="input input-bordered input-sm w-34" x-model="q.date_to" />
+        </div>
+        <button class="btn btn-primary btn-sm" @click="search()">🔍</button>
+        <button class="btn btn-ghost btn-sm"   @click="resetSearch()">✕</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Info row -->
+  <div class="flex justify-between items-center mb-2 text-xs text-base-content/50 px-1">
+    <span>
+      <template x-if="logs.total > 0">
+        <span x-text="`${logs.total.toLocaleString()} Einträge`"></span>
+      </template>
+      <template x-if="logs.total === 0 && !loading">
+        <span>Keine Einträge — bitte zuerst Logs laden (📥 Fetch)</span>
+      </template>
+      <span x-show="loading" class="loading loading-spinner loading-xs"></span>
+    </span>
+    <span x-show="logs.pages > 1" x-text="`Seite ${logs.page} / ${logs.pages}`"></span>
+  </div>
+
+  <!-- Table -->
+  <div class="card bg-base-100 shadow overflow-hidden">
+    <div class="overflow-x-auto">
+      <table class="table table-xs table-zebra w-full">
+        <thead>
+          <tr class="bg-base-300 text-xs">
+            <th class="w-36">Zeit</th>
+            <th class="w-14">Tenant</th>
+            <th class="w-12">Typ</th>
+            <th class="w-16">Level</th>
+            <th class="w-56">IFlow</th>
+            <th>Message</th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="row in logs.items" :key="row.id">
+            <tr class="log-row" :class="selected?.id===row.id && 'selected'" @click="selected=row">
+              <td class="font-mono-xs whitespace-nowrap" x-text="row.timestamp?.slice(0,19)"></td>
+              <td><span class="badge badge-outline badge-xs" x-text="row.tenant?.toUpperCase()"></span></td>
+              <td class="text-xs text-base-content/50" x-text="row.log_type"></td>
+              <td>
+                <span :class="`badge badge-xs ${row.level==='ERROR'?'badge-error':row.level==='WARN'?'badge-warning':row.level==='INFO'?'badge-success':'badge-ghost'}`"
+                      x-text="row.level"></span>
+              </td>
+              <td class="font-mono-xs truncate max-w-xs" x-text="shortIflow(row.iflow)"></td>
+              <td class="text-xs truncate max-w-lg" x-text="row.message?.slice(0,140)"></td>
+            </tr>
+          </template>
+          <tr x-show="logs.items?.length === 0 && !loading">
+            <td colspan="6" class="text-center text-base-content/40 py-8">Keine Ergebnisse</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Pagination -->
+    <div x-show="logs.pages > 1" class="flex justify-center p-3 border-t border-base-200">
+      <div class="join">
+        <button class="join-item btn btn-sm" :disabled="logs.page<=1" @click="goPage(logs.page-1)">«</button>
+        <template x-for="p in pageRange()" :key="p">
+          <button class="join-item btn btn-sm" :class="p===logs.page && 'btn-active'" @click="goPage(p)" x-text="p"></button>
+        </template>
+        <button class="join-item btn btn-sm" :disabled="logs.page>=logs.pages" @click="goPage(logs.page+1)">»</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Detail pane -->
+  <div x-show="selected" x-transition class="card bg-base-100 shadow mt-4">
+    <div class="card-body p-4">
+      <div class="flex flex-wrap items-center gap-2 mb-2">
+        <span class="font-mono text-sm font-semibold" x-text="selected?.timestamp"></span>
+        <span class="badge badge-outline badge-sm" x-text="selected?.tenant?.toUpperCase()"></span>
+        <span :class="`badge badge-sm ${selected?.level==='ERROR'?'badge-error':selected?.level==='WARN'?'badge-warning':'badge-success'}`"
+              x-text="selected?.level"></span>
+        <button class="btn btn-ghost btn-xs ml-auto" @click="selected=null">✕</button>
+      </div>
+      <div class="grid grid-cols-1 gap-1 text-xs mb-3">
+        <p><span class="text-base-content/40 w-16 inline-block">IFlow</span>
+           <span class="font-mono" x-text="selected?.iflow"></span></p>
+        <p><span class="text-base-content/40 w-16 inline-block">Logger</span>
+           <span class="font-mono" x-text="selected?.logger"></span></p>
+        <p><span class="text-base-content/40 w-16 inline-block">Node</span>
+           <span class="font-mono" x-text="`${selected?.ip}  #${selected?.node}`"></span></p>
+      </div>
+      <div class="bg-base-300 rounded p-3 font-mono text-xs whitespace-pre-wrap break-all"
+           x-text="selected?.message"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════ FETCH ════════════════════════════════════ -->
+<div x-show="page==='fetch'" class="container mx-auto p-4 max-w-2xl">
+  <div class="card bg-base-100 shadow">
+    <div class="card-body">
+      <h2 class="card-title mb-4">📥 Logs herunterladen</h2>
+
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-6 mb-6">
+        <div>
+          <p class="text-sm font-semibold mb-2">Tenant</p>
+          <div class="flex flex-col gap-2">
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="radio" class="radio radio-sm radio-primary" value="all" x-model="fetch.tenant" />
+              <span class="text-sm">Alle</span>
+            </label>
+            <template x-for="t in tenants" :key="t.id">
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input type="radio" class="radio radio-sm radio-primary" :value="t.id" x-model="fetch.tenant" />
+                <span class="text-sm" x-text="t.name"></span>
+              </label>
+            </template>
+          </div>
+        </div>
+        <div>
+          <p class="text-sm font-semibold mb-2">Log-Typ</p>
+          <div class="flex flex-col gap-2">
+            <template x-for="[val,label] in [['trace','trace'],['http','http'],['both','beide']]" :key="val">
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input type="radio" class="radio radio-sm radio-primary" :value="val" x-model="fetch.log_type" />
+                <span class="text-sm" x-text="label"></span>
+              </label>
+            </template>
+          </div>
+        </div>
+        <div>
+          <p class="text-sm font-semibold mb-2">Zeitraum</p>
+          <div class="flex flex-col gap-2">
+            <template x-for="[h,label] in [[1,'1 Stunde'],[6,'6 Stunden'],[24,'24 Stunden'],[72,'3 Tage'],[168,'7 Tage'],[0,'Alle']]" :key="h">
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input type="radio" class="radio radio-sm radio-primary" :value="h" x-model="fetch.hours" />
+                <span class="text-sm" x-text="label"></span>
+              </label>
+            </template>
+          </div>
+        </div>
+      </div>
+
+      <!-- Progress -->
+      <div x-show="fetch.status !== 'idle'" class="mb-4 space-y-2">
+        <div class="flex justify-between text-sm">
+          <span x-text="fetch.statusMsg"></span>
+          <span x-show="fetch.total > 0" x-text="`${fetch.done} / ${fetch.total} Dateien`"></span>
+        </div>
+        <progress class="progress progress-primary w-full"
+                  :value="fetch.done" :max="fetch.total || 1"></progress>
+        <p x-show="fetch.currentFile" class="text-xs text-base-content/50 font-mono" x-text="fetch.currentFile"></p>
+
+        <div x-show="fetch.status==='done'" class="alert alert-success">
+          <span>✓ <strong x-text="fetch.imported.toLocaleString()"></strong> Einträge importiert</span>
+          <button class="btn btn-sm btn-ghost ml-auto" @click="page='browse'; search()">Browse →</button>
+        </div>
+        <div x-show="fetch.status==='error'" class="alert alert-error">
+          <span x-text="fetch.errorMsg"></span>
+        </div>
+      </div>
+
+      <div class="flex gap-2">
+        <button class="btn btn-primary" :disabled="fetch.status==='running' || tenants.length===0"
+                @click="startFetch()">
+          <span x-show="fetch.status!=='running'">▶ Starten</span>
+          <span x-show="fetch.status==='running'" class="flex items-center gap-2">
+            <span class="loading loading-spinner loading-sm"></span> Lädt…
+          </span>
+        </button>
+        <div x-show="tenants.length===0" class="alert alert-warning py-1 px-3 text-sm">
+          Keine Tenants konfiguriert — bitte zuerst in ⚙ Settings eintragen.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════ STATS ════════════════════════════════════ -->
+<div x-show="page==='stats'" class="container mx-auto p-4 max-w-screen-xl">
+
+  <div class="flex gap-2 mb-4 items-center">
+    <select class="select select-bordered select-sm w-28" x-model="statsFilter" @change="loadStats()">
+      <option value="">Alle</option>
+      <template x-for="t in tenants" :key="t.id">
+        <option :value="t.id" x-text="t.name"></option>
+      </template>
+    </select>
+    <span x-show="statsLoading" class="loading loading-spinner loading-sm"></span>
+  </div>
+
+  <!-- Summary cards -->
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+    <div class="stat bg-base-100 rounded-box shadow py-3">
+      <div class="stat-title text-xs">Gesamt</div>
+      <div class="stat-value text-2xl" x-text="(stats.total||0).toLocaleString()"></div>
+      <div class="stat-desc">Einträge</div>
+    </div>
+    <div class="stat bg-base-100 rounded-box shadow py-3">
+      <div class="stat-title text-xs text-error">Fehler</div>
+      <div class="stat-value text-2xl text-error" x-text="(stats.levels?.find(l=>l.lvl==='ERROR')?.cnt||0).toLocaleString()"></div>
+      <div class="stat-desc" x-text="stats.total ? Math.round(((stats.levels?.find(l=>l.lvl==='ERROR')?.cnt||0)/stats.total)*100)+'%' : '–'"></div>
+    </div>
+    <div class="stat bg-base-100 rounded-box shadow py-3">
+      <div class="stat-title text-xs">IFlows</div>
+      <div class="stat-value text-2xl" x-text="(stats.top_errors?.length||0)"></div>
+      <div class="stat-desc">mit Fehlern</div>
+    </div>
+    <div class="stat bg-base-100 rounded-box shadow py-3">
+      <div class="stat-title text-xs">Tenants</div>
+      <div class="stat-value text-2xl" x-text="(stats.per_tenant?.length||0)"></div>
+      <div class="stat-desc">mit Daten</div>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+    <div class="card bg-base-100 shadow">
+      <div class="card-body p-4">
+        <h3 class="font-semibold text-sm mb-2">Top IFlows nach Fehlern</h3>
+        <canvas id="chartErrors" height="260"></canvas>
+      </div>
+    </div>
+    <div class="flex flex-col gap-4">
+      <div class="card bg-base-100 shadow">
+        <div class="card-body p-4">
+          <h3 class="font-semibold text-sm mb-2">Level-Verteilung</h3>
+          <canvas id="chartLevels" height="130"></canvas>
+        </div>
+      </div>
+      <div class="card bg-base-100 shadow">
+        <div class="card-body p-4">
+          <h3 class="font-semibold text-sm mb-2">Fehler pro Stunde (letzte 48h)</h3>
+          <canvas id="chartTimeline" height="100"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- IFlow table -->
+  <div class="card bg-base-100 shadow">
+    <div class="card-body p-4">
+      <h3 class="font-semibold text-sm mb-3">IFlows Detail</h3>
+      <div class="overflow-x-auto">
+        <table class="table table-xs table-zebra">
+          <thead><tr>
+            <th>IFlow</th>
+            <th class="text-right text-error">ERROR</th>
+            <th class="text-right text-warning">WARN</th>
+            <th class="text-right text-success">INFO</th>
+            <th class="text-right">TOTAL</th>
+          </tr></thead>
+          <tbody>
+            <template x-for="row in iflowStats" :key="row.iflow">
+              <tr class="cursor-pointer hover"
+                  @click="q.iflow=row.iflow; page='browse'; search()">
+                <td class="font-mono text-xs" x-text="shortIflow(row.iflow)"></td>
+                <td class="text-right font-mono text-xs text-error"   x-text="(row.error||0).toLocaleString()"></td>
+                <td class="text-right font-mono text-xs text-warning" x-text="(row.warn||0).toLocaleString()"></td>
+                <td class="text-right font-mono text-xs text-success" x-text="(row.info||0).toLocaleString()"></td>
+                <td class="text-right font-mono text-xs font-bold"    x-text="(row.total||0).toLocaleString()"></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════ SETTINGS ═════════════════════════════════ -->
+<div x-show="page==='settings'" class="container mx-auto p-4 max-w-2xl">
+
+  <!-- Tenants -->
+  <div class="card bg-base-100 shadow mb-4">
+    <div class="card-body">
+      <div class="flex justify-between items-center mb-4">
+        <h2 class="card-title text-base">Tenants</h2>
+        <button class="btn btn-sm btn-primary" @click="openTenantModal()">+ Hinzufügen</button>
+      </div>
+
+      <template x-for="t in tenants" :key="t.id">
+        <div class="border border-base-300 rounded-lg p-3 mb-3">
+          <div class="flex items-center justify-between mb-2">
+            <div class="flex items-center gap-2">
+              <span class="badge badge-lg font-bold" x-text="t.name"></span>
+              <span class="text-xs text-base-content/50" x-text="t.id"></span>
+            </div>
+            <div class="flex gap-1">
+              <button class="btn btn-xs btn-ghost" @click="testTenant(t)">Testen</button>
+              <button class="btn btn-xs btn-ghost" @click="openTenantModal(t)">Bearbeiten</button>
+              <button class="btn btn-xs btn-ghost text-error" @click="deleteTenant(t.id)">Löschen</button>
+            </div>
+          </div>
+          <div class="space-y-0.5 text-xs font-mono text-base-content/60">
+            <p><span class="text-base-content/30 w-20 inline-block">API URL</span><span x-text="t.api_url"></span></p>
+            <p><span class="text-base-content/30 w-20 inline-block">OAuth URL</span><span x-text="t.oauth_url"></span></p>
+            <p><span class="text-base-content/30 w-20 inline-block">Client ID</span>
+               <span x-text="t.client_id?.slice(0,30)"></span><span x-show="t.client_id?.length>30">…</span></p>
+          </div>
+          <div x-show="t._testResult" class="mt-2">
+            <div :class="`alert py-1 px-2 text-xs ${t._testOk?'alert-success':'alert-error'}`"
+                 x-text="t._testResult"></div>
+          </div>
+        </div>
+      </template>
+
+      <div x-show="tenants.length===0" class="text-center text-base-content/40 py-6 text-sm">
+        Noch keine Tenants konfiguriert.<br>
+        Füge einen hinzu oder trage Credentials in die <code>.env</code>-Datei ein.
+      </div>
+    </div>
+  </div>
+
+  <!-- .env hint -->
+  <div class="alert alert-info mb-4 text-sm">
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="stroke-current shrink-0 w-5 h-5">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+    </svg>
+    <div>
+      <p class="font-semibold">Per .env vorbelegen</p>
+      <p class="font-mono text-xs mt-1 text-base-content/70">CPI_PRD_API_URL=https://…<br>CPI_PRD_CLIENT_ID=sb-…<br>CPI_PRD_CLIENT_SECRET=…</p>
+    </div>
+  </div>
+
+  <!-- DB info -->
+  <div class="card bg-base-100 shadow">
+    <div class="card-body">
+      <h2 class="card-title text-base mb-3">Datenbank</h2>
+      <div class="grid grid-cols-2 gap-y-1 text-sm mb-4">
+        <span class="text-base-content/50">Pfad</span>
+        <span class="font-mono text-xs" x-text="dbInfo.path || '–'"></span>
+        <span class="text-base-content/50">Größe</span>
+        <span class="font-mono" x-text="dbInfo.size_mb ? dbInfo.size_mb + ' MB' : '–'"></span>
+        <span class="text-base-content/50">Einträge</span>
+        <span class="font-mono" x-text="(dbInfo.entries||0).toLocaleString()"></span>
+      </div>
+      <button class="btn btn-sm btn-error btn-outline" @click="confirmClearOpen=true">🗑 Datenbank leeren</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Modal: Tenant ── -->
+<dialog class="modal" :class="tenantModal.open && 'modal-open'">
+  <div class="modal-box max-w-lg">
+    <h3 class="font-bold text-lg mb-4" x-text="tenantModal.editing ? 'Tenant bearbeiten' : 'Tenant hinzufügen'"></h3>
+    <div class="space-y-3">
+      <template x-for="[field,label,ph,type] in [
+        ['id',            'ID (Kürzel, z.B. prd)',   'prd',              'text'],
+        ['name',          'Anzeigename',              'PRD',              'text'],
+        ['api_url',       'API URL',                  'https://…',        'text'],
+        ['oauth_url',     'OAuth URL',                'https://…/oauth/token', 'text'],
+        ['client_id',     'Client ID',                'sb-…',             'text'],
+        ['client_secret', 'Client Secret',            '',                 'password']
+      ]" :key="field">
+        <div class="form-control">
+          <label class="label py-0 pb-1"><span class="label-text text-sm" x-text="label"></span></label>
+          <input :type="type" class="input input-bordered input-sm"
+                 :placeholder="ph"
+                 :disabled="field==='id' && tenantModal.editing"
+                 x-model="tenantModal.form[field]" />
+        </div>
+      </template>
+    </div>
+    <div class="modal-action">
+      <button class="btn btn-primary btn-sm" @click="saveTenant()">Speichern</button>
+      <button class="btn btn-ghost btn-sm"   @click="tenantModal.open=false">Abbrechen</button>
+    </div>
+  </div>
+  <form method="dialog" class="modal-backdrop" @click="tenantModal.open=false"><button>close</button></form>
+</dialog>
+
+<!-- ── Modal: Confirm clear DB ── -->
+<dialog class="modal" :class="confirmClearOpen && 'modal-open'">
+  <div class="modal-box">
+    <h3 class="font-bold text-lg">Datenbank wirklich leeren?</h3>
+    <p class="py-3 text-sm">Alle importierten Log-Einträge werden gelöscht. Heruntergeladene Dateien bleiben erhalten.</p>
+    <div class="modal-action">
+      <button class="btn btn-error btn-sm" @click="clearDb()">Ja, leeren</button>
+      <button class="btn btn-ghost btn-sm" @click="confirmClearOpen=false">Abbrechen</button>
+    </div>
+  </div>
+  <form method="dialog" class="modal-backdrop" @click="confirmClearOpen=false"><button>close</button></form>
+</dialog>
+
+<!-- ── Toast ── -->
+<div class="toast toast-end" x-show="toast.show" x-transition>
+  <div :class="`alert ${toast.type==='error'?'alert-error':toast.type==='success'?'alert-success':'alert-info'}`">
+    <span x-text="toast.msg"></span>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

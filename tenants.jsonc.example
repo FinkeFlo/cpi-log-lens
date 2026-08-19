@@ -1,0 +1,45 @@
+{
+  // CPI Log Explorer — Tenant Configuration
+  // Copy this file to tenants.jsonc and fill in your credentials.
+  // You can add as many tenants as you like.
+  //
+  // Where to find credentials:
+  //   SAP BTP Cockpit → Subaccount → Instances & Subscriptions
+  //   → Cloud Integration → Service Keys → Create/View Key
+
+  "tenants": [
+    {
+      // Short identifier used in the UI and as database key (lowercase, no spaces)
+      "id": "dev",
+
+      // Display name shown in the UI
+      "name": "DEV",
+
+      // Cloud Integration API base URL (from service key: "url")
+      "api_url": "https://your-dev-tenant.it-cpi018.cfapps.eu10-003.hana.ondemand.com",
+
+      // OAuth token endpoint (from service key: "tokenurl")
+      "oauth_url": "https://your-dev-tenant.authentication.eu10.hana.ondemand.com/oauth/token",
+
+      // OAuth client credentials (from service key: "clientid" / "clientsecret")
+      "client_id": "sb-your-client-id",
+      "client_secret": "your-client-secret"
+    },
+    {
+      "id": "qas",
+      "name": "QAS",
+      "api_url": "https://your-qas-tenant.it-cpi018.cfapps.eu10-003.hana.ondemand.com",
+      "oauth_url": "https://your-qas-tenant.authentication.eu10.hana.ondemand.com/oauth/token",
+      "client_id": "sb-your-client-id",
+      "client_secret": "your-client-secret"
+    },
+    {
+      "id": "prd",
+      "name": "PRD",
+      "api_url": "https://your-prd-tenant.it-cpi018.cfapps.eu10-003.hana.ondemand.com",
+      "oauth_url": "https://your-prd-tenant.authentication.eu10.hana.ondemand.com/oauth/token",
+      "client_id": "sb-your-client-id",
+      "client_secret": "your-client-secret"
+    }
+  ]
+}
