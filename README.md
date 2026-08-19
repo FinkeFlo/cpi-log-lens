@@ -1,90 +1,95 @@
-# CPI Log Explorer
+# CPI Log Lens
 
 A self-hosted web application for downloading, storing, and analyzing SAP Cloud Integration (CPI) logs.
 
 ## Features
 
-- 📥 **Fetch** — download HTTP and trace logs from CPI tenants via OAuth2
+- 📥 **Fetch** — download HTTP and trace logs from any number of CPI tenants via OAuth2
 - 🔍 **Browse** — search and filter log entries by level, IFlow, message content and date range
 - 📊 **Stats** — error distribution per IFlow, level breakdown, hourly timeline
-- ⚙ **Settings** — manage tenant credentials via UI or `.env` file
+- ⚙️ **Settings** — manage tenant credentials via UI or `tenants.jsonc`
 - 🐳 **Docker** — runs anywhere with `docker compose up`
 - 🧪 **Mock mode** — works without a real CPI connection for local development
 
 ## Quick Start
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/your-org/cpi-log-explorer
-cd cpi-log-explorer
+# 1. Clone
+git clone https://github.com/FinkeFlo/cpi-log-lens
+cd cpi-log-lens
 
-# 2. Configure credentials
-cp .env.example .env
-# Edit .env and fill in your CPI tenant credentials
+# 2. Configure tenants
+cp tenants.jsonc.example tenants.jsonc
+# Edit tenants.jsonc — add your CPI tenant credentials
 
 # 3. Start
 docker compose up
 
-# 4. Open http://localhost:8080
+# 4. Open
+open http://localhost:8080
 ```
 
-## Configuration
+## Tenant Configuration
 
-All configuration is done via the `.env` file. Copy `.env.example` to `.env` and fill in your values.
+Credentials are stored in **`tenants.jsonc`** (JSON with comments, gitignored by default).
 
-You can also add and edit tenants directly in the **Settings** page of the web UI.
-Credentials entered via the UI are stored encrypted in the local SQLite database.
+```jsonc
+{
+  "tenants": [
+    {
+      // Short ID used in the UI (lowercase, no spaces)
+      "id": "dev",
+      "name": "DEV",
 
-### Tenant variables
-
-For each tenant, define the following (replace `DEV` with your tenant prefix):
-
-```
-CPI_DEV_NAME=DEV
-CPI_DEV_API_URL=https://<your-tenant>.cfapps.<region>.hana.ondemand.com
-CPI_DEV_OAUTH_URL=https://<your-tenant>.authentication.<region>.hana.ondemand.com/oauth/token
-CPI_DEV_CLIENT_ID=sb-<your-client-id>
-CPI_DEV_CLIENT_SECRET=<your-client-secret>
-```
-
-You can define as many tenants as you need. The prefix (e.g. `DEV`, `QAS`, `PRD`) becomes the tenant ID.
-
-### Mock mode
-
-To run without a real CPI connection (e.g. for local development or demos):
-
-```
-MOCK=true
+      // From SAP BTP → Instances & Subscriptions → Cloud Integration → Service Key
+      "api_url":      "https://your-tenant.it-cpi018.cfapps.eu10-003.hana.ondemand.com",
+      "oauth_url":    "https://your-tenant.authentication.eu10.hana.ondemand.com/oauth/token",
+      "client_id":    "sb-your-client-id",
+      "client_secret": "your-client-secret"
+    }
+    // Add as many tenants as you need
+  ]
+}
 ```
 
-Mock mode imports the sample log files from `backend/mock/` instead of calling the CPI API.
+You can also add and manage tenants directly in the **Settings** page of the web UI.
+
+## Mock Mode
+
+To run without a real CPI connection (for demos or local development):
+
+```bash
+MOCK=true docker compose up
+```
+
+Imports the sample log files from `backend/mock/` instead of calling the CPI API.
 
 ## Log Format
 
-CPI logs use a SAP-proprietary `#`-delimited format:
+CPI uses a SAP-proprietary `#`-delimited format with 15 fields:
 
 ```
-YYYY-MM-DD HH:MM:SS # timezone # level # logger # user # iflow # category # ... # message # - # ip # node
+Timestamp # Timezone # Level # Logger # User # IFlow # Category # ... # Message # - # IP # Node
 ```
 
-The application parses and indexes all fields into a local SQLite database for fast querying.
-
-## Development
-
-```bash
-# Without Docker (requires Python 3.12+)
-cd backend
-pip install -r requirements.txt
-cp ../.env.example .env   # fill in values
-uvicorn main:app --reload --port 8080
-```
+All fields are parsed and indexed into a local SQLite database for fast querying.
 
 ## Data Storage
 
-- `data/cpi_logs.db` — SQLite database (all imported log entries)
-- `data/logs/<tenant>/` — raw downloaded log files (gzip)
+| Path | Contents |
+|---|---|
+| `data/cpi_logs.db` | SQLite database (all imported log entries) |
+| `data/logs/<tenant>/` | Raw downloaded log files (gzip) |
+| `tenants.jsonc` | Tenant credentials — **do not commit** |
 
-Both are excluded from git and persisted as Docker volumes.
+Both `data/` and `tenants.jsonc` are excluded from git.
+
+## Stack
+
+- **Backend** — Python, FastAPI, aiosqlite, httpx
+- **Frontend** — Alpine.js, Tailwind CSS, DaisyUI, Chart.js
+- **Storage** — SQLite
+- **Runtime** — Docker / Docker Compose
 
 ## License
 
