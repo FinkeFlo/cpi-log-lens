@@ -72,13 +72,64 @@ CPI uses a SAP-proprietary `#`-delimited format with 15 fields:
 Timestamp # Timezone # Level # Logger # User # IFlow # Category # ... # Message # - # IP # Node
 ```
 
-All fields are parsed and indexed into a local SQLite database for fast querying.
+All fields are parsed and indexed into a local DuckDB database for fast querying.
 
-## Data Storage
+## LLM / Automation API
+
+Two endpoints allow LLMs or external tools to query logs programmatically.
+
+### `GET /api/query/schema`
+
+Returns a description of the query API — available filters, field names, and configured tenants. A good starting point for LLMs to orient themselves.
+
+```bash
+curl http://localhost:8080/api/query/schema
+```
+
+### `POST /api/query`
+
+Search log entries with structured filters. Returns a natural-language `summary` plus matching `items`.
+
+```bash
+curl -X POST http://localhost:8080/api/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tenant":    "dev",
+    "level":     "ERROR",
+    "iflow":     "MyIFlow",
+    "grep":      "authorization failed",
+    "date_from": "2024-01-01 00:00:00",
+    "date_to":   "2024-01-31 23:59:59",
+    "limit":     50
+  }'
+```
+
+All fields are optional. Response:
+
+```json
+{
+  "total_matching": 142,
+  "returned": 50,
+  "summary": "Found 142 log entries matching tenant=dev, level=ERROR. Returning 50 of 142.",
+  "items": [ { "id": 1, "tenant": "dev", "level": "ERROR", "iflow": "...", "message": "...", ... } ]
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `tenant` | string | Tenant ID — omit for all tenants |
+| `level` | string | `ERROR`, `WARN`, `INFO`, `DEBUG` |
+| `iflow` | string | Partial IFlow name match |
+| `grep` | string | Full-text search in `message` and `logger` |
+| `date_from` | string | Start datetime `YYYY-MM-DD HH:MM:SS` |
+| `date_to` | string | End datetime `YYYY-MM-DD HH:MM:SS` |
+| `limit` | int | Max entries returned (1–200, default 50) |
+
+
 
 | Path | Contents |
 |---|---|
-| `data/cpi_logs.db` | SQLite database (all imported log entries) |
+| `data/cpi_logs.duckdb` | DuckDB database (all imported log entries) |
 | `data/logs/<tenant>/` | Raw downloaded log files (gzip) |
 | `tenants.jsonc` | Tenant credentials — **do not commit** |
 
@@ -86,9 +137,9 @@ Both `data/` and `tenants.jsonc` are excluded from git.
 
 ## Stack
 
-- **Backend** — Python, FastAPI, aiosqlite, httpx
+- **Backend** — Python, FastAPI, DuckDB, httpx
 - **Frontend** — Alpine.js, Tailwind CSS, DaisyUI, Chart.js
-- **Storage** — SQLite
+- **Storage** — DuckDB
 - **Runtime** — Docker / Docker Compose
 
 ## License

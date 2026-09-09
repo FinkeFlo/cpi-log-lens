@@ -23,7 +23,7 @@ async def get_token(oauth_url: str, client_id: str, client_secret: str) -> str:
 
 async def list_remote_files(api_url: str, token: str, log_type: str) -> list[dict]:
     filter_str = f"LogFileType eq '{log_type}' and NodeScope eq 'worker'"
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=90) as client:
         resp = await client.get(
             f"{api_url}/api/v1/LogFiles",
             params={"$filter": filter_str},

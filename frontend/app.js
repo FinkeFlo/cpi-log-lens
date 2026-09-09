@@ -18,19 +18,24 @@ function App() {
     // Query params for Browse
     q: { tenant: '', level: '', iflow: '', grep: '', date_from: '', date_to: '' },
 
-    // Fetch form
+    // Fetch form + background job state
     fetch: {
-      tenant: 'all',
-      log_type: 'trace',
+      tenants: [],      // array of selected tenant ids
+      log_types: ['trace', 'http'],
       hours: 24,
-      status: 'idle',   // idle | running | done | error
-      statusMsg: '',
-      done: 0,
-      total: 0,
+      // job state (updated live from SSE)
+      jobId:       null,
+      status:      'idle',   // idle | running | done | error
+      statusMsg:   '',
+      done:        0,
+      total:       0,
       currentFile: '',
-      imported: 0,
-      errorMsg: '',
+      imported:    0,
+      errorMsg:    '',
     },
+
+    // active SSE connection for fetch progress
+    _fetchEventSource: null,
 
     // Tenant modal
     tenantModal: {
@@ -47,18 +52,65 @@ function App() {
 
     // ── Init ─────────────────────────────────────────────────────────────────
     async init() {
+      // Read initial page from URL hash
+      this._applyHash();
+      // Keep page in sync when user presses back/forward
+      window.addEventListener('hashchange', () => this._applyHash());
+
       await this.loadTenants();
       await this.search();
       await this.loadDbInfo();
+      await this._reconnectFetchStream();
+    },
+
+    _applyHash() {
+      const valid = ['browse', 'fetch', 'stats', 'settings'];
+      // Split "#browse?tenant=x&level=ERROR" into page and query string
+      const raw   = window.location.hash.slice(1); // remove leading #
+      const [pagePart, queryPart] = raw.split('?');
+      const page  = valid.includes(pagePart) ? pagePart : 'browse';
+
+      if (this.page !== page) {
+        this.page = page;
+        if (page === 'stats')    this.loadStats();
+        if (page === 'settings') this.loadDbInfo();
+      }
+
+      // Restore filters when navigating to browse via URL
+      if (page === 'browse' && queryPart !== undefined) {
+        const p = new URLSearchParams(queryPart);
+        this.q.tenant    = p.get('tenant')    || '';
+        this.q.level     = p.get('level')     || '';
+        this.q.iflow     = p.get('iflow')     || '';
+        this.q.grep      = p.get('grep')      || '';
+        this.q.date_from = p.get('date_from') || '';
+        this.q.date_to   = p.get('date_to')   || '';
+      }
+    },
+
+    _pushHash(page = this.page) {
+      // Build hash — include filter params only on browse page
+      let hash = page;
+      if (page === 'browse') {
+        const p = new URLSearchParams();
+        if (this.q.tenant)    p.set('tenant',    this.q.tenant);
+        if (this.q.level)     p.set('level',     this.q.level);
+        if (this.q.iflow)     p.set('iflow',     this.q.iflow);
+        if (this.q.grep)      p.set('grep',      this.q.grep);
+        if (this.q.date_from) p.set('date_from', this.q.date_from);
+        if (this.q.date_to)   p.set('date_to',   this.q.date_to);
+        const qs = p.toString();
+        if (qs) hash += '?' + qs;
+      }
+      // replaceState keeps the URL in sync without firing hashchange
+      history.replaceState(null, '', '#' + hash);
     },
 
     async navigate(target) {
       this.page = target;
-      if (target === 'stats') {
-        await this.loadStats();
-      } else if (target === 'settings') {
-        await this.loadDbInfo();
-      }
+      this._pushHash(target);
+      if (target === 'stats')    await this.loadStats();
+      if (target === 'settings') await this.loadDbInfo();
     },
 
     // ── Toast ─────────────────────────────────────────────────────────────────
@@ -72,8 +124,8 @@ function App() {
       try {
         const res = await fetch('/api/tenants');
         this.tenants = await res.json();
-        if (this.tenants.length > 0 && !this.fetch.tenant) {
-          this.fetch.tenant = 'all';
+        if (this.tenants.length > 0 && this.fetch.tenants.length === 0) {
+          this.fetch.tenants = this.tenants.map(t => t.id);
         }
       } catch (e) {
         console.error('loadTenants:', e);
@@ -140,6 +192,8 @@ function App() {
         if (this.q.date_to)   params.set('date_to',   this.q.date_to);
         const res = await fetch(`/api/logs?${params}`);
         this.logs = await res.json();
+        // Only sync URL on page 1 — pagination is ephemeral
+        if (page === 1) this._pushHash();
       } catch (e) {
         this.notify(`Fehler beim Laden: ${e.message}`, 'error');
       } finally {
@@ -168,64 +222,117 @@ function App() {
 
     shortIflow(iflow) {
       if (!iflow) return '';
+      // Strip "Camel (NAME) thread #N" wrapper from existing DB data
+      const camel = iflow.match(/Camel \(([^)]+)\)/);
+      if (camel) return camel[1];
+      // Strip "scheduler-NAME_Worker-N" and "12345-NAME_Worker-N"
+      const sched = iflow.match(/^(?:scheduler-|\d+-?)(.+?)(?:_Worker.*)?$/);
+      if (sched) iflow = sched[1];
+      // Show short form: prefer IF_XXXX segment
       const parts = iflow.split('-');
       for (const p of parts) {
-        if (p.startsWith('IF_')) return p;
+        if (p.startsWith('IF_')) return iflow; // show full name once we found IF_
       }
       return iflow.length > 40 ? iflow.slice(-38) + '…' : iflow;
     },
 
-    // ── Fetch (SSE) ───────────────────────────────────────────────────────────
+    // ── Fetch: start background job ───────────────────────────────────────────
     async startFetch() {
-      this.fetch.status     = 'running';
-      this.fetch.statusMsg  = 'Verbindung wird hergestellt…';
-      this.fetch.done       = 0;
-      this.fetch.total      = 0;
-      this.fetch.currentFile= '';
-      this.fetch.imported   = 0;
-      this.fetch.errorMsg   = '';
+      if (this.fetch.status === 'running') return;
+
+      this.fetch.status      = 'running';
+      this.fetch.statusMsg   = 'Verbindung wird hergestellt…';
+      this.fetch.done        = 0;
+      this.fetch.total       = 0;
+      this.fetch.currentFile = '';
+      this.fetch.imported    = 0;
+      this.fetch.errorMsg    = '';
 
       try {
         const res = await fetch('/api/fetch', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            tenant:   this.fetch.tenant,
-            log_type: this.fetch.log_type,
-            hours:    parseInt(this.fetch.hours),
+            tenants:   this.fetch.tenants.length === this.tenants.length ? ['all'] : this.fetch.tenants,
+            log_types: this.fetch.log_types,
+            hours:     parseInt(this.fetch.hours),
           }),
         });
 
-        if (!res.ok) {
-          const err = await res.text();
-          throw new Error(err);
+        const data = await res.json();
+        if (!data.ok) {
+          this.fetch.status   = 'error';
+          this.fetch.errorMsg = data.error || 'Unbekannter Fehler';
+          return;
         }
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buf = '';
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buf += decoder.decode(value, { stream: true });
-          const lines = buf.split('\n');
-          buf = lines.pop();
-
-          for (const line of lines) {
-            if (!line.startsWith('data:')) continue;
-            const event = JSON.parse(line.slice(5).trim());
-            this._handleFetchEvent(event);
-          }
-        }
+        this.fetch.jobId = data.job_id;
+        this._openFetchStream();
       } catch (e) {
         this.fetch.status   = 'error';
         this.fetch.errorMsg = e.message;
       }
     },
 
+    /** Open/reopen the SSE stream for the active job. */
+    _openFetchStream() {
+      if (this._fetchEventSource) {
+        this._fetchEventSource.close();
+        this._fetchEventSource = null;
+      }
+
+      const es = new EventSource('/api/fetch/stream');
+      this._fetchEventSource = es;
+
+      es.onmessage = (e) => {
+        const event = JSON.parse(e.data);
+        this._handleFetchEvent(event);
+      };
+
+      es.onerror = () => {
+        // SSE closed (server done or network hiccup) — stop listening
+        es.close();
+        this._fetchEventSource = null;
+      };
+    },
+
+    /** Called on page load to reconnect to any still-running job. */
+    async _reconnectFetchStream() {
+      try {
+        const res = await fetch('/api/fetch/status');
+        const data = await res.json();
+        if (data.status === 'idle') return;
+
+        // Restore state from snapshot
+        this.fetch.jobId       = data.job_id;
+        this.fetch.status      = data.status;
+        this.fetch.statusMsg   = data.status_msg;
+        this.fetch.done        = data.done;
+        this.fetch.total       = data.total;
+        this.fetch.currentFile = data.current_file;
+        this.fetch.imported    = data.imported;
+        this.fetch.errorMsg    = data.error_msg;
+
+        if (data.status === 'running') {
+          this._openFetchStream();
+        }
+      } catch (e) {
+        console.error('_reconnectFetchStream:', e);
+      }
+    },
+
     _handleFetchEvent(ev) {
       switch (ev.type) {
+        case 'snapshot':
+          this.fetch.jobId       = ev.job_id;
+          this.fetch.status      = ev.status;
+          this.fetch.statusMsg   = ev.status_msg;
+          this.fetch.done        = ev.done;
+          this.fetch.total       = ev.total;
+          this.fetch.currentFile = ev.current_file;
+          this.fetch.imported    = ev.imported;
+          this.fetch.errorMsg    = ev.error_msg;
+          break;
         case 'status':
           this.fetch.statusMsg = ev.msg;
           break;
@@ -237,6 +344,11 @@ function App() {
           this.fetch.done        = ev.done;
           this.fetch.total       = ev.total;
           this.fetch.currentFile = ev.file;
+          this.fetch.imported    = ev.imported;
+          // Auto-refresh Browse list when new rows were imported
+          if (ev.new_rows > 0 && this.page === 'browse') {
+            this.search(this.logs.page);
+          }
           break;
         case 'warn':
           console.warn(ev.msg);
@@ -244,11 +356,21 @@ function App() {
         case 'error':
           this.fetch.status   = 'error';
           this.fetch.errorMsg = ev.msg;
+          if (this._fetchEventSource) {
+            this._fetchEventSource.close();
+            this._fetchEventSource = null;
+          }
           break;
         case 'done':
-          this.fetch.status   = 'done';
-          this.fetch.imported = ev.imported;
-          this.fetch.statusMsg= 'Abgeschlossen';
+          this.fetch.status      = 'done';
+          this.fetch.imported    = ev.imported;
+          this.fetch.statusMsg   = 'Abgeschlossen';
+          if (this._fetchEventSource) {
+            this._fetchEventSource.close();
+            this._fetchEventSource = null;
+          }
+          // Final refresh of Browse list
+          if (this.page === 'browse') this.search(1);
           break;
       }
     },
