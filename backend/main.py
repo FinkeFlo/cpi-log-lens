@@ -9,6 +9,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import AsyncGenerator, Optional
 
@@ -98,6 +99,9 @@ async def no_cache_js(request, call_next):
     return response
 
 
+SCHEDULE_CHECK_SECONDS = int(os.getenv("SCHEDULE_CHECK_SECONDS", "60"))
+
+
 @app.on_event("startup")
 async def startup():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -106,6 +110,7 @@ async def startup():
     await _load_tenants_from_json()
     if RETENTION_DAYS > 0:
         asyncio.create_task(_retention_loop())
+    asyncio.create_task(_schedule_loop())
 
 
 async def _retention_loop():
@@ -128,6 +133,54 @@ async def _retention_loop():
         except Exception as e:
             print(f"[retention] Cleanup failed: {e}")
         await asyncio.sleep(RETENTION_CHECK_HOURS * 3600)
+
+
+async def _schedule_loop():
+    """Background task: every SCHEDULE_CHECK_SECONDS, check enabled
+    fetch_schedules and kick off a fetch job for any that are due
+    (now >= last_run_at + interval_minutes, or never run before).
+    Only one fetch job can run at a time (shared with manual /api/fetch);
+    a due schedule that finds a job already running is simply retried on
+    the next tick instead of being queued."""
+    global _active_job
+    while True:
+        try:
+            if not (_active_job and _active_job.status == "running"):
+                conn = await database.get_db(DB_PATH)
+                try:
+                    schedules = await database.get_schedules(conn)
+                finally:
+                    await conn.close()
+
+                now = time.time()
+                for sched in schedules:
+                    if not sched["enabled"]:
+                        continue
+                    if sched["last_run_at"]:
+                        last_ts = datetime.fromisoformat(sched["last_run_at"]).timestamp()
+                        if now - last_ts < sched["interval_minutes"] * 60:
+                            continue
+
+                    conn2 = await database.get_db(DB_PATH)
+                    try:
+                        await database.touch_schedule_last_run(conn2, sched["id"])
+                    finally:
+                        await conn2.close()
+
+                    body = FetchRequest(
+                        tenants=json.loads(sched["tenants"]),
+                        log_types=json.loads(sched["log_types"]),
+                        hours=sched["hours"],
+                    )
+                    job = FetchJob(id=str(uuid.uuid4()))
+                    _active_job = job
+                    print(f"[schedule] Starting '{sched['name']}' "
+                          f"(tenants={body.tenants}, log_types={body.log_types}, hours={body.hours})")
+                    asyncio.create_task(_run_fetch(job, body))
+                    break  # one job at a time — remaining due schedules wait for next tick
+        except Exception as e:
+            print(f"[schedule] Loop error: {e}")
+        await asyncio.sleep(SCHEDULE_CHECK_SECONDS)
 
 
 async def _load_tenants_from_json():
@@ -173,6 +226,21 @@ class FetchRequest(BaseModel):
     tenants:   list[str] = ["all"]  # ["all"] or list of tenant ids
     log_types: list[str] = ["trace", "http"]
     hours:     int = 24      # 0 = no filter (all available)
+
+
+class ScheduleRequest(BaseModel):
+    name:             str
+    tenants:          list[str] = ["all"]
+    log_types:        list[str] = ["trace", "http"]
+    hours:            int = 1          # time range pulled on every run
+    interval_minutes: int = 15         # how often to run
+    enabled:          bool = True
+
+
+class DefaultFetchConfig(BaseModel):
+    tenants:   list[str] = ["all"]
+    log_types: list[str] = ["trace", "http"]
+    hours:     int = 24
 
 
 # ── Tenant endpoints ──────────────────────────────────────────────────────────
@@ -295,6 +363,87 @@ async def fetch_cancel():
     _active_job.push({"type": "status", "msg": "Abbruch angefordert …"})
     return {"ok": True, "job_id": _active_job.id}
 
+
+# ── Fetch: default form config ────────────────────────────────────────────────
+@app.get("/api/fetch/default-config")
+async def get_default_fetch_config():
+    """Return the saved default fetch form config (tenants/log_types/hours),
+    or null if none has been saved yet — the frontend falls back to
+    'all tenants + all log types' in that case."""
+    conn = await database.get_db(DB_PATH)
+    try:
+        raw = await database.get_setting(conn, "default_fetch_config")
+        return json.loads(raw) if raw else None
+    finally:
+        await conn.close()
+
+
+@app.put("/api/fetch/default-config")
+async def set_default_fetch_config(body: DefaultFetchConfig):
+    """Persist the current fetch form selection as the default shown on
+    next page load, instead of always defaulting to all tenants/log types."""
+    conn = await database.get_db(DB_PATH)
+    try:
+        await database.set_setting(conn, "default_fetch_config", body.model_dump_json())
+        return {"ok": True}
+    finally:
+        await conn.close()
+
+
+# ── Fetch schedules (recurring pulls) ─────────────────────────────────────────
+@app.get("/api/schedules")
+async def list_schedules():
+    conn = await database.get_db(DB_PATH)
+    try:
+        schedules = await database.get_schedules(conn)
+        for s in schedules:
+            s["tenants"]   = json.loads(s["tenants"])
+            s["log_types"] = json.loads(s["log_types"])
+        return schedules
+    finally:
+        await conn.close()
+
+
+@app.post("/api/schedules", status_code=201)
+async def create_schedule(body: ScheduleRequest):
+    conn = await database.get_db(DB_PATH)
+    try:
+        schedule_id = str(uuid.uuid4())
+        await database.create_schedule(
+            conn, schedule_id, body.name,
+            json.dumps(body.tenants), json.dumps(body.log_types),
+            body.hours, body.interval_minutes, body.enabled,
+        )
+        return {"ok": True, "id": schedule_id}
+    finally:
+        await conn.close()
+
+
+@app.put("/api/schedules/{schedule_id}")
+async def update_schedule(schedule_id: str, body: ScheduleRequest):
+    conn = await database.get_db(DB_PATH)
+    try:
+        existing = await database.get_schedule(conn, schedule_id)
+        if not existing:
+            raise HTTPException(404, "Schedule not found")
+        await database.update_schedule(
+            conn, schedule_id, body.name,
+            json.dumps(body.tenants), json.dumps(body.log_types),
+            body.hours, body.interval_minutes, body.enabled,
+        )
+        return {"ok": True}
+    finally:
+        await conn.close()
+
+
+@app.delete("/api/schedules/{schedule_id}")
+async def remove_schedule(schedule_id: str):
+    conn = await database.get_db(DB_PATH)
+    try:
+        await database.delete_schedule(conn, schedule_id)
+        return {"ok": True}
+    finally:
+        await conn.close()
 
 
 @app.get("/api/fetch/stream")

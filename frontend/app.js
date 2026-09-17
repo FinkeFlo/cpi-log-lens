@@ -38,6 +38,15 @@ function App() {
       errorMsg:    '',
     },
 
+    // Fetch schedules (recurring pulls) + default fetch config
+    schedules: [],
+    scheduleModal: {
+      open: false,
+      editing: false,
+      form: { id: '', name: '', tenants: [], log_types: ['trace', 'http'], hours: 1, interval_minutes: 15, enabled: true },
+    },
+    confirmDeleteScheduleId: null,
+
     // active SSE connection for fetch progress
     _fetchEventSource: null,
 
@@ -61,7 +70,9 @@ function App() {
       // Keep page in sync when user presses back/forward
       window.addEventListener('hashchange', () => this._applyHash());
 
+      await this.loadDefaultFetchConfig();
       await this.loadTenants();
+      await this.loadSchedules();
       await this.search();
       await this.loadDbInfo();
       await this._reconnectFetchStream();
@@ -128,12 +139,143 @@ function App() {
       try {
         const res = await fetch('/api/tenants');
         this.tenants = await res.json();
-        if (this.tenants.length > 0 && this.fetch.tenants.length === 0) {
+        if (this._wantAllTenants) {
+          // Saved default config was ["all"] — resolve to the concrete list
+          // now that tenants are known.
+          this.fetch.tenants = this.tenants.map(t => t.id);
+        } else if (this.tenants.length > 0 && this.fetch.tenants.length === 0 && !this._hasDefaultFetchConfig) {
+          // Only default to "all tenants" if no saved default config already
+          // populated the selection (see loadDefaultFetchConfig).
           this.fetch.tenants = this.tenants.map(t => t.id);
         }
       } catch (e) {
         console.error('loadTenants:', e);
       }
+    },
+
+    // ── Fetch: default form config ─────────────────────────────────────────────
+    async loadDefaultFetchConfig() {
+      try {
+        const res = await fetch('/api/fetch/default-config');
+        const cfg = await res.json();
+        if (cfg) {
+          this._hasDefaultFetchConfig = true;
+          this.fetch.tenants   = cfg.tenants.includes('all') ? [] : cfg.tenants; // resolved against tenants once loaded below
+          this.fetch.log_types = cfg.log_types;
+          this.fetch.hours     = cfg.hours;
+          if (cfg.tenants.includes('all')) {
+            // Resolved once tenants are loaded (loadTenants runs right after this)
+            this._wantAllTenants = true;
+          }
+        }
+      } catch (e) {
+        console.error('loadDefaultFetchConfig:', e);
+      }
+    },
+
+    async saveDefaultFetchConfig() {
+      try {
+        const body = {
+          tenants:   this.fetch.tenants.length === this.tenants.length ? ['all'] : this.fetch.tenants,
+          log_types: this.fetch.log_types,
+          hours:     parseInt(this.fetch.hours),
+        };
+        const res = await fetch('/api/fetch/default-config', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        this._hasDefaultFetchConfig = true;
+        this.notify('Als Standard gespeichert', 'success');
+      } catch (e) {
+        this.notify(`Fehler: ${e.message}`, 'error');
+      }
+    },
+
+    // ── Fetch schedules (recurring pulls) ───────────────────────────────────────
+    async loadSchedules() {
+      try {
+        const res = await fetch('/api/schedules');
+        this.schedules = await res.json();
+      } catch (e) {
+        console.error('loadSchedules:', e);
+      }
+    },
+
+    openScheduleModal(schedule = null) {
+      this.scheduleModal.editing = !!schedule;
+      this.scheduleModal.form = schedule
+        ? { id: schedule.id, name: schedule.name,
+            tenants: schedule.tenants.includes('all') ? this.tenants.map(t => t.id) : [...schedule.tenants],
+            log_types: [...schedule.log_types], hours: schedule.hours,
+            interval_minutes: schedule.interval_minutes, enabled: schedule.enabled }
+        : { id: '', name: '', tenants: this.tenants.map(t => t.id), log_types: ['trace', 'http'],
+            hours: 1, interval_minutes: 15, enabled: true };
+      this.scheduleModal.open = true;
+    },
+
+    async saveSchedule() {
+      const f = this.scheduleModal.form;
+      if (!f.name.trim() || f.tenants.length === 0 || f.log_types.length === 0) {
+        this.notify('Bitte Name, Tenant(s) und Log-Typ(en) angeben', 'error');
+        return;
+      }
+      const body = {
+        name:             f.name.trim(),
+        tenants:          f.tenants.length === this.tenants.length ? ['all'] : f.tenants,
+        log_types:        f.log_types,
+        hours:            parseInt(f.hours),
+        interval_minutes: parseInt(f.interval_minutes),
+        enabled:          !!f.enabled,
+      };
+      const method = this.scheduleModal.editing ? 'PUT' : 'POST';
+      const url = this.scheduleModal.editing ? `/api/schedules/${f.id}` : '/api/schedules';
+      try {
+        const res = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        this.scheduleModal.open = false;
+        await this.loadSchedules();
+        this.notify('Zeitplan gespeichert', 'success');
+      } catch (e) {
+        this.notify(`Fehler: ${e.message}`, 'error');
+      }
+    },
+
+    async toggleSchedule(s) {
+      try {
+        const body = {
+          name: s.name, tenants: s.tenants, log_types: s.log_types,
+          hours: s.hours, interval_minutes: s.interval_minutes, enabled: !s.enabled,
+        };
+        const res = await fetch(`/api/schedules/${s.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        await this.loadSchedules();
+      } catch (e) {
+        this.notify(`Fehler: ${e.message}`, 'error');
+      }
+    },
+
+    async deleteSchedule(id) {
+      await fetch(`/api/schedules/${id}`, { method: 'DELETE' });
+      this.confirmDeleteScheduleId = null;
+      await this.loadSchedules();
+      this.notify('Zeitplan gelöscht');
+    },
+
+    scheduleTenantLabel(s) {
+      if (s.tenants.includes('all')) return 'Alle Tenants';
+      return s.tenants
+        .map(id => this.tenants.find(t => t.id === id)?.name || id)
+        .join(', ');
     },
 
     openTenantModal(tenant = null) {

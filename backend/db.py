@@ -79,6 +79,28 @@ CREATE TABLE IF NOT EXISTS fetch_runs (
     entries_imported INTEGER DEFAULT 0,
     status           TEXT DEFAULT 'running'
 );
+
+-- Recurring fetch configurations (e.g. "pull tenant X every 15 min for the
+-- last 1h"). Checked periodically by the background scheduler loop in
+-- main.py. tenants/log_types are stored as JSON arrays (or '["all"]').
+CREATE TABLE IF NOT EXISTS fetch_schedules (
+    id                TEXT PRIMARY KEY,
+    name              TEXT NOT NULL,
+    tenants           TEXT NOT NULL,   -- JSON array of tenant ids, or '["all"]'
+    log_types         TEXT NOT NULL,   -- JSON array, e.g. '["trace","http"]'
+    hours             INTEGER NOT NULL DEFAULT 24,
+    interval_minutes  INTEGER NOT NULL DEFAULT 15,
+    enabled           BOOLEAN NOT NULL DEFAULT true,
+    last_run_at       TEXT,
+    created_at        TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Generic key/value app settings (e.g. the last-used fetch form config,
+-- saved as a default so the UI doesn't always start from "all tenants").
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -340,6 +362,63 @@ async def get_tenant(db: DuckDBConnection, tenant_id: str) -> Optional[dict]:
 
 async def delete_tenant(db: DuckDBConnection, tenant_id: str):
     await db.run(db._execute, "DELETE FROM tenants WHERE id=?", [tenant_id])
+
+
+# ── Fetch Schedules ───────────────────────────────────────────────────────────
+async def create_schedule(db: DuckDBConnection, schedule_id: str, name: str,
+                           tenants_json: str, log_types_json: str,
+                           hours: int, interval_minutes: int, enabled: bool):
+    def _run(conn):
+        db._execute(conn, """
+            INSERT INTO fetch_schedules (id, name, tenants, log_types, hours, interval_minutes, enabled)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, [schedule_id, name, tenants_json, log_types_json, hours, interval_minutes, enabled])
+    await db.run(_run)
+
+
+async def update_schedule(db: DuckDBConnection, schedule_id: str, name: str,
+                           tenants_json: str, log_types_json: str,
+                           hours: int, interval_minutes: int, enabled: bool):
+    def _run(conn):
+        db._execute(conn, """
+            UPDATE fetch_schedules
+            SET name=?, tenants=?, log_types=?, hours=?, interval_minutes=?, enabled=?
+            WHERE id=?
+        """, [name, tenants_json, log_types_json, hours, interval_minutes, enabled, schedule_id])
+    await db.run(_run)
+
+
+async def get_schedules(db: DuckDBConnection) -> list[dict]:
+    return await db.read(db._fetchall_dicts, "SELECT * FROM fetch_schedules ORDER BY created_at")
+
+
+async def get_schedule(db: DuckDBConnection, schedule_id: str) -> Optional[dict]:
+    return await db.read(db._fetchone_dict, "SELECT * FROM fetch_schedules WHERE id=?", [schedule_id])
+
+
+async def delete_schedule(db: DuckDBConnection, schedule_id: str):
+    await db.run(db._execute, "DELETE FROM fetch_schedules WHERE id=?", [schedule_id])
+
+
+async def touch_schedule_last_run(db: DuckDBConnection, schedule_id: str):
+    await db.run(db._execute,
+                 "UPDATE fetch_schedules SET last_run_at=CURRENT_TIMESTAMP WHERE id=?",
+                 [schedule_id])
+
+
+# ── Settings (key/value) ──────────────────────────────────────────────────────
+async def get_setting(db: DuckDBConnection, key: str) -> Optional[str]:
+    row = await db.read(db._fetchone_dict, "SELECT value FROM settings WHERE key=?", [key])
+    return row["value"] if row else None
+
+
+async def set_setting(db: DuckDBConnection, key: str, value: str):
+    def _run(conn):
+        db._execute(conn, """
+            INSERT INTO settings (key, value) VALUES (?, ?)
+            ON CONFLICT (key) DO UPDATE SET value=excluded.value
+        """, [key, value])
+    await db.run(_run)
 
 
 # ── Log Import ────────────────────────────────────────────────────────────────
