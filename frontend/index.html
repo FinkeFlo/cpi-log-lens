@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>CPI Log Explorer</title>
+  <link rel="icon" type="image/jpeg" href="/logo.jpg" />
   <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.10/dist/full.min.css" rel="stylesheet" />
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
@@ -20,7 +21,10 @@
 <!-- ── Navbar ── -->
 <div class="navbar bg-base-100 shadow-md sticky top-0 z-50 px-4 gap-2">
   <div class="flex-1 gap-2">
-    <span class="text-lg font-bold text-primary">🔍 CPI Log Explorer</span>
+    <span class="text-lg font-bold text-primary flex items-center">
+      <img src="/logo.jpg" alt="Logo" class="w-6 h-6 mr-2 rounded" />
+      CPI Log Explorer
+    </span>
   </div>
   <div class="flex-none">
     <ul class="menu menu-horizontal px-1 gap-1 text-sm">
@@ -58,6 +62,8 @@
     <span x-show="fetch.imported > 0"
           class="badge badge-primary badge-sm flex-shrink-0"
           x-text="`+${fetch.imported.toLocaleString()}`"></span>
+    <button class="btn btn-ghost btn-xs text-error flex-shrink-0" @click="cancelFetch()"
+            title="Download abbrechen">✕ Abbrechen</button>
     <button class="btn btn-ghost btn-xs flex-shrink-0" @click="page='fetch'">Details →</button>
   </div>
 </div>
@@ -248,7 +254,10 @@
         </div>
         <progress class="progress progress-primary w-full"
                   :value="fetch.done" :max="fetch.total || 1"></progress>
-        <p x-show="fetch.currentFile" class="text-xs text-base-content/50 font-mono" x-text="fetch.currentFile"></p>
+        <p x-show="fetch.currentFile" class="text-xs text-base-content/50 font-mono">
+          <span x-show="fetch.currentTenant" class="badge badge-ghost badge-xs mr-1" x-text="fetch.currentTenant"></span>
+          <span x-text="fetch.currentFile"></span>
+        </p>
 
         <!-- Live import counter while running -->
         <div x-show="fetch.status === 'running'" class="flex items-center gap-2 text-sm text-base-content/60">
@@ -260,6 +269,10 @@
 
         <div x-show="fetch.status==='done'" class="alert alert-success">
           <span>✓ <strong x-text="fetch.imported.toLocaleString()"></strong> Einträge importiert</span>
+          <button class="btn btn-sm btn-ghost ml-auto" @click="page='browse'; search()">Browse →</button>
+        </div>
+        <div x-show="fetch.status==='cancelled'" class="alert alert-warning">
+          <span>⏹ Abgebrochen — <strong x-text="fetch.imported.toLocaleString()"></strong> Einträge bereits importiert</span>
           <button class="btn btn-sm btn-ghost ml-auto" @click="page='browse'; search()">Browse →</button>
         </div>
         <div x-show="fetch.status==='error'" class="alert alert-error">
@@ -275,16 +288,142 @@
             <span class="loading loading-spinner loading-sm"></span> Lädt…
           </span>
         </button>
-        <button x-show="fetch.status === 'done' || fetch.status === 'error'"
+        <button x-show="fetch.status === 'running'"
+                class="btn btn-error btn-outline"
+                @click="cancelFetch()">✕ Abbrechen</button>
+        <button x-show="fetch.status === 'done' || fetch.status === 'error' || fetch.status === 'cancelled'"
                 class="btn btn-ghost btn-sm"
                 @click="fetch.status = 'idle'">Zurücksetzen</button>
+        <button class="btn btn-ghost btn-sm"
+                :disabled="fetch.log_types.length===0 || fetch.tenants.length===0"
+                @click="saveDefaultFetchConfig()" title="Aktuelle Auswahl als Standard beim nächsten Laden verwenden">
+          💾 Als Standard speichern
+        </button>
         <div x-show="tenants.length===0" class="alert alert-warning py-1 px-3 text-sm">
           Keine Tenants konfiguriert — bitte zuerst in ⚙ Settings eintragen.
         </div>
       </div>
     </div>
   </div>
+
+  <!-- ── Scheduled fetches ── -->
+  <div class="card bg-base-100 shadow mt-6">
+    <div class="card-body">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="card-title">🔁 Geplante Abrufe</h2>
+        <button class="btn btn-sm btn-primary" @click="openScheduleModal()">+ Neuer Zeitplan</button>
+      </div>
+      <p class="text-sm text-base-content/60 mb-2" x-show="schedules.length===0">
+        Kein automatischer Abruf eingerichtet. Lege einen Zeitplan an, um z.B. alle 15 Minuten
+        die letzte Stunde eines Tenants automatisch abzuholen.
+      </p>
+      <div class="overflow-x-auto" x-show="schedules.length>0">
+        <table class="table table-sm">
+          <thead>
+            <tr>
+              <th>Name</th><th>Tenant(s)</th><th>Log-Typ</th><th>Zeitraum</th>
+              <th>Intervall</th><th>Letzter Lauf</th><th>Aktiv</th><th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <template x-for="s in schedules" :key="s.id">
+              <tr>
+                <td x-text="s.name"></td>
+                <td class="text-xs" x-text="scheduleTenantLabel(s)"></td>
+                <td class="text-xs" x-text="s.log_types.join(', ')"></td>
+                <td class="text-xs" x-text="s.hours === 0 ? 'Alle' : `${s.hours}h`"></td>
+                <td class="text-xs" x-text="`${s.interval_minutes} min`"></td>
+                <td class="text-xs text-base-content/60" x-text="s.last_run_at || '—'"></td>
+                <td>
+                  <input type="checkbox" class="toggle toggle-sm toggle-success"
+                         :checked="s.enabled" @change="toggleSchedule(s)" />
+                </td>
+                <td class="flex gap-1">
+                  <button class="btn btn-ghost btn-xs" @click="openScheduleModal(s)">✏️</button>
+                  <button class="btn btn-ghost btn-xs text-error" @click="confirmDeleteScheduleId = s.id">🗑️</button>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
 </div>
+
+<!-- ── Modal: Fetch Schedule ── -->
+<dialog class="modal" :class="scheduleModal.open && 'modal-open'">
+  <div class="modal-box max-w-lg">
+    <h3 class="font-bold text-lg mb-4" x-text="scheduleModal.editing ? 'Zeitplan bearbeiten' : 'Neuer Zeitplan'"></h3>
+    <div class="space-y-3">
+      <div class="form-control">
+        <label class="label py-0 pb-1"><span class="label-text text-sm">Name</span></label>
+        <input type="text" class="input input-bordered input-sm" placeholder="z.B. PRD alle 15 Min"
+               x-model="scheduleModal.form.name" />
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <p class="text-sm font-semibold mb-2">Tenant</p>
+          <div class="flex flex-col gap-1 max-h-32 overflow-y-auto">
+            <template x-for="t in tenants" :key="t.id">
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" class="checkbox checkbox-xs checkbox-primary"
+                  :checked="scheduleModal.form.tenants.includes(t.id)"
+                  @change="scheduleModal.form.tenants.includes(t.id) ? scheduleModal.form.tenants = scheduleModal.form.tenants.filter(x => x !== t.id) : scheduleModal.form.tenants.push(t.id)" />
+                <span class="text-sm" x-text="t.name"></span>
+              </label>
+            </template>
+          </div>
+        </div>
+        <div>
+          <p class="text-sm font-semibold mb-2">Log-Typ</p>
+          <div class="flex flex-col gap-1">
+            <template x-for="[val,label] in [['trace','trace'],['http','http']]" :key="val">
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" class="checkbox checkbox-xs checkbox-primary"
+                  :checked="scheduleModal.form.log_types.includes(val)"
+                  @change="scheduleModal.form.log_types.includes(val) ? scheduleModal.form.log_types = scheduleModal.form.log_types.filter(x => x !== val) : scheduleModal.form.log_types.push(val)" />
+                <span class="text-sm" x-text="label"></span>
+              </label>
+            </template>
+          </div>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div class="form-control">
+          <label class="label py-0 pb-1"><span class="label-text text-sm">Zeitraum pro Lauf (Stunden, 0 = alle)</span></label>
+          <input type="number" min="0" class="input input-bordered input-sm" x-model="scheduleModal.form.hours" />
+        </div>
+        <div class="form-control">
+          <label class="label py-0 pb-1"><span class="label-text text-sm">Intervall (Minuten)</span></label>
+          <input type="number" min="1" class="input input-bordered input-sm" x-model="scheduleModal.form.interval_minutes" />
+        </div>
+      </div>
+      <label class="flex items-center gap-2 cursor-pointer">
+        <input type="checkbox" class="toggle toggle-sm toggle-success" x-model="scheduleModal.form.enabled" />
+        <span class="text-sm">Aktiv</span>
+      </label>
+    </div>
+    <div class="modal-action">
+      <button class="btn btn-primary btn-sm" @click="saveSchedule()">Speichern</button>
+      <button class="btn btn-ghost btn-sm"   @click="scheduleModal.open=false">Abbrechen</button>
+    </div>
+  </div>
+  <form method="dialog" class="modal-backdrop" @click="scheduleModal.open=false"><button>close</button></form>
+</dialog>
+
+<!-- ── Modal: Confirm delete schedule ── -->
+<dialog class="modal" :class="confirmDeleteScheduleId && 'modal-open'">
+  <div class="modal-box max-w-sm">
+    <h3 class="font-bold text-lg mb-2">Zeitplan löschen?</h3>
+    <p class="text-sm text-base-content/70">Der geplante Abruf wird endgültig entfernt.</p>
+    <div class="modal-action">
+      <button class="btn btn-error btn-sm" @click="deleteSchedule(confirmDeleteScheduleId)">Löschen</button>
+      <button class="btn btn-ghost btn-sm" @click="confirmDeleteScheduleId=null">Abbrechen</button>
+    </div>
+  </div>
+  <form method="dialog" class="modal-backdrop" @click="confirmDeleteScheduleId=null"><button>close</button></form>
+</dialog>
 
 <!-- ═══════════════════════════════ STATS ════════════════════════════════════ -->
 <div x-show="page==='stats'" class="container mx-auto p-4 max-w-screen-xl">
@@ -445,6 +584,28 @@
         <span class="font-mono" x-text="(dbInfo.entries||0).toLocaleString()"></span>
       </div>
       <button class="btn btn-sm btn-error btn-outline" @click="confirmClearOpen=true">🗑 Datenbank leeren</button>
+
+      <div class="divider my-2"></div>
+
+      <h3 class="font-semibold text-sm mb-2">Logs bereinigen</h3>
+      <p class="text-xs text-base-content/50 mb-3">Löscht nur Einträge, die älter als der gewählte Zeitraum sind — optional
+        auf einen Tenant eingeschränkt. Heruntergeladene Dateien bleiben erhalten.</p>
+      <div class="flex flex-wrap gap-2 items-end">
+        <div class="form-control">
+          <label class="label py-0 pb-1"><span class="label-text text-xs">Tenant</span></label>
+          <select class="select select-bordered select-sm" x-model="cleanup.tenant">
+            <option value="all">Alle Tenants</option>
+            <template x-for="t in tenants" :key="t.id">
+              <option :value="t.id" x-text="t.name"></option>
+            </template>
+          </select>
+        </div>
+        <div class="form-control">
+          <label class="label py-0 pb-1"><span class="label-text text-xs">Älter als (Tage)</span></label>
+          <input type="number" min="1" class="input input-bordered input-sm w-28" x-model.number="cleanup.olderThanDays" />
+        </div>
+        <button class="btn btn-sm btn-warning btn-outline" @click="confirmCleanupOpen=true">🧹 Bereinigen</button>
+      </div>
     </div>
   </div>
 </div>
@@ -485,11 +646,35 @@
     <h3 class="font-bold text-lg">Datenbank wirklich leeren?</h3>
     <p class="py-3 text-sm">Alle importierten Log-Einträge werden gelöscht. Heruntergeladene Dateien bleiben erhalten.</p>
     <div class="modal-action">
-      <button class="btn btn-error btn-sm" @click="clearDb()">Ja, leeren</button>
-      <button class="btn btn-ghost btn-sm" @click="confirmClearOpen=false">Abbrechen</button>
+      <button class="btn btn-error btn-sm" :class="clearDbBusy && 'btn-disabled'" @click="clearDb()">
+        <span x-show="clearDbBusy" class="loading loading-spinner loading-xs"></span>
+        <span x-text="clearDbBusy ? 'Leere…' : 'Ja, leeren'"></span>
+      </button>
+      <button class="btn btn-ghost btn-sm" :disabled="clearDbBusy" @click="confirmClearOpen=false">Abbrechen</button>
     </div>
   </div>
-  <form method="dialog" class="modal-backdrop" @click="confirmClearOpen=false"><button>close</button></form>
+  <form method="dialog" class="modal-backdrop" @click="!clearDbBusy && (confirmClearOpen=false)"><button>close</button></form>
+</dialog>
+
+<!-- ── Modal: Confirm cleanup (tenant + Zeitraum) ── -->
+<dialog class="modal" :class="confirmCleanupOpen && 'modal-open'">
+  <div class="modal-box">
+    <h3 class="font-bold text-lg">Logs bereinigen?</h3>
+    <p class="py-3 text-sm">
+      Löscht alle Einträge
+      <strong x-text="cleanup.tenant==='all' ? 'aller Tenants' : (tenants.find(t=>t.id===cleanup.tenant)?.name || cleanup.tenant)"></strong>,
+      die älter als <strong x-text="cleanup.olderThanDays"></strong> Tage sind. Diese Aktion kann nicht rückgängig
+      gemacht werden.
+    </p>
+    <div class="modal-action">
+      <button class="btn btn-warning btn-sm" :class="cleanup.busy && 'btn-disabled'" @click="cleanupLogs()">
+        <span x-show="cleanup.busy" class="loading loading-spinner loading-xs"></span>
+        <span x-text="cleanup.busy ? 'Bereinige…' : 'Ja, bereinigen'"></span>
+      </button>
+      <button class="btn btn-ghost btn-sm" :disabled="cleanup.busy" @click="confirmCleanupOpen=false">Abbrechen</button>
+    </div>
+  </div>
+  <form method="dialog" class="modal-backdrop" @click="!cleanup.busy && (confirmCleanupOpen=false)"><button>close</button></form>
 </dialog>
 
 <!-- ── Toast ── -->

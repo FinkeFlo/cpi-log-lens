@@ -1,5 +1,7 @@
 # CPI Log Lens
 
+<img src="frontend/logo.jpg" width="128" align="right" style="border-radius: 12px" />
+
 A self-hosted web application for downloading, storing, and analyzing SAP Cloud Integration (CPI) logs.
 
 ## Features
