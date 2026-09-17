@@ -154,7 +154,7 @@
                 <span :class="`badge badge-xs ${row.level==='ERROR'?'badge-error':row.level==='WARN'?'badge-warning':row.level==='INFO'?'badge-success':'badge-ghost'}`"
                       x-text="row.level"></span>
               </td>
-              <td class="font-mono-xs max-w-xs" :title="shortIflow(row.iflow)" x-text="shortIflow(row.iflow)"></td>
+              <td class="font-mono-xs max-w-xs truncate" :title="shortIflow(row.iflow)" x-text="shortIflow(row.iflow)"></td>
               <td class="text-xs text-base-content/80 max-w-0">
                 <div class="truncate" x-text="row.message"></div>
               </td>
@@ -201,7 +201,7 @@
 <!-- ── Log Detail Modal ── -->
 
 <!-- ═══════════════════════════════ FETCH ════════════════════════════════════ -->
-<div x-show="page==='fetch'" class="container mx-auto p-4 max-w-2xl">
+<div x-show="page==='fetch'" class="container mx-auto p-4 max-w-4xl">
   <div class="card bg-base-100 shadow">
     <div class="card-body">
       <h2 class="card-title mb-4">📥 Logs herunterladen</h2>
@@ -338,9 +338,11 @@
                   <input type="checkbox" class="toggle toggle-sm toggle-success"
                          :checked="s.enabled" @change="toggleSchedule(s)" />
                 </td>
-                <td class="flex gap-1">
-                  <button class="btn btn-ghost btn-xs" @click="openScheduleModal(s)">✏️</button>
-                  <button class="btn btn-ghost btn-xs text-error" @click="confirmDeleteScheduleId = s.id">🗑️</button>
+                <td class="whitespace-nowrap">
+                  <div class="flex gap-1">
+                    <button class="btn btn-ghost btn-xs" @click="openScheduleModal(s)">✏️</button>
+                    <button class="btn btn-ghost btn-xs text-error" @click="confirmDeleteScheduleId = s.id">🗑️</button>
+                  </div>
                 </td>
               </tr>
             </template>
