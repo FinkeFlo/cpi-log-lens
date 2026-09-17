@@ -30,6 +30,12 @@ MOCK      = os.getenv("MOCK", "false").lower() == "true"
 # decompression, ~30-90s/file observed) so parallelism is the main client-side
 # lever we have; tune via env if your tenant tolerates more/less concurrency.
 FETCH_CONCURRENCY = int(os.getenv("FETCH_CONCURRENCY", "4"))
+# Optional automatic retention: if set (>0), a background task periodically
+# deletes log entries older than this many days across all tenants, so DB
+# size doesn't grow unbounded without someone remembering to call
+# /api/db/cleanup manually. Unset/0 (default) disables it — fully opt-in.
+RETENTION_DAYS         = int(os.getenv("RETENTION_DAYS", "0"))
+RETENTION_CHECK_HOURS  = float(os.getenv("RETENTION_CHECK_HOURS", "24"))
 MOCK_DIR  = Path(__file__).parent / "mock"
 FRONTEND  = Path(os.getenv("FRONTEND_DIR", str(Path(__file__).parent.parent / "frontend")))
 
@@ -98,6 +104,31 @@ async def startup():
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     await database.init_db(DB_PATH)
     await _load_tenants_from_json()
+    if RETENTION_DAYS > 0:
+        asyncio.create_task(_retention_loop())
+
+
+async def _retention_loop():
+    """Background task: periodically delete logs older than RETENTION_DAYS.
+    Runs once immediately at startup, then every RETENTION_CHECK_HOURS.
+    Skips a tick (retrying next interval) while a fetch job is active —
+    DuckDB allows only one writer at a time, so running this concurrently
+    with an in-progress import would just serialize behind/ahead of it and
+    slow down the download instead of running for free in the background."""
+    while True:
+        if _active_job and _active_job.status == "running":
+            await asyncio.sleep(RETENTION_CHECK_HOURS * 3600)
+            continue
+        try:
+            conn = await database.get_db(DB_PATH)
+            result = await database.cleanup_old_logs(conn, RETENTION_DAYS)
+            if result["deleted"]:
+                print(f"[retention] Deleted {result['deleted']} log entries "
+                      f"older than {RETENTION_DAYS} days ({result['remaining']} remaining).")
+        except Exception as e:
+            print(f"[retention] Cleanup failed: {e}")
+        await asyncio.sleep(RETENTION_CHECK_HOURS * 3600)
+
 
 async def _load_tenants_from_json():
     """Load tenants from TENANTS_CONFIG JSON file (default: /config/tenants.json)."""
