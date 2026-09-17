@@ -365,7 +365,14 @@ async def query_logs(
             params.append(date_from)
         if date_to:
             conditions.append("timestamp <= ?")
-            params.append(date_to + " 23:59:59")
+            # date_to accepts either a bare date ("YYYY-MM-DD", as sent by the
+            # Browse UI's <input type="date">) or a full datetime ("YYYY-MM-DD
+            # HH:MM:SS", per the /api/query contract). A bare date is expanded
+            # to the end of that day; a full datetime is used as-is — blindly
+            # appending " 23:59:59" to an already-complete datetime produced
+            # an invalid timestamp string (e.g. "... 00:00:00 23:59:59") and a
+            # 500 error for every /api/query call that passed a full datetime.
+            params.append(date_to if len(date_to) > 10 else date_to + " 23:59:59")
 
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
