@@ -14,6 +14,9 @@ function App() {
     statsLoading: false,
     dbInfo: {},
     confirmClearOpen: false,
+    confirmCleanupOpen: false,
+    cleanup: { tenant: 'all', olderThanDays: 30, busy: false },
+    clearDbBusy: false,
 
     // Query params for Browse
     q: { tenant: '', level: '', iflow: '', grep: '', date_from: '', date_to: '' },
@@ -30,6 +33,7 @@ function App() {
       done:        0,
       total:       0,
       currentFile: '',
+      currentTenant: '',
       imported:    0,
       errorMsg:    '',
     },
@@ -310,6 +314,7 @@ function App() {
         this.fetch.done        = data.done;
         this.fetch.total       = data.total;
         this.fetch.currentFile = data.current_file;
+        this.fetch.currentTenant = data.current_tenant;
         this.fetch.imported    = data.imported;
         this.fetch.errorMsg    = data.error_msg;
 
@@ -330,6 +335,7 @@ function App() {
           this.fetch.done        = ev.done;
           this.fetch.total       = ev.total;
           this.fetch.currentFile = ev.current_file;
+          this.fetch.currentTenant = ev.current_tenant;
           this.fetch.imported    = ev.imported;
           this.fetch.errorMsg    = ev.error_msg;
           break;
@@ -338,6 +344,7 @@ function App() {
           break;
         case 'files_found':
           this.fetch.total     = ev.count;
+          this.fetch.currentTenant = ev.tenant;
           this.fetch.statusMsg = `${ev.tenant} / ${ev.log_type}: ${ev.count} Dateien gefunden`;
           break;
         case 'progress':
@@ -372,6 +379,27 @@ function App() {
           // Final refresh of Browse list
           if (this.page === 'browse') this.search(1);
           break;
+        case 'cancelled':
+          this.fetch.status      = 'cancelled';
+          this.fetch.imported    = ev.imported;
+          this.fetch.statusMsg   = 'Abgebrochen';
+          if (this._fetchEventSource) {
+            this._fetchEventSource.close();
+            this._fetchEventSource = null;
+          }
+          if (this.page === 'browse') this.search(1);
+          break;
+      }
+    },
+
+    /** Request cancellation of the currently running fetch job. */
+    async cancelFetch() {
+      if (this.fetch.status !== 'running') return;
+      this.fetch.statusMsg = 'Abbruch angefordert …';
+      try {
+        await fetch('/api/fetch/cancel', { method: 'POST' });
+      } catch (e) {
+        console.error('cancelFetch:', e);
       }
     },
 
@@ -485,11 +513,47 @@ function App() {
     },
 
     async clearDb() {
-      await fetch('/api/db/clear', { method: 'POST' });
-      this.confirmClearOpen = false;
-      await this.loadDbInfo();
-      await this.search();
-      this.notify('Datenbank geleert');
+      this.clearDbBusy = true;
+      try {
+        await fetch('/api/db/clear', { method: 'POST' });
+        this.confirmClearOpen = false;
+        await this.loadDbInfo();
+        await this.search();
+        this.notify('Datenbank geleert');
+      } catch (e) {
+        console.error('clearDb:', e);
+        this.notify('Leeren fehlgeschlagen', 'error');
+      } finally {
+        this.clearDbBusy = false;
+      }
+    },
+
+    async cleanupLogs() {
+      this.cleanup.busy = true;
+      try {
+        const res = await fetch('/api/db/cleanup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            older_than_days: this.cleanup.olderThanDays,
+            tenant: this.cleanup.tenant,
+          }),
+        });
+        const data = await res.json();
+        this.confirmCleanupOpen = false;
+        if (!res.ok || !data.ok) {
+          this.notify(data.detail || 'Bereinigung fehlgeschlagen', 'error');
+          return;
+        }
+        await this.loadDbInfo();
+        await this.search();
+        this.notify(`${data.deleted.toLocaleString()} Einträge gelöscht (${data.remaining.toLocaleString()} verbleiben)`);
+      } catch (e) {
+        console.error('cleanupLogs:', e);
+        this.notify('Bereinigung fehlgeschlagen', 'error');
+      } finally {
+        this.cleanup.busy = false;
+      }
     },
   };
 }
