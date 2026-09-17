@@ -3,6 +3,7 @@ CPI Log Explorer — FastAPI Backend
 Serves the frontend and provides REST + SSE API.
 """
 import asyncio
+import gzip
 import json
 import os
 import time
@@ -24,6 +25,11 @@ import api as cpi_api
 DB_PATH   = Path(os.getenv("DB_PATH",   "cpi_logs.duckdb"))
 LOGS_DIR  = Path(os.getenv("LOGS_DIR",  "logs"))
 MOCK      = os.getenv("MOCK", "false").lower() == "true"
+# Concurrent file downloads per tenant/log_type during a fetch job. CPI's
+# LogFiles $value endpoint has high per-request latency (server-side
+# decompression, ~30-90s/file observed) so parallelism is the main client-side
+# lever we have; tune via env if your tenant tolerates more/less concurrency.
+FETCH_CONCURRENCY = int(os.getenv("FETCH_CONCURRENCY", "4"))
 MOCK_DIR  = Path(__file__).parent / "mock"
 FRONTEND  = Path(os.getenv("FRONTEND_DIR", str(Path(__file__).parent.parent / "frontend")))
 
@@ -33,13 +39,16 @@ database.DB_PATH = DB_PATH
 @dataclass
 class FetchJob:
     id:            str
-    status:        str  = "running"  # running | done | error
+    status:        str  = "running"  # running | done | error | cancelled
     status_msg:    str  = ""
     done:          int  = 0
     total:         int  = 0
     current_file:  str  = ""
+    current_tenant:   str = ""
+    current_log_type: str = ""
     imported:      int  = 0
     error_msg:     str  = ""
+    cancel_requested: bool = False
     # Listeners waiting for new events (one queue per SSE subscriber)
     _listeners:    list = field(default_factory=list)
 
@@ -89,7 +98,6 @@ async def startup():
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     await database.init_db(DB_PATH)
     await _load_tenants_from_json()
-
 
 async def _load_tenants_from_json():
     """Load tenants from TENANTS_CONFIG JSON file (default: /config/tenants.json)."""
@@ -237,9 +245,25 @@ async def fetch_status():
         "done":         _active_job.done,
         "total":        _active_job.total,
         "current_file": _active_job.current_file,
+        "current_tenant":   _active_job.current_tenant,
+        "current_log_type": _active_job.current_log_type,
         "imported":     _active_job.imported,
         "error_msg":    _active_job.error_msg,
     }
+
+
+@app.post("/api/fetch/cancel")
+async def fetch_cancel():
+    """Request cancellation of the active job. _run_fetch() checks
+    `cancel_requested` at each file boundary and stops cleanly (finishes the
+    file currently in flight rather than being killed mid-write, so the DB
+    stays consistent) instead of requiring a full container restart."""
+    if not _active_job or _active_job.status != "running":
+        return {"ok": False, "error": "Kein Job läuft aktuell"}
+    _active_job.cancel_requested = True
+    _active_job.push({"type": "status", "msg": "Abbruch angefordert …"})
+    return {"ok": True, "job_id": _active_job.id}
+
 
 
 @app.get("/api/fetch/stream")
@@ -265,6 +289,8 @@ async def fetch_stream():
             "done":         job.done,
             "total":        job.total,
             "current_file": job.current_file,
+            "current_tenant":   job.current_tenant,
+            "current_log_type": job.current_log_type,
             "imported":     job.imported,
             "error_msg":    job.error_msg,
         })
@@ -317,110 +343,141 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
             cutoff_ms = int((time.time() - body.hours * 3600) * 1000)
 
         for tenant in tenants:
-            for lt in log_types:
-                job.status_msg = f"🔑 Token für {tenant['name']} …"
-                job.push({"type": "status", "msg": job.status_msg})
+            if job.cancel_requested:
+                break
+            # One shared httpx client per tenant, reused for the token call,
+            # file listing and every file download across all log_types —
+            # avoids a fresh TCP/TLS handshake per request.
+            client = cpi_api.make_client()
+            try:
+                for lt in log_types:
+                    if job.cancel_requested:
+                        break
+                    job.current_tenant   = tenant["name"]
+                    job.current_log_type = lt
+                    job.status_msg = f"🔑 Token für {tenant['name']} …"
+                    job.push({"type": "status", "msg": job.status_msg})
 
-                if MOCK:
-                    mock_files = list(MOCK_DIR.glob("*.log"))
-                    job.total      = len(mock_files)
-                    job.status_msg = f"{tenant['name']} / {lt}: {len(mock_files)} Dateien"
-                    job.push({"type": "files_found", "count": len(mock_files),
-                               "tenant": tenant["name"], "log_type": lt})
-                    for i, mf in enumerate(mock_files, 1):
-                        already = await database.get_imported_lines(conn, tenant["id"], mf.name)
-                        rows    = database.parse_log_file(tenant["id"], lt, mf)
-                        new_rows = rows[already:]
-                        newly_imported = await database.import_rows(conn, new_rows, tenant["id"], mf.name) if new_rows else 0
-                        job.imported  += newly_imported
-                        job.done       = i
-                        job.current_file = mf.name
-                        job.status_msg = f"{mf.name} ({i}/{len(mock_files)})"
-                        job.push({"type": "progress", "done": i, "total": len(mock_files),
-                                   "file": mf.name, "new_rows": newly_imported,
-                                   "imported": job.imported})
-                        await asyncio.sleep(0.05)
-                else:
-                    try:
-                        token = await cpi_api.get_token(
-                            tenant["oauth_url"], tenant["client_id"], tenant["client_secret"]
-                        )
-                    except Exception as e:
-                        job.push({"type": "error", "msg": f"Token-Fehler für {tenant['name']}: {e}"})
-                        continue
+                    if MOCK:
+                        mock_files = list(MOCK_DIR.glob("*.log"))
+                        job.total      = len(mock_files)
+                        job.status_msg = f"{tenant['name']} / {lt}: {len(mock_files)} Dateien"
+                        job.push({"type": "files_found", "count": len(mock_files),
+                                   "tenant": tenant["name"], "log_type": lt})
+                        for i, mf in enumerate(mock_files, 1):
+                            if job.cancel_requested:
+                                break
+                            already = (await database.get_file_import(conn, tenant["id"], mf.name))["lines"]
+                            rows    = database.parse_log_file(tenant["id"], lt, mf)
+                            new_rows = rows[already:]
+                            newly_imported = await database.import_rows(conn, new_rows, tenant["id"], mf.name, len(rows)) if new_rows else 0
+                            job.imported  += newly_imported
+                            job.done       = i
+                            job.current_file = mf.name
+                            job.status_msg = f"{tenant['name']} / {lt}: {mf.name} ({i}/{len(mock_files)})"
+                            job.push({"type": "progress", "done": i, "total": len(mock_files),
+                                       "file": mf.name, "new_rows": newly_imported,
+                                       "imported": job.imported})
+                            await asyncio.sleep(0.05)
+                    else:
+                        try:
+                            token = await cpi_api.get_token(
+                                tenant["oauth_url"], tenant["client_id"], tenant["client_secret"], client
+                            )
+                        except Exception as e:
+                            job.push({"type": "error", "msg": f"Token-Fehler für {tenant['name']}: {e}"})
+                            continue
 
-                    try:
-                        files = await cpi_api.list_remote_files(tenant["api_url"], token, lt)
-                    except Exception as e:
-                        job.push({"type": "error", "msg": f"Fehler beim Abrufen der Dateiliste: {e}"})
-                        continue
+                        try:
+                            files = await cpi_api.list_remote_files(tenant["api_url"], token, lt, client)
+                        except Exception as e:
+                            job.push({"type": "error", "msg": f"Fehler beim Abrufen der Dateiliste: {e}"})
+                            continue
 
-                    if cutoff_ms > 0:
-                        files = [f for f in files if cpi_api.epoch_ms(f.get("LastModified", "")) > cutoff_ms]
+                        if cutoff_ms > 0:
+                            files = [f for f in files if cpi_api.epoch_ms(f.get("LastModified", "")) > cutoff_ms]
 
-                    job.total      = len(files)
-                    job.status_msg = f"{tenant['name']} / {lt}: {len(files)} Dateien"
-                    job.push({"type": "files_found", "count": len(files),
-                               "tenant": tenant["name"], "log_type": lt})
+                        job.total      = len(files)
+                        job.status_msg = f"{tenant['name']} / {lt}: {len(files)} Dateien"
+                        job.push({"type": "files_found", "count": len(files),
+                                   "tenant": tenant["name"], "log_type": lt})
 
-                    tenant_log_dir = LOGS_DIR / tenant["id"]
-                    tenant_log_dir.mkdir(parents=True, exist_ok=True)
+                        tenant_log_dir = LOGS_DIR / tenant["id"]
+                        tenant_log_dir.mkdir(parents=True, exist_ok=True)
 
-                    semaphore = asyncio.Semaphore(4)
-                    counters  = {"done": 0, "imported": job.imported}
+                        semaphore = asyncio.Semaphore(FETCH_CONCURRENCY)
+                        counters  = {"done": 0, "imported": job.imported}
 
-                    async def process_file(f):
-                        async with semaphore:
-                            dest        = tenant_log_dir / f["Name"]
-                            remote_size = int(f.get("Size", 0))
-                            file_import = await database.get_file_import(conn, tenant["id"], f["Name"])
+                        async def process_file(f):
+                            async with semaphore:
+                                if job.cancel_requested:
+                                    return
+                                dest        = tenant_log_dir / f["Name"]
+                                remote_size = int(f.get("Size", 0))
+                                file_import = await database.get_file_import(conn, tenant["id"], f["Name"])
 
-                            # Backfill size from local file if missing (legacy imports)
-                            if file_import["lines"] > 0 and file_import["size"] == 0 and dest.exists():
-                                local_size = dest.stat().st_size
-                                await database.update_file_import_size(conn, tenant["id"], f["Name"], local_size)
-                                file_import["size"] = local_size
+                                # Backfill size from local file if missing (legacy imports)
+                                if file_import["lines"] > 0 and file_import["size"] == 0 and dest.exists():
+                                    local_size = dest.stat().st_size
+                                    await database.update_file_import_size(conn, tenant["id"], f["Name"], local_size)
+                                    file_import["size"] = local_size
 
-                            counters["done"] += 1
-                            i = counters["done"]
-                            job.done         = i
-                            job.current_file = f["Name"]
-                            job.status_msg   = f"{f['Name']} ({i}/{len(files)})"
+                                counters["done"] += 1
+                                i = counters["done"]
+                                job.done         = i
+                                job.current_file = f["Name"]
+                                job.status_msg   = f"{tenant['name']} / {lt}: {f['Name']} ({i}/{len(files)})"
 
-                            # Skip if already fully imported
-                            if file_import["size"] == remote_size and file_import["lines"] > 0:
-                                job.push({"type": "progress", "done": i, "total": len(files),
-                                           "file": f["Name"], "new_rows": 0, "imported": counters["imported"]})
-                                return
-
-                            # Download if new or grown
-                            if not dest.exists() or dest.stat().st_size != remote_size:
-                                try:
-                                    content = await cpi_api.download_file(
-                                        tenant["api_url"], token, f["Name"], f["Application"]
-                                    )
-                                    dest.write_bytes(content)
-                                except Exception as e:
-                                    job.push({"type": "warn", "msg": f"Download fehlgeschlagen: {f['Name']}: {e}"})
+                                # Skip if already fully imported
+                                if file_import["size"] == remote_size and file_import["lines"] > 0:
                                     job.push({"type": "progress", "done": i, "total": len(files),
                                                "file": f["Name"], "new_rows": 0, "imported": counters["imported"]})
                                     return
 
-                            rows      = database.parse_log_file(tenant["id"], lt, dest)
-                            new_rows  = rows[file_import["lines"]:]
-                            newly_imported = await database.import_rows(conn, new_rows, tenant["id"], f["Name"], remote_size) if new_rows else 0
-                            counters["imported"] += newly_imported
-                            job.imported          = counters["imported"]
+                                # Download if new or grown
+                                if not dest.exists() or dest.stat().st_size != remote_size:
+                                    try:
+                                        content = await cpi_api.download_file(
+                                            tenant["api_url"], token, f["Name"], f["Application"], client
+                                        )
+                                        # CPI's LogFiles $value endpoint decompresses server-side
+                                        # before streaming even though the filename/Content-Type say
+                                        # .gz (~30-40x larger than the announced Size). Re-compress
+                                        # before writing to disk to actually save space — raw log
+                                        # files must be kept (per requirement) but don't need to stay
+                                        # as plaintext. parse_log_file() already auto-detects gzip via
+                                        # magic bytes, so reading is unaffected.
+                                        if not content.startswith(b"\x1f\x8b"):
+                                            content = await asyncio.to_thread(gzip.compress, content)
+                                        await asyncio.to_thread(dest.write_bytes, content)
+                                    except Exception as e:
+                                        job.push({"type": "warn", "msg": f"Download fehlgeschlagen: {f['Name']}: {e}"})
+                                        job.push({"type": "progress", "done": i, "total": len(files),
+                                                   "file": f["Name"], "new_rows": 0, "imported": counters["imported"]})
+                                        return
 
-                            job.push({"type": "progress", "done": i, "total": len(files),
-                                       "file": f["Name"], "new_rows": newly_imported,
-                                       "imported": counters["imported"]})
+                                rows      = database.parse_log_file(tenant["id"], lt, dest)
+                                new_rows  = rows[file_import["lines"]:]
+                                newly_imported = await database.import_rows(conn, new_rows, tenant["id"], f["Name"], len(rows), remote_size) if new_rows else 0
+                                counters["imported"] += newly_imported
+                                job.imported          = counters["imported"]
 
-                    await asyncio.gather(*[process_file(f) for f in files])
+                                job.push({"type": "progress", "done": i, "total": len(files),
+                                           "file": f["Name"], "new_rows": newly_imported,
+                                           "imported": counters["imported"]})
 
-        job.status     = "done"
-        job.status_msg = "Abgeschlossen"
-        job.push({"type": "done", "imported": job.imported})
+                        await asyncio.gather(*[process_file(f) for f in files])
+            finally:
+                await client.aclose()
+
+        if job.cancel_requested:
+            job.status     = "cancelled"
+            job.status_msg = "Abgebrochen"
+            job.push({"type": "cancelled", "imported": job.imported})
+        else:
+            job.status     = "done"
+            job.status_msg = "Abgeschlossen"
+            job.push({"type": "done", "imported": job.imported})
 
     except Exception as e:
         job.status    = "error"
