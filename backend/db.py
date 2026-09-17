@@ -3,6 +3,7 @@ import re
 import gzip
 import asyncio
 import duckdb
+import pyarrow as pa
 from pathlib import Path
 from typing import Optional
 
@@ -26,23 +27,29 @@ CREATE TABLE IF NOT EXISTS logs (
     tenant      TEXT NOT NULL,
     log_type    TEXT NOT NULL,
     filename    TEXT NOT NULL,
-    timestamp   TEXT NOT NULL,
+    timestamp   TIMESTAMP NOT NULL,
     level       TEXT,
     logger      TEXT,
     iflow       TEXT,
     message     TEXT,
     ip          TEXT,
     node        TEXT,
-    imported_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (tenant, log_type, filename, timestamp, level, logger, message)
+    imported_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
--- NOTE: no secondary indexes on `logs` beyond the UNIQUE constraint above.
--- Benchmarked: DuckDB's vectorized scans make these indexes give negligible
--- read speedup (<3% on a 1M-row filter+sort query) while adding real per-row
--- insert/maintenance overhead that grows with table size (was the dominant
--- cost of import_rows() at >1M rows). Drop any indexes created by older
--- versions of this schema so existing DBs benefit too.
+-- NOTE: no secondary indexes and no UNIQUE constraint on `logs`.
+-- Benchmarked: secondary indexes give negligible read speedup (<3% on a
+-- 1M-row filter+sort query) while adding real per-row insert/maintenance
+-- overhead that grows with table size. The UNIQUE constraint that used to
+-- sit here (tenant, log_type, filename, timestamp, level, logger, message)
+-- has the *same* problem but far worse: DuckDB maintains an ART index to
+-- enforce it, and per-row conflict checking against that index gets
+-- progressively slower as the table grows — measured degrading from ~9.5 to
+-- ~3 files/hour (100% CPU) once `logs` passed ~5.8M rows. Duplicate
+-- protection across fetch runs is instead provided entirely by
+-- `file_imports.lines` (only rows beyond the last-imported line are ever
+-- parsed/inserted into `import_rows()`) — see migration below for how this
+-- constraint is retroactively dropped from existing DB files.
 DROP INDEX IF EXISTS idx_logs_tenant;
 DROP INDEX IF EXISTS idx_logs_level;
 DROP INDEX IF EXISTS idx_logs_iflow;
@@ -164,6 +171,78 @@ class DuckDBConnection:
 _db_instance: Optional[DuckDBConnection] = None
 
 
+def _migrate_drop_logs_unique_constraint(conn: duckdb.DuckDBPyConnection):
+    """One-off migration for DBs created before the UNIQUE constraint on `logs`
+    was removed (see comment in SCHEMA). `CREATE TABLE IF NOT EXISTS` never
+    retroactively changes an existing table's constraints, so DBs created by an
+    older version of this app keep the old, insert-performance-killing UNIQUE
+    constraint forever unless we explicitly rebuild the table here. Idempotent:
+    does nothing once the constraint is gone."""
+    has_unique = conn.execute("""
+        SELECT 1 FROM duckdb_constraints()
+        WHERE table_name = 'logs' AND constraint_type = 'UNIQUE'
+        LIMIT 1
+    """).fetchone()
+    if not has_unique:
+        return
+
+    print("[migrate] Dropping legacy UNIQUE constraint on logs (rebuilding table)...")
+    conn.execute("""
+        CREATE TABLE logs_new (
+            id          BIGINT PRIMARY KEY DEFAULT nextval('logs_id_seq'),
+            tenant      TEXT NOT NULL,
+            log_type    TEXT NOT NULL,
+            filename    TEXT NOT NULL,
+            timestamp   TEXT NOT NULL,
+            level       TEXT,
+            logger      TEXT,
+            iflow       TEXT,
+            message     TEXT,
+            ip          TEXT,
+            node        TEXT,
+            imported_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("""
+        INSERT INTO logs_new (id, tenant, log_type, filename, timestamp, level,
+                               logger, iflow, message, ip, node, imported_at)
+        SELECT id, tenant, log_type, filename, timestamp, level,
+               logger, iflow, message, ip, node, imported_at
+        FROM logs
+    """)
+    conn.execute("DROP TABLE logs")
+    conn.execute("ALTER TABLE logs_new RENAME TO logs")
+    # Keep the sequence ahead of the max copied id so future inserts don't collide.
+    max_id = conn.execute("SELECT COALESCE(MAX(id), 0) FROM logs").fetchone()[0]
+    conn.execute(f"ALTER SEQUENCE logs_id_seq RESTART WITH {max_id + 1}")
+    conn.execute("CHECKPOINT")
+    print("[migrate] Done — UNIQUE constraint removed from logs.")
+
+
+def _migrate_timestamp_to_native(conn: duckdb.DuckDBPyConnection):
+    """One-off migration for DBs created before `timestamp` was a native
+    TIMESTAMP column (older versions stored it as TEXT). Native TIMESTAMP
+    enables DuckDB zonemap pruning on time-range filters (used everywhere:
+    query_logs, get_stats, cleanup_old_logs) and stores more compactly than
+    the equivalent TEXT. Idempotent: no-op once the column is already
+    TIMESTAMP. Safe to run on any size table — all values in `logs.timestamp`
+    are written by parse_log_file() in the strict 'YYYY-MM-DD HH:MM:SS'
+    format (see LINE_RE), which DuckDB parses unambiguously."""
+    col_type = conn.execute("""
+        SELECT data_type FROM duckdb_columns()
+        WHERE table_name = 'logs' AND column_name = 'timestamp'
+    """).fetchone()
+    if not col_type or col_type[0].upper() == "TIMESTAMP":
+        return
+
+    print("[migrate] Converting logs.timestamp from TEXT to native TIMESTAMP...")
+    conn.execute(
+        "ALTER TABLE logs ALTER COLUMN timestamp TYPE TIMESTAMP USING CAST(timestamp AS TIMESTAMP)"
+    )
+    conn.execute("CHECKPOINT")
+    print("[migrate] Done — logs.timestamp is now native TIMESTAMP.")
+
+
 async def init_db(path: Path = DB_PATH):
     global _db_instance
     conn = duckdb.connect(str(path))
@@ -171,6 +250,8 @@ async def init_db(path: Path = DB_PATH):
         stmt = stmt.strip()
         if stmt:
             conn.execute(stmt)
+    _migrate_drop_logs_unique_constraint(conn)
+    _migrate_timestamp_to_native(conn)
     _db_instance = DuckDBConnection.__new__(DuckDBConnection)
     _db_instance._conn = conn
     _db_instance._write_lock = asyncio.Lock()
@@ -278,56 +359,74 @@ async def get_file_import(db: DuckDBConnection, tenant: str, filename: str) -> d
     return row if row else {"lines": 0, "size": 0}
 
 
-# Row count per single INSERT statement. Batching (instead of executemany,
-# which re-executes a prepared statement once per row and was measured at
-# ~26s for 20k rows into a 1M-row table) cuts that to ~9s for the same case —
-# executemany's per-call overhead, not indexes/constraints, was the dominant
-# cost. RETURNING gives the inserted-row count directly, avoiding two
-# full-table COUNT(*) scans.
-_INSERT_BATCH_SIZE = 5000
-_INSERT_COLUMNS = "tenant,log_type,filename,timestamp,level,logger,iflow,message,ip,node"
+# Row count per pyarrow-registered batch. Batching keeps peak memory bounded
+# for very large files/imports; pyarrow avoids the per-row Python->DuckDB
+# parameter-marshalling cost entirely (see benchmark below).
+_INSERT_BATCH_SIZE = 20000
+_INSERT_COLUMNS = ["tenant", "log_type", "filename", "timestamp", "level",
+                   "logger", "iflow", "message", "ip", "node"]
 
 
-# Row tuple layout: (tenant, log_type, filename, timestamp, level, logger,
-# iflow, message, ip, node). The UNIQUE constraint covers
-# (tenant, log_type, filename, timestamp, level, logger, message) — indices
-# 0,1,2,3,4,5,7 below.
-_UNIQUE_KEY_IDX = (0, 1, 2, 3, 4, 5, 7)
-
-
-async def import_rows(db: DuckDBConnection, rows: list[tuple], tenant: str, filename: str, size: int = 0) -> int:
+async def import_rows(db: DuckDBConnection, rows: list[tuple], tenant: str, filename: str,
+                       total_lines: Optional[int] = None, size: int = 0) -> int:
     if not rows:
         return 0
 
-    # ON CONFLICT DO NOTHING only guards against rows already committed in the
-    # table — two rows with the same unique key *within the same INSERT
-    # statement* still raise a constraint violation (duplicate log lines, e.g.
-    # repeated heartbeat/timer messages, do occur in CPI logs). Dedupe within
-    # each batch up front so a single VALUES statement never contains two rows
-    # with the same unique key.
-    def _dedupe(chunk: list[tuple]) -> list[tuple]:
-        seen = {}
-        for row in chunk:
-            seen[tuple(row[i] for i in _UNIQUE_KEY_IDX)] = row
-        return list(seen.values())
+    # Bulk-insert via a registered pyarrow Table + `INSERT INTO ... SELECT`,
+    # instead of a parameterized multi-row `INSERT ... VALUES (?,?,...)`.
+    # Benchmarked against a copy of the real (6M-row) production table: the
+    # parameterized-VALUES approach costs ~1.2 ms/row *independent of table
+    # size or batch size* (pure Python->DuckDB parameter-binding overhead for
+    # the ~10 * batch_size individual `?` values) — for a session importing
+    # ~1M rows that alone is ~20 minutes of pure CPU-bound marshalling. The
+    # pyarrow path measured ~0.0015 ms/row on the same data (~800-1000x
+    # faster), because DuckDB ingests the whole batch as a columnar buffer in
+    # one call instead of binding each value individually.
+    #
+    # No UNIQUE constraint / ON CONFLICT / in-batch dedupe here anymore (see
+    # SCHEMA comment on `logs`): duplicate protection across fetch runs comes
+    # entirely from file_imports.lines (only rows past the last-imported line
+    # of a file are ever handed to this function). This also fixes a latent
+    # correctness issue the old UNIQUE constraint had: legitimate repeated log
+    # lines (e.g. heartbeat/timer messages with identical
+    # tenant/type/filename/timestamp/level/logger/message within the same
+    # second) used to be silently dropped as "duplicates" — they are now
+    # imported as the distinct log entries they actually are.
+    #
+    # `rows` here is only the *new* slice past the last-imported line — but
+    # file_imports.lines must record the file's *total* parsed line count so
+    # the next incremental fetch computes the correct offset. Callers pass
+    # `total_lines` (= previously-imported lines + len(rows)) explicitly;
+    # defaulting it to len(rows) is only correct for a brand-new file. Using
+    # len(rows) unconditionally here was a bug: on a growing file it kept
+    # resetting file_imports.lines back down to just the latest delta, so
+    # every subsequent fetch re-imported already-imported lines as "new",
+    # silently accumulating real duplicate rows over time.
+    if total_lines is None:
+        total_lines = len(rows)
 
     def _run(conn):
-        inserted = 0
         for i in range(0, len(rows), _INSERT_BATCH_SIZE):
-            chunk = _dedupe(rows[i:i + _INSERT_BATCH_SIZE])
-            placeholders = ",".join(["(?,?,?,?,?,?,?,?,?,?)"] * len(chunk))
-            flat = [v for row in chunk for v in row]
-            result = conn.execute(
-                f"INSERT INTO logs ({_INSERT_COLUMNS}) VALUES {placeholders} "
-                "ON CONFLICT DO NOTHING RETURNING id",
-                flat,
-            ).fetchall()
-            inserted += len(result)
+            chunk = rows[i:i + _INSERT_BATCH_SIZE]
+            columns = list(zip(*chunk))
+            arrow_table = pa.table({
+                col: pa.array(values, type=pa.string())
+                for col, values in zip(_INSERT_COLUMNS, columns)
+            })
+            view_name = f"_import_batch_{id(chunk)}"
+            conn.register(view_name, arrow_table)
+            try:
+                conn.execute(
+                    f"INSERT INTO logs ({','.join(_INSERT_COLUMNS)}) "
+                    f"SELECT {','.join(_INSERT_COLUMNS)} FROM {view_name}"
+                )
+            finally:
+                conn.unregister(view_name)
         db._execute(conn, """
             INSERT INTO file_imports (tenant, filename, lines, size) VALUES (?, ?, ?, ?)
             ON CONFLICT (tenant, filename) DO UPDATE SET lines=excluded.lines, size=excluded.size
-        """, [tenant, filename, len(rows), size])
-        return inserted
+        """, [tenant, filename, total_lines, size])
+        return len(rows)
 
     return await db.run(_run)
 
@@ -361,16 +460,16 @@ async def query_logs(
             conditions.append("(message LIKE ? OR logger LIKE ?)")
             params.extend([f"%{grep}%", f"%{grep}%"])
         if date_from:
-            conditions.append("timestamp >= ?")
+            conditions.append("timestamp >= CAST(? AS TIMESTAMP)")
             params.append(date_from)
         if date_to:
-            conditions.append("timestamp <= ?")
+            conditions.append("timestamp <= CAST(? AS TIMESTAMP)")
             # date_to accepts either a bare date ("YYYY-MM-DD", as sent by the
             # Browse UI's <input type="date">) or a full datetime ("YYYY-MM-DD
             # HH:MM:SS", per the /api/query contract). A bare date is expanded
             # to the end of that day; a full datetime is used as-is — blindly
             # appending " 23:59:59" to an already-complete datetime produced
-            # an invalid timestamp string (e.g. "... 00:00:00 23:59:59") and a
+            # an invalid TIMESTAMP string (e.g. "... 00:00:00 23:59:59") and a
             # 500 error for every /api/query call that passed a full datetime.
             params.append(date_to if len(date_to) > 10 else date_to + " 23:59:59")
 
@@ -422,10 +521,10 @@ async def get_stats(db: DuckDBConnection, tenant: Optional[str] = None) -> dict:
         )
 
         timeline = db._fetchall_dicts(cur,
-            f"SELECT strftime(timestamp::TIMESTAMP, '%Y-%m-%d %H') as hour, COUNT(*) as cnt "
+            f"SELECT strftime(timestamp, '%Y-%m-%d %H') as hour, COUNT(*) as cnt "
             f"FROM logs {where} "
             f"{'AND' if where else 'WHERE'} upper(level)='ERROR' "
-            f"AND timestamp >= (CURRENT_TIMESTAMP - INTERVAL '48 hours')::TEXT "
+            f"AND timestamp >= (CURRENT_TIMESTAMP - INTERVAL '48 hours') "
             f"GROUP BY hour ORDER BY hour",
             params or None,
         )
@@ -470,12 +569,18 @@ async def clear_db(db: DuckDBConnection):
     def _run(conn):
         db._execute(conn, "DELETE FROM logs")
         db._execute(conn, "DELETE FROM fetch_runs")
+        db._execute(conn, "DELETE FROM file_imports")
+        # DuckDB doesn't reclaim freed disk space from deletes automatically;
+        # CHECKPOINT forces a rewrite of the underlying row groups so the
+        # .duckdb file actually shrinks back down instead of permanently
+        # keeping the pre-delete size.
+        conn.execute("CHECKPOINT")
     await db.run(_run)
 
 
 async def cleanup_old_logs(db: DuckDBConnection, older_than_days: int, tenant: Optional[str] = None) -> dict:
     def _run(conn):
-        conditions = [f"timestamp < (CURRENT_TIMESTAMP - INTERVAL '{older_than_days} days')::TEXT"]
+        conditions = [f"timestamp < (CURRENT_TIMESTAMP - INTERVAL '{older_than_days} days')"]
         params = []
         if tenant and tenant != "all":
             conditions.append("tenant = ?")
@@ -484,5 +589,17 @@ async def cleanup_old_logs(db: DuckDBConnection, older_than_days: int, tenant: O
         to_delete = db._fetchone_val(conn, f"SELECT COUNT(*) FROM logs {where}", params or None) or 0
         db._execute(conn, f"DELETE FROM logs {where}", params or None)
         remaining = db._fetchone_val(conn, "SELECT COUNT(*) FROM logs") or 0
+        conn.execute("CHECKPOINT")  # reclaim disk space freed by the delete
         return {"deleted": to_delete, "remaining": remaining}
     return await db.run(_run)
+
+# NOTE: a dedupe-by-content function (matching on tenant/log_type/filename/
+# timestamp/level/logger/message) was considered and deliberately rejected —
+# see the comment on import_rows() above: CPI logs legitimately contain
+# repeated messages with identical timestamp/level/logger/message text
+# (e.g. heartbeats, generic per-second status lines) that are NOT
+# duplicates. There is no reliable content-based uniqueness key available;
+# the only correct duplicate protection is file_imports.lines (line-offset
+# tracking per source file), which is already in place.
+
+
