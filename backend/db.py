@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS logs (
     message     TEXT,
     ip          TEXT,
     node        TEXT,
+    raw_line    TEXT,
     imported_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -100,6 +101,23 @@ CREATE TABLE IF NOT EXISTS fetch_schedules (
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+
+CREATE SEQUENCE IF NOT EXISTS unparsed_lines_id_seq;
+
+-- Lines that parse_log_file() could neither match against LINE_RE nor
+-- attach as a continuation of the previous parsed row (i.e. the very first
+-- line of a file/parse run is itself unparsable, so there is no prior
+-- message to append it to). Kept here instead of being silently dropped so
+-- log imports stay recoverable/auditable even for unexpected line formats.
+CREATE TABLE IF NOT EXISTS unparsed_lines (
+    id          BIGINT PRIMARY KEY DEFAULT nextval('unparsed_lines_id_seq'),
+    tenant      TEXT NOT NULL,
+    log_type    TEXT NOT NULL,
+    filename    TEXT NOT NULL,
+    line_no     INTEGER NOT NULL,
+    raw_text    TEXT,
+    imported_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 """
 
@@ -265,6 +283,26 @@ def _migrate_timestamp_to_native(conn: duckdb.DuckDBPyConnection):
     print("[migrate] Done — logs.timestamp is now native TIMESTAMP.")
 
 
+def _migrate_add_raw_line_column(conn: duckdb.DuckDBPyConnection):
+    """One-off migration for DBs created before `logs.raw_line` existed.
+    `CREATE TABLE IF NOT EXISTS` never adds columns to an already-existing
+    table, so this ALTER is needed for any DB file created by an older
+    version of this app. Existing rows get raw_line=NULL (no backfill from
+    the original log files — only newly imported rows get it populated).
+    Idempotent: no-op once the column already exists."""
+    has_col = conn.execute("""
+        SELECT 1 FROM duckdb_columns()
+        WHERE table_name = 'logs' AND column_name = 'raw_line'
+    """).fetchone()
+    if has_col:
+        return
+
+    print("[migrate] Adding logs.raw_line column...")
+    conn.execute("ALTER TABLE logs ADD COLUMN raw_line TEXT")
+    conn.execute("CHECKPOINT")
+    print("[migrate] Done — logs.raw_line added (NULL for pre-existing rows).")
+
+
 async def init_db(path: Path = DB_PATH):
     global _db_instance
     conn = duckdb.connect(str(path))
@@ -274,6 +312,7 @@ async def init_db(path: Path = DB_PATH):
             conn.execute(stmt)
     _migrate_drop_logs_unique_constraint(conn)
     _migrate_timestamp_to_native(conn)
+    _migrate_add_raw_line_column(conn)
     _db_instance = DuckDBConnection.__new__(DuckDBConnection)
     _db_instance._conn = conn
     _db_instance._write_lock = asyncio.Lock()
@@ -315,25 +354,61 @@ def _is_gzip(path: Path) -> bool:
         return False
 
 
-def parse_log_file(tenant: str, log_type: str, filepath: Path) -> list[tuple]:
-    rows = []
+def parse_log_file(tenant: str, log_type: str, filepath: Path) -> tuple[list[tuple], list[tuple]]:
+    """Parse a CPI log file into structured rows.
+
+    Returns (rows, unparsed):
+    - rows: list of tuples matching _INSERT_COLUMNS order (tenant, log_type,
+      filename, timestamp, level, logger, iflow, message, ip, node, raw_line).
+    - unparsed: list of (line_no, raw_text) for lines that could not be
+      matched against LINE_RE *and* had no preceding parsed row in this file
+      to attach to (see below) — kept so nothing is silently dropped.
+
+    Lines that don't match LINE_RE (e.g. a stacktrace continuation of a
+    multi-line log message) are appended to the message/raw_line of the
+    previously parsed row instead of being discarded, as long as there is a
+    previous row in this file to attach them to.
+
+    NOTE on incremental re-fetch bookkeeping (see import_rows/file_imports):
+    the file's whole content is re-parsed on every fetch, and only rows past
+    the offset stored in file_imports.lines are (re-)imported — that offset
+    counts *top-level rows* (post-merge), not raw physical lines. This is
+    safe for the normal case (a file only ever grows by new complete lines
+    at the end). Edge case: if a multi-line message is only partially
+    written when a fetch runs (e.g. a stacktrace still being flushed) and
+    more continuation lines for that *same* message appear by the next
+    fetch, those extra lines won't be picked up — the row they belong to is
+    already before the offset. This is considered acceptable: rare, and the
+    message is still captured (just possibly truncated to what existed at
+    fetch time) rather than silently duplicated or corrupted.
+    """
+    rows: list[list] = []
+    unparsed: list[tuple] = []
     try:
         opener = gzip.open if _is_gzip(filepath) else open
         with opener(filepath, "rt", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                m = LINE_RE.match(line.rstrip("\n"))
+            for line_no, line in enumerate(f, 1):
+                raw = line.rstrip("\n")
+                m = LINE_RE.match(raw)
                 if not m:
+                    if rows:
+                        # Continuation line (e.g. stacktrace) — append to the
+                        # previous row's message and raw_line.
+                        rows[-1][7] += "\n" + raw
+                        rows[-1][10] += "\n" + raw
+                    else:
+                        unparsed.append((line_no, raw))
                     continue
                 ts, level, logger, iflow, message, ip, node = m.groups()
-                rows.append((
+                rows.append([
                     tenant, log_type, filepath.name,
                     ts, level.strip(), logger.strip(),
                     _extract_iflow(iflow), message.strip(),
-                    ip.strip(), node.strip(),
-                ))
+                    ip.strip(), node.strip(), raw,
+                ])
     except Exception:
         pass
-    return rows
+    return [tuple(r) for r in rows], unparsed
 
 
 # ── Tenants ───────────────────────────────────────────────────────────────────
@@ -443,7 +518,7 @@ async def get_file_import(db: DuckDBConnection, tenant: str, filename: str) -> d
 # parameter-marshalling cost entirely (see benchmark below).
 _INSERT_BATCH_SIZE = 20000
 _INSERT_COLUMNS = ["tenant", "log_type", "filename", "timestamp", "level",
-                   "logger", "iflow", "message", "ip", "node"]
+                   "logger", "iflow", "message", "ip", "node", "raw_line"]
 
 
 async def import_rows(db: DuckDBConnection, rows: list[tuple], tenant: str, filename: str,
@@ -508,6 +583,23 @@ async def import_rows(db: DuckDBConnection, rows: list[tuple], tenant: str, file
         return len(rows)
 
     return await db.run(_run)
+
+
+async def import_unparsed_lines(db: DuckDBConnection, unparsed: list[tuple],
+                                 tenant: str, log_type: str, filename: str):
+    """Persist lines that parse_log_file() couldn't attribute to any parsed
+    row (see parse_log_file docstring) instead of silently dropping them."""
+    if not unparsed:
+        return
+
+    def _run(conn):
+        for line_no, raw_text in unparsed:
+            db._execute(conn, """
+                INSERT INTO unparsed_lines (tenant, log_type, filename, line_no, raw_text)
+                VALUES (?, ?, ?, ?, ?)
+            """, [tenant, log_type, filename, line_no, raw_text])
+
+    await db.run(_run)
 
 
 # ── Query ─────────────────────────────────────────────────────────────────────

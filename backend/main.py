@@ -548,9 +548,10 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
                             if job.cancel_requested:
                                 break
                             already = (await database.get_file_import(conn, tenant["id"], mf.name))["lines"]
-                            rows    = database.parse_log_file(tenant["id"], lt, mf)
+                            rows, unparsed = database.parse_log_file(tenant["id"], lt, mf)
                             new_rows = rows[already:]
                             newly_imported = await database.import_rows(conn, new_rows, tenant["id"], mf.name, len(rows)) if new_rows else 0
+                            await database.import_unparsed_lines(conn, unparsed, tenant["id"], lt, mf.name)
                             job.imported  += newly_imported
                             job.done       = i
                             job.current_file = mf.name
@@ -636,9 +637,10 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
                                                    "file": f["Name"], "new_rows": 0, "imported": counters["imported"]})
                                         return
 
-                                rows      = database.parse_log_file(tenant["id"], lt, dest)
+                                rows, unparsed = database.parse_log_file(tenant["id"], lt, dest)
                                 new_rows  = rows[file_import["lines"]:]
                                 newly_imported = await database.import_rows(conn, new_rows, tenant["id"], f["Name"], len(rows), remote_size) if new_rows else 0
+                                await database.import_unparsed_lines(conn, unparsed, tenant["id"], lt, f["Name"])
                                 counters["imported"] += newly_imported
                                 job.imported          = counters["imported"]
 

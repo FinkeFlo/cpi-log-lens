@@ -172,6 +172,10 @@
                     <span class="font-mono" x-text="`${row.ip}  #${row.node}`"></span>
                   </div>
                   <pre class="bg-base-300 rounded p-3 font-mono text-xs whitespace-pre-wrap break-all max-h-64 overflow-y-auto" x-text="row.message"></pre>
+                  <details x-show="row.raw_line" class="text-xs">
+                    <summary class="cursor-pointer text-base-content/40 font-semibold select-none">Rohzeile</summary>
+                    <pre class="bg-base-300 rounded p-3 font-mono whitespace-pre-wrap break-all max-h-64 overflow-y-auto mt-1" x-text="row.raw_line"></pre>
+                  </details>
                 </div>
               </td>
             </tr>
