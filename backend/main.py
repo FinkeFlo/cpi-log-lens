@@ -100,6 +100,18 @@ class FetchJob:
 # Single active job (only one fetch at a time)
 _active_job: FetchJob | None = None
 
+# The event loop keeps only weak references to tasks; a task nobody else
+# references can be garbage-collected before it finishes.
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
+
 # ── App ───────────────────────────────────────────────────────────────────────
 # Set at image build time (Dockerfile ARG VERSION); "dev" when run from source.
 APP_VERSION = os.getenv("APP_VERSION", "dev")
@@ -192,12 +204,12 @@ async def startup():
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     await database.init_db(DB_PATH)
     await _load_tenants_from_json()
-    asyncio.create_task(_heartbeat())
+    _spawn(_heartbeat())
     if WATCHDOG_STALL_SECONDS > 0:
         threading.Thread(target=_watchdog, name="loop-watchdog", daemon=True).start()
     if RETENTION_DAYS > 0:
-        asyncio.create_task(_retention_loop())
-    asyncio.create_task(_schedule_loop())
+        _spawn(_retention_loop())
+    _spawn(_schedule_loop())
 
 
 async def _heartbeat():
@@ -288,7 +300,7 @@ async def _schedule_loop():
                         f"schedule: starting '{sched['name']}' "
                         f"(tenants={body.tenants}, log_types={body.log_types}, hours={body.hours})"
                     )
-                    asyncio.create_task(_run_fetch(job, body))
+                    _spawn(_run_fetch(job, body))
                     break  # one job at a time — remaining due schedules wait for next tick
         except Exception as e:
             log.exception(f"schedule: loop error: {e}")
@@ -527,7 +539,7 @@ async def fetch_logs(body: FetchRequest):
     job = FetchJob(id=str(uuid.uuid4()))
     _active_job = job
 
-    asyncio.create_task(_run_fetch(job, body))
+    _spawn(_run_fetch(job, body))
     return {"ok": True, "job_id": job.id}
 
 
