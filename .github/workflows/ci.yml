@@ -76,3 +76,10 @@ jobs:
       - name: Container logs
         if: always()
         run: docker logs smoke || true
+      - name: Scan image (fail on fixable critical/high findings)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: cpi-log-lens:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"

@@ -19,7 +19,11 @@ LABEL org.opencontainers.image.title="CPI Log Lens" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}"
 
-# Unprivileged user; only /data (database, raw logs) is writable for it.
+# Security updates for the Debian base packages (the slim base image lags
+# behind), then an unprivileged user that can only write /data.
+RUN apt-get update \
+ && apt-get upgrade -y --no-install-recommends \
+ && rm -rf /var/lib/apt/lists/*
 RUN groupadd --system --gid 10001 app \
  && useradd --system --uid 10001 --gid app --home-dir /app --shell /usr/sbin/nologin app \
  && mkdir -p /data /config \
