@@ -1,11 +1,11 @@
 """CPI API client — OAuth2 + Log file fetching."""
+
 import asyncio
 import gzip
 import logging
 import os
 import re
 from pathlib import Path
-from typing import Optional
 from urllib.parse import quote
 
 import httpx
@@ -43,7 +43,7 @@ def make_client() -> httpx.AsyncClient:
 async def _retry(fn, *, what: str):
     """Run an async CPI-API call, retrying transient failures with
     exponential backoff. Raises the last exception if all attempts fail."""
-    last_exc: Optional[Exception] = None
+    last_exc: Exception | None = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             return await fn()
@@ -59,15 +59,19 @@ async def _retry(fn, *, what: str):
                 raise
         if attempt < MAX_RETRIES:
             delay = RETRY_BACKOFF_BASE * (2 ** (attempt - 1))
-            log.warning("%s failed (%s), retrying in %.0fs (attempt %d of %d)",
-                        what, type(last_exc).__name__, delay, attempt + 1, MAX_RETRIES)
+            log.warning(
+                "%s failed (%s), retrying in %.0fs (attempt %d of %d)",
+                what,
+                type(last_exc).__name__,
+                delay,
+                attempt + 1,
+                MAX_RETRIES,
+            )
             await asyncio.sleep(delay)
     raise last_exc
 
 
-async def get_token(
-    oauth_url: str, client_id: str, client_secret: str, client: Optional[httpx.AsyncClient] = None
-) -> str:
+async def get_token(oauth_url: str, client_id: str, client_secret: str, client: httpx.AsyncClient | None = None) -> str:
     async def _do():
         c = client or httpx.AsyncClient(timeout=30)
         owns = client is None
@@ -87,7 +91,7 @@ async def get_token(
 
 
 async def list_remote_files(
-    api_url: str, token: str, log_type: str, client: Optional[httpx.AsyncClient] = None
+    api_url: str, token: str, log_type: str, client: httpx.AsyncClient | None = None
 ) -> list[dict]:
     filter_str = f"LogFileType eq '{log_type}' and NodeScope eq 'worker'"
 
@@ -110,8 +114,12 @@ async def list_remote_files(
 
 
 async def download_to_file(
-    api_url: str, token: str, name: str, application: str,
-    client: httpx.AsyncClient, dest: Path,
+    api_url: str,
+    token: str,
+    name: str,
+    application: str,
+    client: httpx.AsyncClient,
+    dest: Path,
 ) -> int:
     """Stream a log file to `dest` as gzip, chunk by chunk, and return the
     number of bytes received.
@@ -131,7 +139,7 @@ async def download_to_file(
         async with client.stream("GET", url, headers={"Authorization": f"Bearer {token}"}) as resp:
             resp.raise_for_status()
             raw = open(part, "wb")
-            gz: Optional[gzip.GzipFile] = None
+            gz: gzip.GzipFile | None = None
             try:
                 async for chunk in resp.aiter_bytes(1 << 20):
                     if received == 0 and not chunk.startswith(b"\x1f\x8b"):
