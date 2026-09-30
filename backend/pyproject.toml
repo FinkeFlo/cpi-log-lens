@@ -1,0 +1,64 @@
+[project]
+name = "cpi-log-lens"
+# Placeholder: the app is not packaged. Its version is version.txt (maintained
+# by release-please) and reaches the running app through APP_VERSION.
+version = "0.0.0"
+description = "Self-hosted tool to fetch, store and search SAP Cloud Integration logs"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.142.2",
+    "uvicorn[standard]==0.54.0",
+    "httpx==0.28.1",
+    # Upgrade DuckDB deliberately: newer versions can change the storage format.
+    "duckdb==1.5.6",
+    "json5==0.15.0",
+    "pyarrow==25.0.1",
+]
+
+[dependency-groups]
+dev = [
+    "mypy==2.3.1",
+    "ruff==0.16.9",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "B",        # bugbear
+    "UP",       # pyupgrade
+    "SIM",      # simplify
+    "ASYNC",    # blocking calls in async code
+    "RUF",      # ruff-specific
+]
+ignore = [
+    # UI and log texts use typographic characters on purpose (…, •, ·, –).
+    "RUF001", "RUF002", "RUF003",
+    # exists()/stat()/mkdir() on the local data volume are cheap; reading and
+    # writing file contents goes through threads.
+    "ASYNC240",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# process_file() in the fetch job closes over loop variables, but it is awaited
+# (asyncio.gather) within the iteration that defines it.
+"main.py" = ["B023"]
+
+[tool.mypy]
+python_version = "3.12"
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+[[tool.mypy.overrides]]
+# No type information published for these.
+module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true

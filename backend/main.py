@@ -2,7 +2,9 @@
 CPI Log Lens — FastAPI backend
 Serves the frontend and provides REST + SSE API.
 """
+
 import asyncio
+import contextlib
 import faulthandler
 import json
 import logging
@@ -10,10 +12,11 @@ import os
 import threading
 import time
 import uuid
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import AsyncGenerator, Literal, Optional
+from typing import Literal
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Query
@@ -27,15 +30,16 @@ from logging_config import setup_logging
 
 setup_logging()
 
-import db as database  # noqa: E402  (logging must be configured first)
+# Logging must be configured before these modules create their loggers.
 import api as cpi_api  # noqa: E402
+import db as database  # noqa: E402
 
 log = logging.getLogger("cpi")
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-DB_PATH   = Path(os.getenv("DB_PATH",   "cpi_logs.duckdb"))
-LOGS_DIR  = Path(os.getenv("LOGS_DIR",  "logs"))
-MOCK      = os.getenv("MOCK", "false").lower() == "true"
+DB_PATH = Path(os.getenv("DB_PATH", "cpi_logs.duckdb"))
+LOGS_DIR = Path(os.getenv("LOGS_DIR", "logs"))
+MOCK = os.getenv("MOCK", "false").lower() == "true"
 # Concurrent file downloads per tenant/log_type during a fetch job. CPI's
 # LogFiles $value endpoint has high per-request latency (server-side
 # decompression, ~30-90s/file observed) so parallelism is the main client-side
@@ -45,35 +49,41 @@ FETCH_CONCURRENCY = int(os.getenv("FETCH_CONCURRENCY", "4"))
 # deletes log entries older than this many days across all tenants, so DB
 # size doesn't grow unbounded without someone remembering to call
 # /api/db/cleanup manually. Unset/0 (default) disables it — fully opt-in.
-RETENTION_DAYS         = int(os.getenv("RETENTION_DAYS", "0"))
-RETENTION_CHECK_HOURS  = float(os.getenv("RETENTION_CHECK_HOURS", "24"))
-MOCK_DIR  = Path(__file__).parent / "mock"
-FRONTEND  = Path(os.getenv("FRONTEND_DIR", str(Path(__file__).parent.parent / "frontend")))
+RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "0"))
+RETENTION_CHECK_HOURS = float(os.getenv("RETENTION_CHECK_HOURS", "24"))
+MOCK_DIR = Path(__file__).parent / "mock"
+FRONTEND = Path(os.getenv("FRONTEND_DIR", str(Path(__file__).parent.parent / "frontend")))
+
 
 # ── Global fetch-job state ────────────────────────────────────────────────────
 @dataclass
 class FetchJob:
-    id:            str
-    status:        str  = "running"  # running | done | error | cancelled
-    status_msg:    str  = ""
-    done:          int  = 0
-    total:         int  = 0
-    current_file:  str  = ""
-    current_tenant:   str = ""
+    id: str
+    status: str = "running"  # running | done | error | cancelled
+    status_msg: str = ""
+    done: int = 0
+    total: int = 0
+    current_file: str = ""
+    current_tenant: str = ""
     current_log_type: str = ""
-    imported:      int  = 0
-    error_msg:     str  = ""
+    imported: int = 0
+    error_msg: str = ""
     cancel_requested: bool = False
     # Listeners waiting for new events (one queue per SSE subscriber)
-    _listeners:    list = field(default_factory=list)
+    _listeners: list = field(default_factory=list)
 
     def push(self, event: dict):
         """Broadcast an event to all active SSE listeners."""
         if event.get("type") in ("warn", "error", "done", "cancelled"):
             level = logging.INFO if event["type"] in ("done", "cancelled") else logging.WARNING
-            log.log(level, "fetch job %s: %s %s", self.id[:8], event["type"],
-                    event.get("msg", f"imported={event.get('imported')}"),
-                    extra={"fields": {"job_id": self.id, "event": event["type"]}})
+            log.log(
+                level,
+                "fetch job %s: %s %s",
+                self.id[:8],
+                event["type"],
+                event.get("msg", f"imported={event.get('imported')}"),
+                extra={"fields": {"job_id": self.id, "event": event["type"]}},
+            )
         for q in list(self._listeners):
             q.put_nowait(event)
 
@@ -83,19 +93,31 @@ class FetchJob:
         return q
 
     def detach(self, q: asyncio.Queue):
-        try:
+        with contextlib.suppress(ValueError):
             self._listeners.remove(q)
-        except ValueError:
-            pass
+
 
 # Single active job (only one fetch at a time)
-_active_job: Optional[FetchJob] = None
+_active_job: FetchJob | None = None
+
+# The event loop keeps only weak references to tasks; a task nobody else
+# references can be garbage-collected before it finishes.
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
 
 # ── App ───────────────────────────────────────────────────────────────────────
 # Set at image build time (Dockerfile ARG VERSION); "dev" when run from source.
 APP_VERSION = os.getenv("APP_VERSION", "dev")
 
 app = FastAPI(title="CPI Log Lens", version=APP_VERSION)
+
 
 @app.exception_handler(database.DBBusyError)
 async def db_busy(request, exc: database.DBBusyError):
@@ -147,9 +169,22 @@ async def request_log_and_no_cache_js(request, call_next):
     level = logging.DEBUG if request.url.path in ("/healthz", "/readyz") else logging.INFO
     if dur_ms > 1000 or response.status_code >= 500:
         level = logging.WARNING
-    log.log(level, "%s %s %s %.0fms", request.method, request.url.path, response.status_code, dur_ms,
-            extra={"fields": {"method": request.method, "path": request.url.path,
-                              "status": response.status_code, "dur_ms": round(dur_ms, 1)}})
+    log.log(
+        level,
+        "%s %s %s %.0fms",
+        request.method,
+        request.url.path,
+        response.status_code,
+        dur_ms,
+        extra={
+            "fields": {
+                "method": request.method,
+                "path": request.url.path,
+                "status": response.status_code,
+                "dur_ms": round(dur_ms, 1),
+            }
+        },
+    )
     if request.url.path.endswith(".js"):
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
@@ -169,12 +204,12 @@ async def startup():
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     await database.init_db(DB_PATH)
     await _load_tenants_from_json()
-    asyncio.create_task(_heartbeat())
+    _spawn(_heartbeat())
     if WATCHDOG_STALL_SECONDS > 0:
         threading.Thread(target=_watchdog, name="loop-watchdog", daemon=True).start()
     if RETENTION_DAYS > 0:
-        asyncio.create_task(_retention_loop())
-    asyncio.create_task(_schedule_loop())
+        _spawn(_retention_loop())
+    _spawn(_schedule_loop())
 
 
 async def _heartbeat():
@@ -213,8 +248,10 @@ async def _retention_loop():
             conn = await database.get_db()
             result = await database.cleanup_old_logs(conn, RETENTION_DAYS)
             if result["deleted"]:
-                log.info(f"retention: deleted {result['deleted']} log entries "
-                      f"older than {RETENTION_DAYS} days ({result['remaining']} remaining).")
+                log.info(
+                    f"retention: deleted {result['deleted']} log entries "
+                    f"older than {RETENTION_DAYS} days ({result['remaining']} remaining)."
+                )
         except Exception as e:
             log.exception(f"retention: cleanup failed: {e}")
         await asyncio.sleep(RETENTION_CHECK_HOURS * 3600)
@@ -259,9 +296,11 @@ async def _schedule_loop():
                     )
                     job = FetchJob(id=str(uuid.uuid4()))
                     _active_job = job
-                    log.info(f"schedule: starting '{sched['name']}' "
-                          f"(tenants={body.tenants}, log_types={body.log_types}, hours={body.hours})")
-                    asyncio.create_task(_run_fetch(job, body))
+                    log.info(
+                        f"schedule: starting '{sched['name']}' "
+                        f"(tenants={body.tenants}, log_types={body.log_types}, hours={body.hours})"
+                    )
+                    _spawn(_run_fetch(job, body))
                     break  # one job at a time — remaining due schedules wait for next tick
         except Exception as e:
             log.exception(f"schedule: loop error: {e}")
@@ -284,6 +323,7 @@ async def _load_tenants_from_json():
 
     try:
         import json5
+
         data = json5.loads(config_path.read_text())
         tenant_list = data.get("tenants", [])
     except Exception as e:
@@ -294,11 +334,11 @@ async def _load_tenants_from_json():
     try:
         added = updated = 0
         for t in tenant_list:
-            tid    = t.get("id", "").strip().lower()
-            name   = t.get("name", tid.upper())
-            api    = t.get("api_url", "")
-            oauth  = t.get("oauth_url", "")
-            cid    = t.get("client_id", "")
+            tid = t.get("id", "").strip().lower()
+            name = t.get("name", tid.upper())
+            api = t.get("api_url", "")
+            oauth = t.get("oauth_url", "")
+            cid = t.get("client_id", "")
             secret = t.get("client_secret", "")
             if not (tid and api and cid):
                 continue
@@ -308,8 +348,7 @@ async def _load_tenants_from_json():
             await database.upsert_tenant(conn, tid, name, api, oauth, cid, secret)
             updated += exists
             added += not exists
-        log.info("tenants from %s: %d added, %d updated (mode %s)",
-                 config_path, added, updated, TENANTS_SEED_MODE)
+        log.info("tenants from %s: %d added, %d updated (mode %s)", config_path, added, updated, TENANTS_SEED_MODE)
     finally:
         await conn.close()
 
@@ -323,11 +362,11 @@ MAX_HOURS = 24 * 365
 
 
 class TenantCreate(BaseModel):
-    id:            str = Field(pattern=TENANT_ID_PATTERN)
-    name:          str = Field(min_length=1, max_length=100)
-    api_url:       str = Field(pattern=r"^https?://\S+$", max_length=500)
-    oauth_url:     str = Field(pattern=r"^https?://\S+$", max_length=500)
-    client_id:     str = Field(min_length=1, max_length=500)
+    id: str = Field(pattern=TENANT_ID_PATTERN)
+    name: str = Field(min_length=1, max_length=100)
+    api_url: str = Field(pattern=r"^https?://\S+$", max_length=500)
+    oauth_url: str = Field(pattern=r"^https?://\S+$", max_length=500)
+    client_id: str = Field(min_length=1, max_length=500)
     client_secret: str = Field(max_length=2000)  # empty on update = keep the stored one
 
     @field_validator("id")
@@ -339,27 +378,27 @@ class TenantCreate(BaseModel):
 
 
 class FetchRequest(BaseModel):
-    tenants:   list[str] = Field(default=["all"], min_length=1)  # ["all"] or tenant ids
+    tenants: list[str] = Field(default=["all"], min_length=1)  # ["all"] or tenant ids
     log_types: list[LogType] = Field(default=["trace", "http"], min_length=1)
-    hours:     int = Field(default=24, ge=0, le=MAX_HOURS)  # 0 = no filter (all available)
+    hours: int = Field(default=24, ge=0, le=MAX_HOURS)  # 0 = no filter (all available)
 
 
 class ScheduleRequest(BaseModel):
-    name:             str = Field(min_length=1, max_length=100)
-    tenants:          list[str] = Field(default=["all"], min_length=1)
-    log_types:        list[LogType] = Field(default=["trace", "http"], min_length=1)
-    hours:            int = Field(default=1, ge=0, le=MAX_HOURS)   # time range pulled on every run
+    name: str = Field(min_length=1, max_length=100)
+    tenants: list[str] = Field(default=["all"], min_length=1)
+    log_types: list[LogType] = Field(default=["trace", "http"], min_length=1)
+    hours: int = Field(default=1, ge=0, le=MAX_HOURS)  # time range pulled on every run
     interval_minutes: int = Field(default=15, ge=5, le=7 * 24 * 60)  # how often to run
-    enabled:          bool = True
+    enabled: bool = True
 
 
 class DefaultFetchConfig(BaseModel):
-    tenants:   list[str] = Field(default=["all"], min_length=1)
+    tenants: list[str] = Field(default=["all"], min_length=1)
     log_types: list[LogType] = Field(default=["trace", "http"], min_length=1)
-    hours:     int = Field(default=24, ge=0, le=MAX_HOURS)
+    hours: int = Field(default=24, ge=0, le=MAX_HOURS)
 
 
-def _check_datetime(value: Optional[str], field: str) -> None:
+def _check_datetime(value: str | None, field: str) -> None:
     """date_from/date_to must be an ISO date or datetime; anything else used to
     reach DuckDB and fail there with a 500."""
     if value:
@@ -408,8 +447,13 @@ async def create_tenant(body: TenantCreate):
     conn = await database.get_db()
     try:
         await database.upsert_tenant(
-            conn, body.id, body.name, body.api_url,
-            body.oauth_url, body.client_id, body.client_secret,
+            conn,
+            body.id,
+            body.name,
+            body.api_url,
+            body.oauth_url,
+            body.client_id,
+            body.client_secret,
         )
         return {"ok": True}
     finally:
@@ -429,8 +473,13 @@ async def update_tenant(tenant_id: str, body: TenantCreate):
         if not secret or set(secret) == {"•"}:
             secret = existing["client_secret"]
         await database.upsert_tenant(
-            conn, tenant_id, body.name, body.api_url,
-            body.oauth_url, body.client_id, secret,
+            conn,
+            tenant_id,
+            body.name,
+            body.api_url,
+            body.oauth_url,
+            body.client_id,
+            secret,
         )
         return {"ok": True}
     finally:
@@ -456,9 +505,7 @@ async def test_tenant(tenant_id: str):
             raise HTTPException(404, "Tenant not found")
         if tenant["api_url"].startswith(DEMO_URL):
             return {"ok": True, "demo": True}
-        token = await cpi_api.get_token(
-            tenant["oauth_url"], tenant["client_id"], tenant["client_secret"]
-        )
+        token = await cpi_api.get_token(tenant["oauth_url"], tenant["client_id"], tenant["client_secret"])
         return {"ok": bool(token), "token_preview": token[:12] + "…"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -477,8 +524,7 @@ DEMO_TENANT_ID = "demo"
 async def start_demo():
     """Create the demo tenant (if needed) and import the bundled sample logs."""
     conn = await database.get_db()
-    await database.upsert_tenant(conn, DEMO_TENANT_ID, "Demo", f"{DEMO_URL}sample",
-                                 f"{DEMO_URL}sample", "demo", "demo")
+    await database.upsert_tenant(conn, DEMO_TENANT_ID, "Demo", f"{DEMO_URL}sample", f"{DEMO_URL}sample", "demo", "demo")
     return await fetch_logs(FetchRequest(tenants=[DEMO_TENANT_ID], log_types=["trace"], hours=0))
 
 
@@ -493,7 +539,7 @@ async def fetch_logs(body: FetchRequest):
     job = FetchJob(id=str(uuid.uuid4()))
     _active_job = job
 
-    asyncio.create_task(_run_fetch(job, body))
+    _spawn(_run_fetch(job, body))
     return {"ok": True, "job_id": job.id}
 
 
@@ -503,16 +549,16 @@ async def fetch_status():
     if not _active_job:
         return {"status": "idle"}
     return {
-        "job_id":       _active_job.id,
-        "status":       _active_job.status,
-        "status_msg":   _active_job.status_msg,
-        "done":         _active_job.done,
-        "total":        _active_job.total,
+        "job_id": _active_job.id,
+        "status": _active_job.status,
+        "status_msg": _active_job.status_msg,
+        "done": _active_job.done,
+        "total": _active_job.total,
         "current_file": _active_job.current_file,
-        "current_tenant":   _active_job.current_tenant,
+        "current_tenant": _active_job.current_tenant,
         "current_log_type": _active_job.current_log_type,
-        "imported":     _active_job.imported,
-        "error_msg":    _active_job.error_msg,
+        "imported": _active_job.imported,
+        "error_msg": _active_job.error_msg,
     }
 
 
@@ -562,7 +608,7 @@ async def list_schedules():
     try:
         schedules = await database.get_schedules(conn)
         for s in schedules:
-            s["tenants"]   = json.loads(s["tenants"])
+            s["tenants"] = json.loads(s["tenants"])
             s["log_types"] = json.loads(s["log_types"])
         return schedules
     finally:
@@ -575,9 +621,14 @@ async def create_schedule(body: ScheduleRequest):
     try:
         schedule_id = str(uuid.uuid4())
         await database.create_schedule(
-            conn, schedule_id, body.name,
-            json.dumps(body.tenants), json.dumps(body.log_types),
-            body.hours, body.interval_minutes, body.enabled,
+            conn,
+            schedule_id,
+            body.name,
+            json.dumps(body.tenants),
+            json.dumps(body.log_types),
+            body.hours,
+            body.interval_minutes,
+            body.enabled,
         )
         return {"ok": True, "id": schedule_id}
     finally:
@@ -592,9 +643,14 @@ async def update_schedule(schedule_id: str, body: ScheduleRequest):
         if not existing:
             raise HTTPException(404, "Schedule not found")
         await database.update_schedule(
-            conn, schedule_id, body.name,
-            json.dumps(body.tenants), json.dumps(body.log_types),
-            body.hours, body.interval_minutes, body.enabled,
+            conn,
+            schedule_id,
+            body.name,
+            json.dumps(body.tenants),
+            json.dumps(body.log_types),
+            body.hours,
+            body.interval_minutes,
+            body.enabled,
         )
         return {"ok": True}
     finally:
@@ -626,19 +682,21 @@ async def fetch_stream():
             return
 
         # Send current snapshot immediately so late subscribers are up-to-date
-        yield sse({
-            "type":         "snapshot",
-            "job_id":       job.id,
-            "status":       job.status,
-            "status_msg":   job.status_msg,
-            "done":         job.done,
-            "total":        job.total,
-            "current_file": job.current_file,
-            "current_tenant":   job.current_tenant,
-            "current_log_type": job.current_log_type,
-            "imported":     job.imported,
-            "error_msg":    job.error_msg,
-        })
+        yield sse(
+            {
+                "type": "snapshot",
+                "job_id": job.id,
+                "status": job.status,
+                "status_msg": job.status_msg,
+                "done": job.done,
+                "total": job.total,
+                "current_file": job.current_file,
+                "current_tenant": job.current_tenant,
+                "current_log_type": job.current_log_type,
+                "imported": job.imported,
+                "error_msg": job.error_msg,
+            }
+        )
 
         if job.status != "running":
             return
@@ -651,7 +709,7 @@ async def fetch_stream():
                     yield sse(event)
                     if event.get("type") in ("done", "error"):
                         break
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     yield ": keepalive\n\n"
         finally:
             job.detach(q)
@@ -671,13 +729,10 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
         if "all" in body.tenants:
             tenants = await database.get_tenants(conn)
         else:
-            tenants = [
-                t for tid in body.tenants
-                if (t := await database.get_tenant(conn, tid.lower())) is not None
-            ]
+            tenants = [t for tid in body.tenants if (t := await database.get_tenant(conn, tid.lower())) is not None]
 
         if not tenants:
-            job.status    = "error"
+            job.status = "error"
             job.error_msg = "No tenants configured."
             job.push({"type": "error", "msg": job.error_msg})
             return
@@ -698,34 +753,43 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
                 for lt in log_types:
                     if job.cancel_requested:
                         break
-                    job.current_tenant   = tenant["name"]
+                    job.current_tenant = tenant["name"]
                     job.current_log_type = lt
                     job.status_msg = f"🔑 Requesting token for {tenant['name']}…"
                     job.push({"type": "status", "msg": job.status_msg})
 
                     if MOCK or tenant["api_url"].startswith(DEMO_URL):
                         mock_files = list(MOCK_DIR.glob("*.log"))
-                        job.total      = len(mock_files)
+                        job.total = len(mock_files)
                         job.status_msg = f"{tenant['name']} · {lt}: {len(mock_files)} files"
-                        job.push({"type": "files_found", "count": len(mock_files),
-                                   "tenant": tenant["name"], "log_type": lt})
+                        job.push(
+                            {"type": "files_found", "count": len(mock_files), "tenant": tenant["name"], "log_type": lt}
+                        )
                         for i, mf in enumerate(mock_files, 1):
                             if job.cancel_requested:
                                 break
                             already = (await database.get_file_import(conn, tenant["id"], mf.name))["lines"]
                             try:
                                 newly_imported = await database.import_log_file(
-                                    conn, tenant["id"], lt, mf, mf.name, already)
+                                    conn, tenant["id"], lt, mf, mf.name, already
+                                )
                             except Exception as e:
                                 job.push({"type": "warn", "msg": f"Import failed: {mf.name}: {e}"})
                                 newly_imported = 0
-                            job.imported  += newly_imported
-                            job.done       = i
+                            job.imported += newly_imported
+                            job.done = i
                             job.current_file = mf.name
                             job.status_msg = f"{tenant['name']} · {lt}: {mf.name} ({i}/{len(mock_files)})"
-                            job.push({"type": "progress", "done": i, "total": len(mock_files),
-                                       "file": mf.name, "new_rows": newly_imported,
-                                       "imported": job.imported})
+                            job.push(
+                                {
+                                    "type": "progress",
+                                    "done": i,
+                                    "total": len(mock_files),
+                                    "file": mf.name,
+                                    "new_rows": newly_imported,
+                                    "imported": job.imported,
+                                }
+                            )
                             await asyncio.sleep(0.05)
                     else:
                         try:
@@ -745,16 +809,15 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
                         if cutoff_ms > 0:
                             files = [f for f in files if cpi_api.epoch_ms(f.get("LastModified", "")) > cutoff_ms]
 
-                        job.total      = len(files)
+                        job.total = len(files)
                         job.status_msg = f"{tenant['name']} · {lt}: {len(files)} files"
-                        job.push({"type": "files_found", "count": len(files),
-                                   "tenant": tenant["name"], "log_type": lt})
+                        job.push({"type": "files_found", "count": len(files), "tenant": tenant["name"], "log_type": lt})
 
                         tenant_log_dir = LOGS_DIR / tenant["id"]
                         tenant_log_dir.mkdir(parents=True, exist_ok=True)
 
                         semaphore = asyncio.Semaphore(FETCH_CONCURRENCY)
-                        counters  = {"done": 0, "imported": job.imported}
+                        counters = {"done": 0, "imported": job.imported}
 
                         async def process_file(f):
                             async with semaphore:
@@ -780,14 +843,22 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
 
                                 counters["done"] += 1
                                 i = counters["done"]
-                                job.done         = i
+                                job.done = i
                                 job.current_file = f["Name"]
-                                job.status_msg   = f"{tenant['name']} · {lt}: {f['Name']} ({i}/{len(files)})"
+                                job.status_msg = f"{tenant['name']} · {lt}: {f['Name']} ({i}/{len(files)})"
 
                                 # Skip if already fully imported
                                 if file_import["size"] == remote_size and file_import["lines"] > 0:
-                                    job.push({"type": "progress", "done": i, "total": len(files),
-                                               "file": f["Name"], "new_rows": 0, "imported": counters["imported"]})
+                                    job.push(
+                                        {
+                                            "type": "progress",
+                                            "done": i,
+                                            "total": len(files),
+                                            "file": f["Name"],
+                                            "new_rows": 0,
+                                            "imported": counters["imported"],
+                                        }
+                                    )
                                     return
 
                                 # Download if new or grown
@@ -796,13 +867,25 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
                                         # Streamed to disk as gzip with constant memory; the
                                         # parser auto-detects gzip via magic bytes.
                                         await cpi_api.download_to_file(
-                                            tenant["api_url"], token, f["Name"], f["Application"],
-                                            client, dest,
+                                            tenant["api_url"],
+                                            token,
+                                            f["Name"],
+                                            f["Application"],
+                                            client,
+                                            dest,
                                         )
                                     except Exception as e:
                                         job.push({"type": "warn", "msg": f"Download failed for {f['Name']}: {e}"})
-                                        job.push({"type": "progress", "done": i, "total": len(files),
-                                                   "file": f["Name"], "new_rows": 0, "imported": counters["imported"]})
+                                        job.push(
+                                            {
+                                                "type": "progress",
+                                                "done": i,
+                                                "total": len(files),
+                                                "file": f["Name"],
+                                                "new_rows": 0,
+                                                "imported": counters["imported"],
+                                            }
+                                        )
                                         return
 
                                 # A file that can't be read completely (e.g. truncated
@@ -810,33 +893,40 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
                                 # as fully imported and is retried on the next fetch.
                                 try:
                                     newly_imported = await database.import_log_file(
-                                        conn, tenant["id"], lt, dest, f["Name"],
-                                        file_import["lines"], remote_size)
+                                        conn, tenant["id"], lt, dest, f["Name"], file_import["lines"], remote_size
+                                    )
                                 except Exception as e:
                                     job.push({"type": "warn", "msg": f"Import failed: {f['Name']}: {e}"})
                                     newly_imported = 0
                                 counters["imported"] += newly_imported
-                                job.imported          = counters["imported"]
+                                job.imported = counters["imported"]
 
-                                job.push({"type": "progress", "done": i, "total": len(files),
-                                           "file": f["Name"], "new_rows": newly_imported,
-                                           "imported": counters["imported"]})
+                                job.push(
+                                    {
+                                        "type": "progress",
+                                        "done": i,
+                                        "total": len(files),
+                                        "file": f["Name"],
+                                        "new_rows": newly_imported,
+                                        "imported": counters["imported"],
+                                    }
+                                )
 
                         await asyncio.gather(*[process_file(f) for f in files])
             finally:
                 await client.aclose()
 
         if job.cancel_requested:
-            job.status     = "cancelled"
+            job.status = "cancelled"
             job.status_msg = "Cancelled"
             job.push({"type": "cancelled", "imported": job.imported})
         else:
-            job.status     = "done"
+            job.status = "done"
             job.status_msg = "Completed"
             job.push({"type": "done", "imported": job.imported})
 
     except Exception as e:
-        job.status    = "error"
+        job.status = "error"
         job.error_msg = str(e)
         job.push({"type": "error", "msg": str(e)})
     finally:
@@ -845,14 +935,16 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
 
 # ── LLM query API ─────────────────────────────────────────────────────────────
 
+
 class LLMQueryRequest(BaseModel):
-    tenant:    Optional[str] = None   # tenant id, or null for all
-    level:     Optional[str] = None   # ERROR | WARN | INFO | DEBUG
-    iflow:     Optional[str] = None   # partial iflow name match
-    grep:      Optional[str] = None   # full-text search in message/logger
-    date_from: Optional[str] = None   # ISO datetime, e.g. "2024-01-01 00:00:00"
-    date_to:   Optional[str] = None   # ISO datetime, e.g. "2024-01-31 23:59:59"
-    limit:     int = 50               # max log entries returned (1–200)
+    tenant: str | None = None  # tenant id, or null for all
+    level: str | None = None  # ERROR | WARN | INFO | DEBUG
+    iflow: str | None = None  # partial iflow name match
+    grep: str | None = None  # full-text search in message/logger
+    date_from: str | None = None  # ISO datetime, e.g. "2024-01-01 00:00:00"
+    date_to: str | None = None  # ISO datetime, e.g. "2024-01-31 23:59:59"
+    limit: int = 50  # max log entries returned (1–200)
+
 
 @app.get("/api/query/schema")
 async def llm_query_schema():
@@ -872,20 +964,20 @@ async def llm_query_schema():
             "POST /api/query": {
                 "description": "Search log entries with optional filters.",
                 "body": {
-                    "tenant":    "string | null — tenant id to filter; null means all tenants",
-                    "level":     "string | null — log level: ERROR, WARN, INFO, DEBUG",
-                    "iflow":     "string | null — partial iflow name (case-insensitive LIKE match)",
-                    "grep":      "string | null — full-text search in message and logger fields",
+                    "tenant": "string | null — tenant id to filter; null means all tenants",
+                    "level": "string | null — log level: ERROR, WARN, INFO, DEBUG",
+                    "iflow": "string | null — partial iflow name (case-insensitive LIKE match)",
+                    "grep": "string | null — full-text search in message and logger fields",
                     "date_from": "string | null — start datetime 'YYYY-MM-DD HH:MM:SS'",
-                    "date_to":   "string | null — end datetime 'YYYY-MM-DD HH:MM:SS'",
-                    "limit":     "integer 1–200 — max entries to return (default 50)",
+                    "date_to": "string | null — end datetime 'YYYY-MM-DD HH:MM:SS'",
+                    "limit": "integer 1–200 — max entries to return (default 50)",
                 },
                 "response": {
                     "total_matching": "total rows matching the filter (may exceed limit)",
-                    "returned":       "number of rows returned",
-                    "summary":        "short natural-language summary of the result",
-                    "items":          "array of log entries",
-                    "item_fields":    "id, tenant, log_type, filename, timestamp, level, logger, iflow, message, ip, node",
+                    "returned": "number of rows returned",
+                    "summary": "short natural-language summary of the result",
+                    "items": "array of log entries",
+                    "item_fields": "id, tenant, log_type, filename, timestamp, level, logger, iflow, message, ip, node",
                 },
             },
             "GET /api/stats": {
@@ -945,7 +1037,7 @@ async def llm_query(req: LLMQueryRequest):
         f"Returning {len(items)} of {total}."
     )
     if total > limit:
-        summary += f" Use a stricter filter or increase limit (max 200) to see more."
+        summary += " Use a stricter filter or increase limit (max 200) to see more."
 
     return {
         "total_matching": total,
@@ -958,13 +1050,13 @@ async def llm_query(req: LLMQueryRequest):
 # ── Log query ─────────────────────────────────────────────────────────────────
 @app.get("/api/logs")
 async def get_logs(
-    tenant:    Optional[str] = None,
-    level:     Optional[str] = None,
-    iflow:     Optional[str] = None,
-    grep:      Optional[str] = None,
-    date_from: Optional[str] = None,
-    date_to:   Optional[str] = None,
-    page:      int = Query(1,   ge=1, le=1_000_000),
+    tenant: str | None = None,
+    level: str | None = None,
+    iflow: str | None = None,
+    grep: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    page: int = Query(1, ge=1, le=1_000_000),
     page_size: int = Query(100, ge=1, le=500),
 ):
     _check_datetime(date_from, "date_from")
@@ -973,9 +1065,14 @@ async def get_logs(
     try:
         return await database.query_logs(
             conn,
-            tenant=tenant, level=level, iflow=iflow, grep=grep,
-            date_from=date_from, date_to=date_to,
-            page=page, page_size=page_size,
+            tenant=tenant,
+            level=level,
+            iflow=iflow,
+            grep=grep,
+            date_from=date_from,
+            date_to=date_to,
+            page=page,
+            page_size=page_size,
         )
     finally:
         await conn.close()
@@ -995,7 +1092,7 @@ async def get_log_entry(entry_id: int):
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
 @app.get("/api/stats")
-async def get_stats(tenant: Optional[str] = None):
+async def get_stats(tenant: str | None = None):
     conn = await database.get_db()
     try:
         return await database.get_stats(conn, tenant)
@@ -1025,7 +1122,8 @@ async def db_clear():
 
 class CleanupRequest(BaseModel):
     older_than_days: int = Field(ge=1, le=36500)  # delete entries older than this many days
-    tenant: Optional[str] = None  # optional: restrict to one tenant
+    tenant: str | None = None  # optional: restrict to one tenant
+
 
 @app.post("/api/db/cleanup")
 async def db_cleanup(req: CleanupRequest):
@@ -1043,4 +1141,3 @@ if FRONTEND.exists():
     app.mount("/", StaticFiles(directory=str(FRONTEND), html=True), name="frontend")
 else:
     log.warning("frontend directory %s not found; serving the API only", FRONTEND)
-

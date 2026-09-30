@@ -8,6 +8,7 @@ the same file.
 Usage:
     python backend/mock/generate_sample.py [output_path] [lines]
 """
+
 import random
 import sys
 import uuid
@@ -60,7 +61,8 @@ ENDPOINTS = [
 LEVEL_WEIGHTS = [("INFO", 70), ("DEBUG", 10), ("WARN", 12), ("ERROR", 8)]
 
 STACKTRACE = [
-    "\tat org.apache.camel.processor.errorhandler.RedeliveryErrorHandler.handleException(RedeliveryErrorHandler.java:512)",
+    "\tat org.apache.camel.processor.errorhandler.RedeliveryErrorHandler"
+    ".handleException(RedeliveryErrorHandler.java:512)",
     "\tat org.apache.camel.processor.Pipeline.process(Pipeline.java:163)",
     "\tat com.sap.it.rt.adapter.http.common.HttpClientHelper.execute(HttpClientHelper.java:214)",
     "\tat java.base/java.lang.Thread.run(Thread.java:840)",
@@ -87,19 +89,21 @@ def _message(rng: random.Random, level: str) -> tuple[str, list[str]]:
     endpoint = rng.choice(ENDPOINTS)
     if level == "ERROR":
         status = rng.choice([401, 404, 500, 503])
-        text = (f"Error while processing MPL {mpl}: HTTP call to {endpoint} "
-                f"failed with status {status}")
+        text = f"Error while processing MPL {mpl}: HTTP call to {endpoint} failed with status {status}"
         return text, STACKTRACE[: rng.randint(2, len(STACKTRACE))] if rng.random() < 0.4 else []
     if level == "WARN":
         return f"Retrying request to {endpoint} (attempt {rng.randint(1, 3)}/3) for MPL {mpl}", []
     if level == "DEBUG":
         return f"Exchange property SAP_MessageProcessingLogID={mpl}", []
-    return rng.choice([
-        f"[INFO] MPL: {mpl} ; Getting cluster lock with :{uuid.UUID(int=rng.getrandbits(128))}_CRON_{rng.randint(1000, 99999)}",
-        f"Message processing started for MPL {mpl}",
-        f"HTTP call to {endpoint} returned 200 in {rng.randint(20, 2500)} ms",
-        "Timer execution Check for isWorkerReadyForTimerExecution : true ",
-    ]), []
+    return rng.choice(
+        [
+            f"[INFO] MPL: {mpl} ; Getting cluster lock with "
+            f":{uuid.UUID(int=rng.getrandbits(128))}_CRON_{rng.randint(1000, 99999)}",
+            f"Message processing started for MPL {mpl}",
+            f"HTTP call to {endpoint} returned 200 in {rng.randint(20, 2500)} ms",
+            "Timer execution Check for isWorkerReadyForTimerExecution : true ",
+        ]
+    ), []
 
 
 def generate(lines: int = DEFAULT_LINES, seed: int = SEED) -> list[str]:
@@ -114,10 +118,21 @@ def generate(lines: int = DEFAULT_LINES, seed: int = SEED) -> list[str]:
         iflow = rng.choice(IFLOWS)
         text, continuation = _message(rng, level)
         fields = [
-            ts.strftime("%Y-%m-%d %H:%M:%S"), "+0000", level, rng.choice(LOGGERS),
-            "anonymous", _thread(rng, iflow), rng.choice(CATEGORIES),
-            "na", "na", "na", "na", text, "-",
-            rng.choice(IP_PREFIXES) + str(rng.randint(1, 254)), str(rng.randint(1, 8)),
+            ts.strftime("%Y-%m-%d %H:%M:%S"),
+            "+0000",
+            level,
+            rng.choice(LOGGERS),
+            "anonymous",
+            _thread(rng, iflow),
+            rng.choice(CATEGORIES),
+            "na",
+            "na",
+            "na",
+            "na",
+            text,
+            "-",
+            rng.choice(IP_PREFIXES) + str(rng.randint(1, 254)),
+            str(rng.randint(1, 8)),
         ]
         out.append("#".join(fields))
         out.extend(continuation)

@@ -1,16 +1,17 @@
 """Database layer — DuckDB."""
-import re
-import os
-import gzip
+
 import asyncio
+import gzip
 import logging
+import os
+import re
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import duckdb
 import pyarrow as pa
-from pathlib import Path
-from typing import Iterator, Optional
 
 log = logging.getLogger("cpi.db")
 
@@ -146,13 +147,14 @@ _write_executor = ThreadPoolExecutor(1, thread_name_prefix="duckdb-write")
 class DBBusyError(Exception):
     """The database could not serve the request in time (mapped to HTTP 503)."""
 
+
 # DuckDB defaults to 80% of the RAM it can see — inside Docker that is the
 # whole VM, not the container limit — and to one thread per CPU. Together with
 # the Python heap this pushed the process past the VM memory and got it
 # OOM-killed. Keep the engine inside an explicit budget instead.
 DUCKDB_MEMORY_LIMIT = os.getenv("DUCKDB_MEMORY_LIMIT", "1.5GB")
-DUCKDB_THREADS      = int(os.getenv("DUCKDB_THREADS", "4"))
-DUCKDB_TEMP_DIR     = os.getenv("DUCKDB_TEMP_DIR", "")  # "" = DuckDB default (<db file>.tmp)
+DUCKDB_THREADS = int(os.getenv("DUCKDB_THREADS", "4"))
+DUCKDB_TEMP_DIR = os.getenv("DUCKDB_TEMP_DIR", "")  # "" = DuckDB default (<db file>.tmp)
 # The default (16MB) checkpoints after nearly every 20k-row import batch, which
 # made bulk imports 2.5-4x slower (measured).
 DUCKDB_CHECKPOINT_THRESHOLD = os.getenv("DUCKDB_CHECKPOINT_THRESHOLD", "512MB")
@@ -200,10 +202,10 @@ class DuckDBConnection:
     def _fetchall_dicts(cls, cur, sql: str, params=None) -> list[dict]:
         c = cls._execute(cur, sql, params)
         cols = [d[0] for d in c.description]
-        return [dict(zip(cols, row)) for row in c.fetchall()]
+        return [dict(zip(cols, row, strict=True)) for row in c.fetchall()]
 
     @classmethod
-    def _fetchone_dict(cls, cur, sql: str, params=None) -> Optional[dict]:
+    def _fetchone_dict(cls, cur, sql: str, params=None) -> dict | None:
         c = cls._execute(cur, sql, params)
         if c.description is None:
             return None
@@ -213,7 +215,7 @@ class DuckDBConnection:
         # CHECKPOINT — the writer (and with it the fetch job) then hangs until
         # the cursor happens to be reused. All callers select at most one row.
         rows = c.fetchall()
-        return dict(zip(cols, rows[0])) if rows else None
+        return dict(zip(cols, rows[0], strict=True)) if rows else None
 
     @classmethod
     def _fetchone_val(cls, cur, sql: str, params=None):
@@ -232,7 +234,7 @@ class DuckDBConnection:
         abandoned one is still running, corrupting/blocking future calls."""
         try:
             await asyncio.wait_for(self._write_lock.acquire(), WRITE_LOCK_TIMEOUT_S)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             log.warning(f"gave up waiting {WRITE_LOCK_TIMEOUT_S:.0f}s for the write lock")
             raise DBBusyError("database busy: another write is still running") from None
         loop = asyncio.get_running_loop()
@@ -256,7 +258,7 @@ class DuckDBConnection:
         reader never gets a cursor that is still executing."""
         try:
             cur = await asyncio.wait_for(self._read_pool.get(), POOL_ACQUIRE_TIMEOUT_S)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise DBBusyError("database busy: no free read connection") from None
         loop = asyncio.get_running_loop()
         fut = loop.run_in_executor(_read_executor, lambda: fn(cur, *args, **kwargs))
@@ -264,7 +266,7 @@ class DuckDBConnection:
         t0 = time.perf_counter()
         try:
             return await asyncio.wait_for(asyncio.shield(fut), QUERY_TIMEOUT_S)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             cur.interrupt()
             log.warning(f"query interrupted after {time.perf_counter() - t0:.1f}s (timeout)")
             raise DBBusyError(f"query took longer than {QUERY_TIMEOUT_S:g}s and was cancelled") from None
@@ -277,7 +279,7 @@ class DuckDBConnection:
 
 
 # ── Singleton connection ──────────────────────────────────────────────────────
-_db_instance: Optional[DuckDBConnection] = None
+_db_instance: DuckDBConnection | None = None
 
 
 def _migrate_drop_logs_unique_constraint(conn: duckdb.DuckDBPyConnection):
@@ -322,7 +324,7 @@ def _migrate_drop_logs_unique_constraint(conn: duckdb.DuckDBPyConnection):
     conn.execute("DROP TABLE logs")
     conn.execute("ALTER TABLE logs_new RENAME TO logs")
     # Keep the sequence ahead of the max copied id so future inserts don't collide.
-    max_id = conn.execute("SELECT COALESCE(MAX(id), 0) FROM logs").fetchone()[0]
+    max_id = conn.execute("SELECT COALESCE(MAX(id), 0) FROM logs").fetchall()[0][0]
     conn.execute(f"ALTER SEQUENCE logs_id_seq RESTART WITH {max_id + 1}")
     conn.execute("CHECKPOINT")
     log.info("migrate: Done — UNIQUE constraint removed from logs.")
@@ -345,9 +347,7 @@ def _migrate_timestamp_to_native(conn: duckdb.DuckDBPyConnection):
         return
 
     log.info("migrate: Converting logs.timestamp from TEXT to native TIMESTAMP...")
-    conn.execute(
-        "ALTER TABLE logs ALTER COLUMN timestamp TYPE TIMESTAMP USING CAST(timestamp AS TIMESTAMP)"
-    )
+    conn.execute("ALTER TABLE logs ALTER COLUMN timestamp TYPE TIMESTAMP USING CAST(timestamp AS TIMESTAMP)")
     conn.execute("CHECKPOINT")
     log.info("migrate: Done — logs.timestamp is now native TIMESTAMP.")
 
@@ -401,15 +401,16 @@ async def get_db() -> DuckDBConnection:
 
 
 LINE_RE = re.compile(
-    r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})#[^#]*#([^#]*)#([^#]*)#[^#]*#([^#]*)#[^#]*'
-    r'#[^#]*#[^#]*#[^#]*#[^#]*#(.*?)#-#([^#]*)#([^\n]*)$'
+    r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})#[^#]*#([^#]*)#([^#]*)#[^#]*#([^#]*)#[^#]*"
+    r"#[^#]*#[^#]*#[^#]*#[^#]*#(.*?)#-#([^#]*)#([^\n]*)$"
 )
 
 _IFLOW_RE = re.compile(
-    r'Camel \(([^)]+)\)'
-    r'|(?:scheduler-|\d+-)'
-    r'(.+?)(?:_Worker.*)?$'
+    r"Camel \(([^)]+)\)"
+    r"|(?:scheduler-|\d+-)"
+    r"(.+?)(?:_Worker.*)?$"
 )
+
 
 def _extract_iflow(thread: str) -> str:
     thread = thread.strip()
@@ -427,8 +428,9 @@ def _is_gzip(path: Path) -> bool:
         return False
 
 
-def iter_log_batches(tenant: str, log_type: str, filepath: Path,
-                     batch_size: int = 20000) -> Iterator[tuple[list[tuple], list[tuple]]]:
+def iter_log_batches(
+    tenant: str, log_type: str, filepath: Path, batch_size: int = 20000
+) -> Iterator[tuple[list[tuple], list[tuple]]]:
     """Parse a CPI log file into structured rows, in batches of `batch_size`.
 
     Yields (rows, unparsed):
@@ -459,7 +461,7 @@ def iter_log_batches(tenant: str, log_type: str, filepath: Path,
     """
     batch: list[tuple] = []
     unparsed: list[tuple] = []
-    current: Optional[list] = None
+    current: list | None = None
     opener = gzip.open if _is_gzip(filepath) else open
     with opener(filepath, "rt", encoding="utf-8", errors="replace") as f:
         for line_no, line in enumerate(f, 1):
@@ -481,10 +483,17 @@ def iter_log_batches(tenant: str, log_type: str, filepath: Path,
                     batch, unparsed = [], []
             ts, level, logger, iflow, message, ip, node = m.groups()
             current = [
-                tenant, log_type, filepath.name,
-                ts, level.strip(), logger.strip(),
-                _extract_iflow(iflow), message.strip(),
-                ip.strip(), node.strip(), raw,
+                tenant,
+                log_type,
+                filepath.name,
+                ts,
+                level.strip(),
+                logger.strip(),
+                _extract_iflow(iflow),
+                message.strip(),
+                ip.strip(),
+                node.strip(),
+                raw,
             ]
     if current is not None:
         batch.append(tuple(current))
@@ -494,17 +503,24 @@ def iter_log_batches(tenant: str, log_type: str, filepath: Path,
 
 # ── Tenants ───────────────────────────────────────────────────────────────────
 
-async def upsert_tenant(db: DuckDBConnection, tenant_id: str, name: str, api_url: str,
-                        oauth_url: str, client_id: str, client_secret: str):
+
+async def upsert_tenant(
+    db: DuckDBConnection, tenant_id: str, name: str, api_url: str, oauth_url: str, client_id: str, client_secret: str
+):
     def _run(conn):
-        db._execute(conn, """
+        db._execute(
+            conn,
+            """
             INSERT INTO tenants (id, name, api_url, oauth_url, client_id, client_secret)
             VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT (id) DO UPDATE SET
                 name=excluded.name, api_url=excluded.api_url,
                 oauth_url=excluded.oauth_url, client_id=excluded.client_id,
                 client_secret=excluded.client_secret
-        """, [tenant_id, name, api_url, oauth_url, client_id, client_secret])
+        """,
+            [tenant_id, name, api_url, oauth_url, client_id, client_secret],
+        )
+
     await db.run(_run)
 
 
@@ -512,7 +528,7 @@ async def get_tenants(db: DuckDBConnection) -> list[dict]:
     return await db.read(db._fetchall_dicts, "SELECT * FROM tenants ORDER BY id")
 
 
-async def get_tenant(db: DuckDBConnection, tenant_id: str) -> Optional[dict]:
+async def get_tenant(db: DuckDBConnection, tenant_id: str) -> dict | None:
     return await db.read(db._fetchone_dict, "SELECT * FROM tenants WHERE id=?", [tenant_id])
 
 
@@ -521,26 +537,50 @@ async def delete_tenant(db: DuckDBConnection, tenant_id: str):
 
 
 # ── Fetch Schedules ───────────────────────────────────────────────────────────
-async def create_schedule(db: DuckDBConnection, schedule_id: str, name: str,
-                           tenants_json: str, log_types_json: str,
-                           hours: int, interval_minutes: int, enabled: bool):
+async def create_schedule(
+    db: DuckDBConnection,
+    schedule_id: str,
+    name: str,
+    tenants_json: str,
+    log_types_json: str,
+    hours: int,
+    interval_minutes: int,
+    enabled: bool,
+):
     def _run(conn):
-        db._execute(conn, """
+        db._execute(
+            conn,
+            """
             INSERT INTO fetch_schedules (id, name, tenants, log_types, hours, interval_minutes, enabled)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, [schedule_id, name, tenants_json, log_types_json, hours, interval_minutes, enabled])
+        """,
+            [schedule_id, name, tenants_json, log_types_json, hours, interval_minutes, enabled],
+        )
+
     await db.run(_run)
 
 
-async def update_schedule(db: DuckDBConnection, schedule_id: str, name: str,
-                           tenants_json: str, log_types_json: str,
-                           hours: int, interval_minutes: int, enabled: bool):
+async def update_schedule(
+    db: DuckDBConnection,
+    schedule_id: str,
+    name: str,
+    tenants_json: str,
+    log_types_json: str,
+    hours: int,
+    interval_minutes: int,
+    enabled: bool,
+):
     def _run(conn):
-        db._execute(conn, """
+        db._execute(
+            conn,
+            """
             UPDATE fetch_schedules
             SET name=?, tenants=?, log_types=?, hours=?, interval_minutes=?, enabled=?
             WHERE id=?
-        """, [name, tenants_json, log_types_json, hours, interval_minutes, enabled, schedule_id])
+        """,
+            [name, tenants_json, log_types_json, hours, interval_minutes, enabled, schedule_id],
+        )
+
     await db.run(_run)
 
 
@@ -548,7 +588,7 @@ async def get_schedules(db: DuckDBConnection) -> list[dict]:
     return await db.read(db._fetchall_dicts, "SELECT * FROM fetch_schedules ORDER BY created_at")
 
 
-async def get_schedule(db: DuckDBConnection, schedule_id: str) -> Optional[dict]:
+async def get_schedule(db: DuckDBConnection, schedule_id: str) -> dict | None:
     return await db.read(db._fetchone_dict, "SELECT * FROM fetch_schedules WHERE id=?", [schedule_id])
 
 
@@ -557,30 +597,35 @@ async def delete_schedule(db: DuckDBConnection, schedule_id: str):
 
 
 async def touch_schedule_last_run(db: DuckDBConnection, schedule_id: str):
-    await db.run(db._execute,
-                 "UPDATE fetch_schedules SET last_run_at=CURRENT_TIMESTAMP WHERE id=?",
-                 [schedule_id])
+    await db.run(db._execute, "UPDATE fetch_schedules SET last_run_at=CURRENT_TIMESTAMP WHERE id=?", [schedule_id])
 
 
 # ── Settings (key/value) ──────────────────────────────────────────────────────
-async def get_setting(db: DuckDBConnection, key: str) -> Optional[str]:
+async def get_setting(db: DuckDBConnection, key: str) -> str | None:
     row = await db.read(db._fetchone_dict, "SELECT value FROM settings WHERE key=?", [key])
     return row["value"] if row else None
 
 
 async def set_setting(db: DuckDBConnection, key: str, value: str):
     def _run(conn):
-        db._execute(conn, """
+        db._execute(
+            conn,
+            """
             INSERT INTO settings (key, value) VALUES (?, ?)
             ON CONFLICT (key) DO UPDATE SET value=excluded.value
-        """, [key, value])
+        """,
+            [key, value],
+        )
+
     await db.run(_run)
 
 
 # ── Log Import ────────────────────────────────────────────────────────────────
 
+
 async def update_file_import_size(db: DuckDBConnection, tenant: str, filename: str, size: int):
-    await db.run(db._execute,
+    await db.run(
+        db._execute,
         "UPDATE file_imports SET size=? WHERE tenant=? AND filename=?",
         [size, tenant, filename],
     )
@@ -589,7 +634,8 @@ async def update_file_import_size(db: DuckDBConnection, tenant: str, filename: s
 async def get_file_import(db: DuckDBConnection, tenant: str, filename: str) -> dict:
     # Fetch-job bookkeeping goes through the writer (which the job needs
     # anyway) so a read pool saturated by the UI can never fail a running job.
-    row = await db.run(db._fetchone_dict,
+    row = await db.run(
+        db._fetchone_dict,
         "SELECT lines, size FROM file_imports WHERE tenant=? AND filename=?",
         [tenant, filename],
     )
@@ -600,8 +646,19 @@ async def get_file_import(db: DuckDBConnection, tenant: str, filename: str) -> d
 # for very large files; pyarrow avoids the per-row Python->DuckDB
 # parameter-marshalling cost entirely (see _insert_rows).
 _INSERT_BATCH_SIZE = 20000
-_INSERT_COLUMNS = ["tenant", "log_type", "filename", "timestamp", "level",
-                   "logger", "iflow", "message", "ip", "node", "raw_line"]
+_INSERT_COLUMNS = [
+    "tenant",
+    "log_type",
+    "filename",
+    "timestamp",
+    "level",
+    "logger",
+    "iflow",
+    "message",
+    "ip",
+    "node",
+    "raw_line",
+]
 
 
 def _insert_rows(conn, rows: list[tuple]):
@@ -615,23 +672,22 @@ def _insert_rows(conn, rows: list[tuple]):
     # pyarrow path measured ~0.0015 ms/row on the same data (~800-1000x
     # faster), because DuckDB ingests the whole batch as a columnar buffer in
     # one call instead of binding each value individually.
-    columns = list(zip(*rows))
-    arrow_table = pa.table({
-        col: pa.array(values, type=pa.string())
-        for col, values in zip(_INSERT_COLUMNS, columns)
-    })
+    columns = list(zip(*rows, strict=True))
+    arrow_table = pa.table(
+        {col: pa.array(values, type=pa.string()) for col, values in zip(_INSERT_COLUMNS, columns, strict=True)}
+    )
     conn.register("_import_batch", arrow_table)
     try:
         conn.execute(
-            f"INSERT INTO logs ({','.join(_INSERT_COLUMNS)}) "
-            f"SELECT {','.join(_INSERT_COLUMNS)} FROM _import_batch"
+            f"INSERT INTO logs ({','.join(_INSERT_COLUMNS)}) SELECT {','.join(_INSERT_COLUMNS)} FROM _import_batch"
         )
     finally:
         conn.unregister("_import_batch")
 
 
-async def import_log_file(db: DuckDBConnection, tenant: str, log_type: str,
-                          filepath: Path, filename: str, already: int, size: int = 0) -> int:
+async def import_log_file(
+    db: DuckDBConnection, tenant: str, log_type: str, filepath: Path, filename: str, already: int, size: int = 0
+) -> int:
     """Parse `filepath` and import every row past the first `already` rows.
     Returns the number of newly inserted rows.
 
@@ -653,6 +709,7 @@ async def import_log_file(db: DuckDBConnection, tenant: str, log_type: str,
     fetch skip an unchanged file) is only written once the whole file was
     parsed. Unparsable lines before the first row are stored only on the
     first import of a file, not again on every re-fetch."""
+
     def _run(conn):
         total = inserted = 0
         for rows, unparsed in iter_log_batches(tenant, log_type, filepath, _INSERT_BATCH_SIZE):
@@ -665,15 +722,22 @@ async def import_log_file(db: DuckDBConnection, tenant: str, log_type: str,
             try:
                 if new:
                     _insert_rows(conn, new)
-                    db._execute(conn, """
+                    db._execute(
+                        conn,
+                        """
                         INSERT INTO file_imports (tenant, filename, lines, size) VALUES (?, ?, ?, 0)
                         ON CONFLICT (tenant, filename) DO UPDATE SET lines=excluded.lines
-                    """, [tenant, filename, total])
+                    """,
+                        [tenant, filename, total],
+                    )
                 if unparsed and already == 0:
-                    conn.executemany("""
+                    conn.executemany(
+                        """
                         INSERT INTO unparsed_lines (tenant, log_type, filename, line_no, raw_text)
                         VALUES (?, ?, ?, ?, ?)
-                    """, [[tenant, log_type, filename, n, t] for n, t in unparsed])
+                    """,
+                        [[tenant, log_type, filename, n, t] for n, t in unparsed],
+                    )
                 conn.commit()
             except BaseException:
                 conn.rollback()
@@ -681,10 +745,14 @@ async def import_log_file(db: DuckDBConnection, tenant: str, log_type: str,
             inserted += len(new)
             invalidate_stats_cache()
         if total:
-            db._execute(conn, """
+            db._execute(
+                conn,
+                """
                 INSERT INTO file_imports (tenant, filename, lines, size) VALUES (?, ?, ?, ?)
                 ON CONFLICT (tenant, filename) DO UPDATE SET lines=excluded.lines, size=excluded.size
-            """, [tenant, filename, max(total, already), size])
+            """,
+                [tenant, filename, max(total, already), size],
+            )
         return inserted
 
     return await db.run(_run)
@@ -696,18 +764,18 @@ async def import_log_file(db: DuckDBConnection, tenant: str, log_type: str,
 # as the message again) is left out: it is only shown in the detail view,
 # which loads it via get_log_entry(). Reading it for every listed row
 # roughly doubled the data each list query had to scan and transfer.
-_LIST_COLUMNS = ("id, tenant, log_type, filename, timestamp, level, logger, "
-                 "iflow, message, ip, node, imported_at")
+_LIST_COLUMNS = "id, tenant, log_type, filename, timestamp, level, logger, iflow, message, ip, node, imported_at"
 
 
 async def query_logs(
-    db: DuckDBConnection, *,
-    tenant: Optional[str] = None,
-    level: Optional[str] = None,
-    iflow: Optional[str] = None,
-    grep: Optional[str] = None,
-    date_from: Optional[str] = None,
-    date_to: Optional[str] = None,
+    db: DuckDBConnection,
+    *,
+    tenant: str | None = None,
+    level: str | None = None,
+    iflow: str | None = None,
+    grep: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
     page: int = 1,
     page_size: int = 100,
 ) -> dict:
@@ -745,9 +813,10 @@ async def query_logs(
         total = db._fetchone_val(cur, f"SELECT COUNT(*) FROM logs {where}", params or None)
 
         offset = (page - 1) * page_size
-        items = db._fetchall_dicts(cur,
+        items = db._fetchall_dicts(
+            cur,
             f"SELECT {_LIST_COLUMNS} FROM logs {where} ORDER BY timestamp DESC LIMIT ? OFFSET ?",
-            (params + [page_size, offset]) or None,
+            [*params, page_size, offset],
         )
 
         return {
@@ -761,7 +830,7 @@ async def query_logs(
     return await db.read(_run)
 
 
-async def get_log_entry(db: DuckDBConnection, entry_id: int) -> Optional[dict]:
+async def get_log_entry(db: DuckDBConnection, entry_id: int) -> dict | None:
     return await db.read(db._fetchone_dict, "SELECT * FROM logs WHERE id=?", [entry_id])
 
 
@@ -779,7 +848,7 @@ def invalidate_stats_cache() -> None:
     _stats_cache.clear()
 
 
-async def get_stats(db: DuckDBConnection, tenant: Optional[str] = None) -> dict:
+async def get_stats(db: DuckDBConnection, tenant: str | None = None) -> dict:
     key = tenant or "all"
     cached = _stats_cache.get(key)
     if cached and time.monotonic() - cached[0] < STATS_CACHE_SECONDS:
@@ -794,27 +863,29 @@ async def get_stats(db: DuckDBConnection, tenant: Optional[str] = None) -> dict:
         return result
 
 
-async def _compute_stats(db: DuckDBConnection, tenant: Optional[str] = None) -> dict:
+async def _compute_stats(db: DuckDBConnection, tenant: str | None = None) -> dict:
     def _run(cur):
         where = "WHERE tenant=?" if tenant and tenant != "all" else ""
         params = [tenant] if tenant and tenant != "all" else []
 
-        levels = db._fetchall_dicts(cur,
-            f"SELECT upper(level) as lvl, COUNT(*) as cnt FROM logs {where} "
-            f"GROUP BY lvl ORDER BY cnt DESC",
+        levels = db._fetchall_dicts(
+            cur,
+            f"SELECT upper(level) as lvl, COUNT(*) as cnt FROM logs {where} GROUP BY lvl ORDER BY cnt DESC",
             params or None,
         )
 
         err_params = [tenant] if tenant and tenant != "all" else []
-        err_where  = "AND tenant=?" if tenant and tenant != "all" else ""
-        top_errors = db._fetchall_dicts(cur,
+        err_where = "AND tenant=?" if tenant and tenant != "all" else ""
+        top_errors = db._fetchall_dicts(
+            cur,
             f"SELECT iflow, COUNT(*) as cnt FROM logs "
             f"WHERE upper(level)='ERROR' {err_where} "
             f"GROUP BY iflow ORDER BY cnt DESC LIMIT 15",
             err_params or None,
         )
 
-        timeline = db._fetchall_dicts(cur,
+        timeline = db._fetchall_dicts(
+            cur,
             f"SELECT strftime(timestamp, '%Y-%m-%d %H') as hour, COUNT(*) as cnt "
             f"FROM logs {where} "
             f"{'AND' if where else 'WHERE'} upper(level)='ERROR' "
@@ -825,7 +896,8 @@ async def _compute_stats(db: DuckDBConnection, tenant: Optional[str] = None) -> 
 
         total = db._fetchone_val(cur, f"SELECT COUNT(*) as cnt FROM logs {where}", params or None)
 
-        per_tenant = db._fetchall_dicts(cur,
+        per_tenant = db._fetchall_dicts(
+            cur,
             f"SELECT tenant, log_type, COUNT(*) as cnt, MAX(timestamp) as last_ts "
             f"FROM logs {where} GROUP BY tenant, log_type ORDER BY tenant",
             params or None,
@@ -844,6 +916,7 @@ async def _compute_stats(db: DuckDBConnection, tenant: Optional[str] = None) -> 
 
 # ── DB Info ───────────────────────────────────────────────────────────────────
 
+
 async def get_db_info(db: DuckDBConnection, db_path: Path) -> dict:
     def _run(cur):
         size_bytes = db_path.stat().st_size if db_path.exists() else 0
@@ -856,6 +929,7 @@ async def get_db_info(db: DuckDBConnection, db_path: Path) -> dict:
             "entries": entries,
             "tenants": tenant_count,
         }
+
     return await db.read(_run)
 
 
@@ -869,11 +943,12 @@ async def clear_db(db: DuckDBConnection):
         # .duckdb file actually shrinks back down instead of permanently
         # keeping the pre-delete size.
         conn.execute("CHECKPOINT")
+
     await db.run(_run)
     invalidate_stats_cache()
 
 
-async def cleanup_old_logs(db: DuckDBConnection, older_than_days: int, tenant: Optional[str] = None) -> dict:
+async def cleanup_old_logs(db: DuckDBConnection, older_than_days: int, tenant: str | None = None) -> dict:
     def _run(conn):
         conditions = [f"timestamp < (CURRENT_TIMESTAMP - INTERVAL '{older_than_days} days')"]
         params = []
@@ -886,6 +961,7 @@ async def cleanup_old_logs(db: DuckDBConnection, older_than_days: int, tenant: O
         remaining = db._fetchone_val(conn, "SELECT COUNT(*) FROM logs") or 0
         conn.execute("CHECKPOINT")  # reclaim disk space freed by the delete
         return {"deleted": to_delete, "remaining": remaining}
+
     result = await db.run(_run)
     invalidate_stats_cache()
     return result
