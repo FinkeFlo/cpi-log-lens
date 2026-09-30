@@ -3,6 +3,7 @@ import re
 import os
 import gzip
 import asyncio
+import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -12,6 +13,7 @@ from pathlib import Path
 from typing import Iterator, Optional
 
 DB_PATH: Path = Path("/data/cpi_logs.db")
+log = logging.getLogger("cpi.db")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tenants (
@@ -232,7 +234,7 @@ class DuckDBConnection:
         try:
             await asyncio.wait_for(self._write_lock.acquire(), WRITE_LOCK_TIMEOUT_S)
         except asyncio.TimeoutError:
-            print(f"[db] gave up waiting {WRITE_LOCK_TIMEOUT_S:.0f}s for the write lock")
+            log.warning(f"gave up waiting {WRITE_LOCK_TIMEOUT_S:.0f}s for the write lock")
             raise DBBusyError("database busy: another write is still running") from None
         loop = asyncio.get_running_loop()
         fut = loop.run_in_executor(_write_executor, lambda: fn(self._conn, *args, **kwargs))
@@ -265,7 +267,7 @@ class DuckDBConnection:
             return await asyncio.wait_for(asyncio.shield(fut), QUERY_TIMEOUT_S)
         except asyncio.TimeoutError:
             cur.interrupt()
-            print(f"[db] query interrupted after {time.perf_counter() - t0:.1f}s (timeout)")
+            log.warning(f"query interrupted after {time.perf_counter() - t0:.1f}s (timeout)")
             raise DBBusyError(f"query took longer than {QUERY_TIMEOUT_S:g}s and was cancelled") from None
         except asyncio.CancelledError:
             cur.interrupt()
@@ -294,7 +296,7 @@ def _migrate_drop_logs_unique_constraint(conn: duckdb.DuckDBPyConnection):
     if not has_unique:
         return
 
-    print("[migrate] Dropping legacy UNIQUE constraint on logs (rebuilding table)...")
+    log.info("migrate: Dropping legacy UNIQUE constraint on logs (rebuilding table)...")
     conn.execute("""
         CREATE TABLE logs_new (
             id          BIGINT PRIMARY KEY DEFAULT nextval('logs_id_seq'),
@@ -324,7 +326,7 @@ def _migrate_drop_logs_unique_constraint(conn: duckdb.DuckDBPyConnection):
     max_id = conn.execute("SELECT COALESCE(MAX(id), 0) FROM logs").fetchone()[0]
     conn.execute(f"ALTER SEQUENCE logs_id_seq RESTART WITH {max_id + 1}")
     conn.execute("CHECKPOINT")
-    print("[migrate] Done — UNIQUE constraint removed from logs.")
+    log.info("migrate: Done — UNIQUE constraint removed from logs.")
 
 
 def _migrate_timestamp_to_native(conn: duckdb.DuckDBPyConnection):
@@ -343,12 +345,12 @@ def _migrate_timestamp_to_native(conn: duckdb.DuckDBPyConnection):
     if not col_type or col_type[0].upper() == "TIMESTAMP":
         return
 
-    print("[migrate] Converting logs.timestamp from TEXT to native TIMESTAMP...")
+    log.info("migrate: Converting logs.timestamp from TEXT to native TIMESTAMP...")
     conn.execute(
         "ALTER TABLE logs ALTER COLUMN timestamp TYPE TIMESTAMP USING CAST(timestamp AS TIMESTAMP)"
     )
     conn.execute("CHECKPOINT")
-    print("[migrate] Done — logs.timestamp is now native TIMESTAMP.")
+    log.info("migrate: Done — logs.timestamp is now native TIMESTAMP.")
 
 
 def _migrate_add_raw_line_column(conn: duckdb.DuckDBPyConnection):
@@ -365,10 +367,10 @@ def _migrate_add_raw_line_column(conn: duckdb.DuckDBPyConnection):
     if has_col:
         return
 
-    print("[migrate] Adding logs.raw_line column...")
+    log.info("migrate: Adding logs.raw_line column...")
     conn.execute("ALTER TABLE logs ADD COLUMN raw_line TEXT")
     conn.execute("CHECKPOINT")
-    print("[migrate] Done — logs.raw_line added (NULL for pre-existing rows).")
+    log.info("migrate: Done — logs.raw_line added (NULL for pre-existing rows).")
 
 
 async def init_db(path: Path = DB_PATH):
@@ -377,7 +379,7 @@ async def init_db(path: Path = DB_PATH):
     memory_limit, threads = conn.execute(
         "SELECT current_setting('memory_limit'), current_setting('threads')"
     ).fetchall()[0]
-    print(f"[db] duckdb {duckdb.__version__}: memory_limit={memory_limit}, threads={threads}")
+    log.info(f"duckdb {duckdb.__version__}: memory_limit={memory_limit}, threads={threads}")
     for stmt in SCHEMA.split(";"):
         stmt = stmt.strip()
         if stmt:

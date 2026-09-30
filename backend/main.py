@@ -3,8 +3,11 @@ CPI Log Explorer — FastAPI Backend
 Serves the frontend and provides REST + SSE API.
 """
 import asyncio
+import faulthandler
 import json
+import logging
 import os
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -18,8 +21,14 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-import db as database
-import api as cpi_api
+from logging_config import setup_logging
+
+setup_logging()
+
+import db as database  # noqa: E402  (logging must be configured first)
+import api as cpi_api  # noqa: E402
+
+log = logging.getLogger("cpi")
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 DB_PATH   = Path(os.getenv("DB_PATH",   "cpi_logs.duckdb"))
@@ -60,6 +69,11 @@ class FetchJob:
 
     def push(self, event: dict):
         """Broadcast an event to all active SSE listeners."""
+        if event.get("type") in ("warn", "error", "done", "cancelled"):
+            level = logging.INFO if event["type"] in ("done", "cancelled") else logging.WARNING
+            log.log(level, "fetch job %s: %s %s", self.id[:8], event["type"],
+                    event.get("msg", f"imported={event.get('imported')}"),
+                    extra={"fields": {"job_id": self.id, "event": event["type"]}})
         for q in list(self._listeners):
             q.put_nowait(event)
 
@@ -94,9 +108,18 @@ app.add_middleware(
 
 
 @app.middleware("http")
-async def no_cache_js(request, call_next):
-    """Prevent browser caching of app.js during development."""
+async def request_log_and_no_cache_js(request, call_next):
+    """Log every request with its duration (replaces uvicorn's access log) and
+    prevent browser caching of app.js."""
+    t0 = time.perf_counter()
     response = await call_next(request)
+    dur_ms = (time.perf_counter() - t0) * 1000
+    level = logging.DEBUG if request.url.path in ("/healthz", "/readyz") else logging.INFO
+    if dur_ms > 1000 or response.status_code >= 500:
+        level = logging.WARNING
+    log.log(level, "%s %s %s %.0fms", request.method, request.url.path, response.status_code, dur_ms,
+            extra={"fields": {"method": request.method, "path": request.url.path,
+                              "status": response.status_code, "dur_ms": round(dur_ms, 1)}})
     if request.url.path.endswith(".js"):
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
@@ -104,6 +127,10 @@ async def no_cache_js(request, call_next):
 
 
 SCHEDULE_CHECK_SECONDS = int(os.getenv("SCHEDULE_CHECK_SECONDS", "60"))
+# If the event loop does not advance for this long, the process dumps all
+# thread stacks and exits so the container restarts (0 disables the watchdog).
+WATCHDOG_STALL_SECONDS = float(os.getenv("WATCHDOG_STALL_SECONDS", "120"))
+_loop_heartbeat = time.monotonic()
 
 
 @app.on_event("startup")
@@ -112,9 +139,33 @@ async def startup():
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     await database.init_db(DB_PATH)
     await _load_tenants_from_json()
+    asyncio.create_task(_heartbeat())
+    if WATCHDOG_STALL_SECONDS > 0:
+        threading.Thread(target=_watchdog, name="loop-watchdog", daemon=True).start()
     if RETENTION_DAYS > 0:
         asyncio.create_task(_retention_loop())
     asyncio.create_task(_schedule_loop())
+
+
+async def _heartbeat():
+    global _loop_heartbeat
+    while True:
+        _loop_heartbeat = time.monotonic()
+        await asyncio.sleep(1)
+
+
+def _watchdog():
+    """Runs in its own thread. A blocked event loop means every request hangs
+    while the process looks alive, so no restart policy would kick in. After
+    WATCHDOG_STALL_SECONDS without a heartbeat, dump all stacks (for the
+    post-mortem) and exit hard; Docker's restart policy brings the app back."""
+    while True:
+        time.sleep(5)
+        stalled = time.monotonic() - _loop_heartbeat
+        if stalled > WATCHDOG_STALL_SECONDS:
+            log.critical("event loop stalled for %.0fs, dumping stacks and exiting", stalled)
+            faulthandler.dump_traceback(all_threads=True)
+            os._exit(70)
 
 
 async def _retention_loop():
@@ -132,10 +183,10 @@ async def _retention_loop():
             conn = await database.get_db(DB_PATH)
             result = await database.cleanup_old_logs(conn, RETENTION_DAYS)
             if result["deleted"]:
-                print(f"[retention] Deleted {result['deleted']} log entries "
+                log.info(f"retention: deleted {result['deleted']} log entries "
                       f"older than {RETENTION_DAYS} days ({result['remaining']} remaining).")
         except Exception as e:
-            print(f"[retention] Cleanup failed: {e}")
+            log.exception(f"retention: cleanup failed: {e}")
         await asyncio.sleep(RETENTION_CHECK_HOURS * 3600)
 
 
@@ -178,12 +229,12 @@ async def _schedule_loop():
                     )
                     job = FetchJob(id=str(uuid.uuid4()))
                     _active_job = job
-                    print(f"[schedule] Starting '{sched['name']}' "
+                    log.info(f"schedule: starting '{sched['name']}' "
                           f"(tenants={body.tenants}, log_types={body.log_types}, hours={body.hours})")
                     asyncio.create_task(_run_fetch(job, body))
                     break  # one job at a time — remaining due schedules wait for next tick
         except Exception as e:
-            print(f"[schedule] Loop error: {e}")
+            log.exception(f"schedule: loop error: {e}")
         await asyncio.sleep(SCHEDULE_CHECK_SECONDS)
 
 
@@ -198,7 +249,7 @@ async def _load_tenants_from_json():
         data = json5.loads(config_path.read_text())
         tenant_list = data.get("tenants", [])
     except Exception as e:
-        print(f"[warn] Could not parse {config_path}: {e}")
+        log.warning(f"could not parse {config_path}: {e}")
         return
 
     conn = await database.get_db(DB_PATH)
@@ -245,6 +296,24 @@ class DefaultFetchConfig(BaseModel):
     tenants:   list[str] = ["all"]
     log_types: list[str] = ["trace", "http"]
     hours:     int = 24
+
+
+# ── Health ────────────────────────────────────────────────────────────────────
+@app.get("/healthz")
+async def healthz():
+    """Liveness: answers as long as the event loop runs; no database access."""
+    return {"ok": True, "loop_lag_s": round(time.monotonic() - _loop_heartbeat, 2)}
+
+
+@app.get("/readyz")
+async def readyz():
+    """Readiness: the database answers a trivial query within 2 s."""
+    conn = await database.get_db(DB_PATH)
+    try:
+        await asyncio.wait_for(conn.read(conn._fetchone_val, "SELECT 1"), 2)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": type(e).__name__}, status_code=503)
+    return {"ok": True, "fetch_job": _active_job.status if _active_job else "idle"}
 
 
 # ── Tenant endpoints ──────────────────────────────────────────────────────────
