@@ -1,4 +1,4 @@
-# Pull request / main gate: static checks, dependency audit, and an image
+# Pull request / main gate: lint, type check, dependency audit, and an image
 # build with a smoke test (container starts, UI is served, MOCK import works).
 name: ci
 
@@ -29,10 +29,14 @@ jobs:
           cache-dependency-glob: backend/uv.lock
       - name: Install dependencies (fails if uv.lock is out of date)
         run: uv sync --locked
-      - name: Python compiles and imports
+      - name: Lint
         run: |
-          uv run --locked python -m compileall -q -x '/\.venv/' .
-          DB_PATH=/tmp/ci.duckdb TENANTS_CONFIG=/nonexistent uv run --locked python -c "import main"
+          uv run --locked ruff check --output-format github .
+          uv run --locked ruff format --check .
+      - name: Type check
+        run: uv run --locked mypy .
+      - name: App imports
+        run: DB_PATH=/tmp/ci.duckdb TENANTS_CONFIG=/nonexistent uv run --locked python -c "import main"
       - uses: actions/setup-node@v7
         with:
           node-version: 24

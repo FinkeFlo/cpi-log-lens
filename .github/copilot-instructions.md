@@ -13,8 +13,9 @@ docker compose -f docker-compose.yml -f compose.dev.yaml up --build   # live rel
 
 `MOCK=true`, or the "Try demo data" button (tenant `demo` with `demo://` URLs), imports
 `backend/mock/trace_sample.log` (synthetic, regenerate with `backend/mock/generate_sample.py`)
-instead of calling CPI. CI (`.github/workflows/ci.yml`) runs syntax checks, pip-audit and an image
-smoke test; there is no unit test suite yet.
+instead of calling CPI. CI (`.github/workflows/ci.yml`) runs ruff (lint + format), mypy, pip-audit
+and an image smoke test; there is no unit test suite yet. Dependencies: `backend/pyproject.toml`,
+locked in `backend/uv.lock` (`uv sync`, `uv lock`).
 
 ## Architecture
 
