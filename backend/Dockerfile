@@ -8,4 +8,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 EXPOSE 8080
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--reload", "--timeout-graceful-shutdown", "3"]
+# No --reload here: with the reloader as PID 1, a worker killed by the OOM
+# killer leaves the port open but unanswered and the container never restarts.
+# uvicorn itself is PID 1, so any crash ends the container and the restart
+# policy brings it back. Use compose.dev.yaml for live reload.
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--timeout-graceful-shutdown", "10", "--timeout-keep-alive", "5"]

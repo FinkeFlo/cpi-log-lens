@@ -4,8 +4,7 @@ services:
     ports:
       - "${APP_PORT:-8080}:8080"
     volumes:
-      - ./data:/data                          # SQLite DB + raw log files
-      - ./backend:/app                        # live-reload in dev
+      - ./data:/data                          # DuckDB database + raw log files
       - ./frontend:/frontend                  # serve frontend static files
       - ./tenants.jsonc:/config/tenants.jsonc:ro  # tenant credentials (read-only)
     env_file:
@@ -16,3 +15,5 @@ services:
       - TENANTS_CONFIG=/config/tenants.jsonc
       - FRONTEND_DIR=/frontend
     restart: unless-stopped
+    # Give a running import time to finish its current write and checkpoint.
+    stop_grace_period: 60s

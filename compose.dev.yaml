@@ -1,0 +1,9 @@
+# Development override: live-reload backend code from the working tree.
+#   docker compose -f docker-compose.yml -f compose.dev.yaml up --build
+# Never use this for normal operation: with --reload a crashed worker is not
+# restarted and the app hangs silently.
+services:
+  app:
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
+    volumes:
+      - ./backend:/app
