@@ -1,0 +1,38 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Never paste credentials, service keys or real log lines**: they can contain customer data.
+        Anonymize excerpts or reproduce the problem with the demo data.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Reported by `GET /healthz` (field `version`), or the image tag.
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: How do you run it?
+      options: [docker run, docker compose, from source]
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant app log output (anonymized)
+      render: text

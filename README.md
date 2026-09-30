@@ -2,147 +2,186 @@
 
 <img src="frontend/logo.jpg" width="128" align="right" style="border-radius: 12px" />
 
-A self-hosted web application for downloading, storing, and analyzing SAP Cloud Integration (CPI) logs.
+Self-hosted tool to fetch, store and search the log files of SAP Cloud Integration (CPI) tenants.
+It runs on your own machine, keeps everything in a local DuckDB database and works offline once
+the logs are fetched.
 
-## Features
+- **Fetch** trace and HTTP log files from any number of CPI tenants (OAuth2 client credentials),
+  manually or on a schedule. Re-fetches only import what is new.
+- **Browse** entries by tenant, level, IFlow, text and time range; open any entry to see the full
+  message and the original log line.
+- **Stats**: level distribution, IFlows with the most errors, errors per hour.
+- **LLM / automation API** to query logs from scripts or AI assistants.
 
-- 📥 **Fetch** — download HTTP and trace logs from any number of CPI tenants via OAuth2
-- 🔍 **Browse** — search and filter log entries by level, IFlow, message content and date range
-- 📊 **Stats** — error distribution per IFlow, level breakdown, hourly timeline
-- ⚙️ **Settings** — manage tenant credentials via UI or `config/tenants.jsonc`
-- 🐳 **Docker** — runs anywhere with `docker compose up`
-- 🧪 **Mock mode** — works without a real CPI connection for local development
+Not affiliated with or endorsed by SAP SE.
 
-## Quick Start
+## Quick start
+
+With Docker (no clone, no build):
 
 ```bash
-# 1. Clone
+docker run -d --name cpi-log-lens \
+  -p 127.0.0.1:8080:8080 \
+  -v cpi-log-lens-data:/data \
+  --restart unless-stopped \
+  ghcr.io/finkeflo/cpi-log-lens:latest
+```
+
+Or from source with Docker Compose:
+
+```bash
 git clone https://github.com/FinkeFlo/cpi-log-lens
 cd cpi-log-lens
-
-# 2. Start (no configuration needed)
 docker compose up -d
-
-# 3. Add a tenant in Settings, or seed tenants from a file:
-#    cp config/tenants.jsonc.example config/tenants.jsonc   (then restart)
-#    Try it without a CPI tenant: MOCK=true docker compose up -d
-
-# 4. Open
-open http://localhost:8080
 ```
 
-## Tenant Configuration
+Open <http://localhost:8080>. On first start you can **connect a CPI tenant** or **try the demo
+data** (bundled synthetic logs, no credentials needed).
 
-Add tenants in the **Settings** page, or seed them from **`config/tenants.jsonc`** (JSON with comments, gitignored). By default the file only adds tenants that don't exist yet; set `TENANTS_SEED_MODE=sync` to make the file the source of truth.
+## Connecting SAP Cloud Integration
 
-```jsonc
-{
-  "tenants": [
-    {
-      // Short ID used in the UI (lowercase, no spaces)
-      "id": "dev",
-      "name": "DEV",
+The app reads log files through the Cloud Integration OData API (`/api/v1/LogFiles`). You need a
+service key of a *Process Integration Runtime* service instance (plan `api`) whose roles allow
+reading log files; see the SAP documentation of the LogFiles API for the required role.
 
-      // From SAP BTP → Instances & Subscriptions → Cloud Integration → Service Key
-      "api_url":      "https://your-tenant.it-cpi018.cfapps.eu10-003.hana.ondemand.com",
-      "oauth_url":    "https://your-tenant.authentication.eu10.hana.ondemand.com/oauth/token",
-      "client_id":    "sb-your-client-id",
-      "client_secret": "your-client-secret"
-    }
-    // Add as many tenants as you need
-  ]
-}
-```
+In **Settings → Add tenant**, paste the service key JSON: API URL, OAuth URL, client ID and secret
+are filled in automatically. Give the tenant a short ID (lowercase, e.g. `prd`) and a display name,
+save, and use **Test connection**.
 
+Alternatively, seed tenants from `config/tenants.jsonc` (see
+[`config/tenants.jsonc.example`](config/tenants.jsonc.example)). By default the file only adds
+tenants that don't exist yet, so changes made in the UI stay; set `TENANTS_SEED_MODE=sync` to make
+the file the source of truth.
 
-## Mock Mode
+## Configuration
 
-To run without a real CPI connection (for demos or local development):
+Everything is optional. With Compose, put variables in a `.env` file next to `docker-compose.yml`
+(see [`.env.example`](.env.example)); with `docker run`, pass them with `-e`.
+
+| Variable | Default | Description |
+|---|---|---|
+| `BIND_ADDRESS` | `127.0.0.1` | *(Compose)* Host interface the port is published on. |
+| `APP_PORT` | `8080` | *(Compose)* Host port. |
+| `APP_MEM_LIMIT` | `4g` | *(Compose)* Memory limit of the container. |
+| `ALLOWED_HOSTS` | `localhost,127.0.0.1` | Host names the app answers to; add the name you use to open it. `*` disables the check (behind a reverse proxy). |
+| `CORS_ORIGINS` | *(none)* | Extra browser origins allowed to call the API. The UI itself needs none. |
+| `MOCK` | `false` | Import the bundled sample logs for every tenant instead of calling CPI. |
+| `FETCH_CONCURRENCY` | `4` | Parallel file downloads per tenant and log type. |
+| `SCHEDULE_CHECK_SECONDS` | `60` | How often scheduled fetches are checked. |
+| `RETENTION_DAYS` | `0` | Delete entries older than N days automatically (`0` = keep everything). |
+| `RETENTION_CHECK_HOURS` | `24` | How often the retention job runs. |
+| `TENANTS_CONFIG` | `/config/tenants.jsonc` | Tenant seed file (Compose mounts `./config`). |
+| `TENANTS_SEED_MODE` | `create` | `create`: only add missing tenants. `sync`: the file overwrites stored tenants. |
+| `DB_PATH` | `/data/cpi_logs.duckdb` | DuckDB database file. |
+| `LOGS_DIR` | `/data/logs` | Downloaded log files (gzip). |
+| `DUCKDB_MEMORY_LIMIT` | `1.5GB` | Memory DuckDB may use. Keep well below the container limit. |
+| `DUCKDB_THREADS` | `4` | Threads DuckDB may use. |
+| `DUCKDB_TEMP_DIR` | *(next to the DB)* | Spill directory for large queries. |
+| `DUCKDB_CHECKPOINT_THRESHOLD` | `512MB` | WAL size that triggers a checkpoint. |
+| `QUERY_TIMEOUT_S` | `30` | Read queries running longer are cancelled (HTTP 503). |
+| `POOL_ACQUIRE_TIMEOUT_S` | `10` | Max. wait for a free database connection before answering 503. |
+| `WRITE_LOCK_TIMEOUT_S` | `120` | Max. wait of a write for the database writer. |
+| `STATS_CACHE_SECONDS` | `30` | How long the Stats page result is cached. |
+| `WATCHDOG_STALL_SECONDS` | `120` | Restart the app if its event loop is blocked this long (`0` = off). |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warning`, `error`. |
+| `LOG_FORMAT` | `text` | `text` or `json` (one object per line). |
+
+## Security
+
+The app has **no login**. It is meant to run on your own machine and only listens on `127.0.0.1`
+by default. Requests to other host names and write requests from other web pages are refused.
+
+To make it reachable from other machines, set `BIND_ADDRESS=0.0.0.0`, add the host name to
+`ALLOWED_HOSTS`, and put an authenticating reverse proxy in front of it (for example Caddy with
+basic auth, or oauth2-proxy).
+
+Tenant client secrets are stored in the database file: protect the data volume and its backups
+accordingly. Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
+
+## Operations
+
+**Data.** Everything lives in `/data` (Compose: `./data`): the database `cpi_logs.duckdb` (plus a
+`.wal` file while running) and the downloaded log files under `logs/`.
+
+**Backup.** Stop the container and copy the database file together with its `.wal` file, if any:
 
 ```bash
-MOCK=true docker compose up
+docker compose stop
+cp data/cpi_logs.duckdb* /path/to/backup/
+docker compose start
 ```
 
-Imports the sample log files from `backend/mock/` instead of calling the CPI API.
+Don't copy the file while the app is running: recent changes may only be in the WAL.
 
-## Log Format
+**Upgrading.** Pull the new image (`docker compose pull && docker compose up -d`, or rebuild from
+source). Back up the database before upgrading across releases whose changelog mentions a storage
+change.
 
-CPI uses a SAP-proprietary `#`-delimited format with 15 fields:
+**Resources.** Plan for 2 CPU cores and 2–4 GB RAM for a database of about 10 GB. Deleting old
+entries (Settings or `RETENTION_DAYS`) keeps the database from growing without limit. The file does
+not shrink after deletions, but the space is reused.
 
-```
-Timestamp # Timezone # Level # Logger # User # IFlow # Category # ... # Message # - # IP # Node
-```
+**Health.** `GET /healthz` reports liveness and the version, `GET /readyz` checks the database. The
+image's `HEALTHCHECK` uses `/healthz`.
 
-All fields are parsed and indexed into a local DuckDB database for fast querying.
+## Troubleshooting
 
-## LLM / Automation API
+| Symptom | Cause / fix |
+|---|---|
+| `400 Invalid host header` | You opened the app by a name that is not in `ALLOWED_HOSTS`. |
+| `403 cross-origin request refused` | A write request came from another web page; use the app's own UI or a script without an `Origin` header. |
+| Test connection fails with 401 | Wrong client ID or secret, or the service key lacks the role for the LogFiles API. |
+| Fetch reports "Import failed: … end-of-stream marker" | A downloaded file was incomplete; the next fetch retries it. |
+| Requests return 503 "database busy" | Many slow queries at once; narrow the time range or search term, or raise `QUERY_TIMEOUT_S`. |
+| `could not parse /config/tenants.jsonc` in the log | The seed file is not valid JSON with comments. |
 
-Two endpoints allow LLMs or external tools to query logs programmatically.
+## LLM / automation API
 
-### `GET /api/query/schema`
+Two endpoints allow LLMs or scripts to query logs. Interactive API docs are at `/docs`.
 
-Returns a description of the query API — available filters, field names, and configured tenants. A good starting point for LLMs to orient themselves.
+`GET /api/query/schema` describes the query API, available filters and configured tenants.
 
-```bash
-curl http://localhost:8080/api/query/schema
-```
-
-### `POST /api/query`
-
-Search log entries with structured filters. Returns a natural-language `summary` plus matching `items`.
+`POST /api/query` searches log entries with structured filters and returns a natural-language
+`summary` plus the matching `items`:
 
 ```bash
 curl -X POST http://localhost:8080/api/query \
   -H "Content-Type: application/json" \
-  -d '{
-    "tenant":    "dev",
-    "level":     "ERROR",
-    "iflow":     "MyIFlow",
-    "grep":      "authorization failed",
-    "date_from": "2024-01-01 00:00:00",
-    "date_to":   "2024-01-31 23:59:59",
-    "limit":     50
-  }'
-```
-
-All fields are optional. Response:
-
-```json
-{
-  "total_matching": 142,
-  "returned": 50,
-  "summary": "Found 142 log entries matching tenant=dev, level=ERROR. Returning 50 of 142.",
-  "items": [ { "id": 1, "tenant": "dev", "level": "ERROR", "iflow": "...", "message": "...", ... } ]
-}
+  -d '{"tenant": "dev", "level": "ERROR", "iflow": "MyIFlow", "grep": "authorization failed",
+       "date_from": "2024-01-01 00:00:00", "date_to": "2024-01-31 23:59:59", "limit": 50}'
 ```
 
 | Field | Type | Description |
 |---|---|---|
-| `tenant` | string | Tenant ID — omit for all tenants |
+| `tenant` | string | Tenant ID; omit for all tenants |
 | `level` | string | `ERROR`, `WARN`, `INFO`, `DEBUG` |
-| `iflow` | string | Partial IFlow name match |
-| `grep` | string | Full-text search in `message` and `logger` |
-| `date_from` | string | Start datetime `YYYY-MM-DD HH:MM:SS` |
-| `date_to` | string | End datetime `YYYY-MM-DD HH:MM:SS` |
+| `iflow` | string | Partial IFlow name |
+| `grep` | string | Text search in message and logger |
+| `date_from` / `date_to` | string | `YYYY-MM-DD` or `YYYY-MM-DD HH:MM:SS` |
 | `limit` | int | Max entries returned (1–200, default 50) |
 
+## Log format
 
+CPI writes `#`-delimited lines with 15 fields:
 
-| Path | Contents |
-|---|---|
-| `data/cpi_logs.duckdb` | DuckDB database (all imported log entries) |
-| `data/logs/<tenant>/` | Raw downloaded log files (gzip) |
-| `config/tenants.jsonc` | Optional tenant seed file — **do not commit** |
+```
+Timestamp # Timezone # Level # Logger # User # Thread # Category # … # Message # - # IP # Node
+```
 
-Both `data/` and `config/tenants.jsonc` are excluded from git.
+Continuation lines (for example stack traces) are attached to the entry they belong to, and the
+original line is kept alongside the parsed fields.
 
-## Stack
+## Development
 
-- **Backend** — Python, FastAPI, DuckDB, httpx
-- **Frontend** — Alpine.js, Tailwind CSS, DaisyUI, Chart.js
-- **Storage** — DuckDB
-- **Runtime** — Docker / Docker Compose
+See [CONTRIBUTING.md](CONTRIBUTING.md). In short:
+
+```bash
+docker compose -f docker-compose.yml -f compose.dev.yaml up --build   # live reload
+```
+
+Stack: Python, FastAPI, DuckDB, httpx · Alpine.js, Tailwind CSS, daisyUI, Chart.js (vendored in
+`frontend/vendor/`, no Node.js needed).
 
 ## License
 
-MIT
+[MIT](LICENSE)
