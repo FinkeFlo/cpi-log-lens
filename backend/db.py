@@ -680,6 +680,7 @@ async def import_log_file(db: DuckDBConnection, tenant: str, log_type: str,
                 conn.rollback()
                 raise
             inserted += len(new)
+            invalidate_stats_cache()
         if total:
             db._execute(conn, """
                 INSERT INTO file_imports (tenant, filename, lines, size) VALUES (?, ?, ?, ?)
@@ -691,6 +692,14 @@ async def import_log_file(db: DuckDBConnection, tenant: str, log_type: str,
 
 
 # ── Query ─────────────────────────────────────────────────────────────────────
+
+# Columns of the log list. raw_line (the full original line, often as large
+# as the message again) is left out: it is only shown in the detail view,
+# which loads it via get_log_entry(). Reading it for every listed row
+# roughly doubled the data each list query had to scan and transfer.
+_LIST_COLUMNS = ("id, tenant, log_type, filename, timestamp, level, logger, "
+                 "iflow, message, ip, node, imported_at")
+
 
 async def query_logs(
     db: DuckDBConnection, *,
@@ -738,7 +747,7 @@ async def query_logs(
 
         offset = (page - 1) * page_size
         items = db._fetchall_dicts(cur,
-            f"SELECT * FROM logs {where} ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+            f"SELECT {_LIST_COLUMNS} FROM logs {where} ORDER BY timestamp DESC LIMIT ? OFFSET ?",
             (params + [page_size, offset]) or None,
         )
 
@@ -759,7 +768,34 @@ async def get_log_entry(db: DuckDBConnection, entry_id: int) -> Optional[dict]:
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
 
+# get_stats() runs five aggregations over the whole table; the Stats page and
+# its auto-refresh called it on every visit. Results are cached briefly and
+# dropped whenever imports, cleanup or clear change the data.
+STATS_CACHE_SECONDS = float(os.getenv("STATS_CACHE_SECONDS", "30"))
+_stats_cache: dict[str, tuple[float, dict]] = {}
+_stats_locks: dict[str, asyncio.Lock] = {}
+
+
+def invalidate_stats_cache() -> None:
+    _stats_cache.clear()
+
+
 async def get_stats(db: DuckDBConnection, tenant: Optional[str] = None) -> dict:
+    key = tenant or "all"
+    cached = _stats_cache.get(key)
+    if cached and time.monotonic() - cached[0] < STATS_CACHE_SECONDS:
+        return cached[1]
+    # Single flight: concurrent requests for the same key share one computation.
+    async with _stats_locks.setdefault(key, asyncio.Lock()):
+        cached = _stats_cache.get(key)
+        if cached and time.monotonic() - cached[0] < STATS_CACHE_SECONDS:
+            return cached[1]
+        result = await _compute_stats(db, tenant)
+        _stats_cache[key] = (time.monotonic(), result)
+        return result
+
+
+async def _compute_stats(db: DuckDBConnection, tenant: Optional[str] = None) -> dict:
     def _run(cur):
         where = "WHERE tenant=?" if tenant and tenant != "all" else ""
         params = [tenant] if tenant and tenant != "all" else []
@@ -835,6 +871,7 @@ async def clear_db(db: DuckDBConnection):
         # keeping the pre-delete size.
         conn.execute("CHECKPOINT")
     await db.run(_run)
+    invalidate_stats_cache()
 
 
 async def cleanup_old_logs(db: DuckDBConnection, older_than_days: int, tenant: Optional[str] = None) -> dict:
@@ -850,7 +887,9 @@ async def cleanup_old_logs(db: DuckDBConnection, older_than_days: int, tenant: O
         remaining = db._fetchone_val(conn, "SELECT COUNT(*) FROM logs") or 0
         conn.execute("CHECKPOINT")  # reclaim disk space freed by the delete
         return {"deleted": to_delete, "remaining": remaining}
-    return await db.run(_run)
+    result = await db.run(_run)
+    invalidate_stats_cache()
+    return result
 
 # NOTE: a dedupe-by-content function (matching on tenant/log_type/filename/
 # timestamp/level/logger/message) was considered and deliberately rejected —

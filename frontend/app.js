@@ -278,6 +278,20 @@ function App() {
         .join(', ');
     },
 
+    async toggleRow(row) {
+      if (this.selected?.id === row.id) { this.selected = null; return; }
+      this.selected = row;
+      // The list omits raw_line; load it once when the row is opened.
+      if (row.raw_line === undefined) {
+        try {
+          const res = await fetch(`/api/logs/${row.id}`);
+          row.raw_line = res.ok ? (await res.json()).raw_line : null;
+        } catch (e) {
+          row.raw_line = null;
+        }
+      }
+    },
+
     openTenantModal(tenant = null) {
       this.tenantModal.editing = !!tenant;
       this.tenantModal.form = tenant

@@ -146,7 +146,7 @@
             <!-- Data row -->
             <tr class="log-row hover:bg-base-200 cursor-pointer"
                 :class="selected?.id === row.id && 'bg-base-200'"
-                @click="selected = (selected?.id === row.id ? null : row)">
+                @click="toggleRow(row)">
               <td class="font-mono-xs whitespace-nowrap" x-text="row.timestamp?.slice(0,19)"></td>
               <td><span class="badge badge-outline badge-xs" x-text="row.tenant?.toUpperCase()"></span></td>
               <td class="text-xs text-base-content/50" x-text="row.log_type"></td>
