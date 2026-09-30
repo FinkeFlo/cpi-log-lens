@@ -1,0 +1,92 @@
+import asyncio
+import os
+
+# Settings are read when the app modules are imported, so they are set first.
+os.environ.update(
+    {
+        "WATCHDOG_STALL_SECONDS": "0",  # the watchdog thread would kill the test run between event loops
+        "TENANTS_CONFIG": "/nonexistent",
+        "MOCK": "false",
+        "RETENTION_DAYS": "0",
+        "LOG_LEVEL": "warning",
+    }
+)
+
+import httpx
+import pytest
+from asgi_lifespan import LifespanManager
+
+import api as cpi_api
+import db as database
+import main
+from tests.support import FakeCpi
+
+BASE_URL = "http://localhost"
+
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
+async def _close_app_state():
+    for task in list(main._background_tasks):
+        task.cancel()
+    await asyncio.gather(*main._background_tasks, return_exceptions=True)
+    main._background_tasks.clear()
+    db = database._db_instance
+    if db is not None:
+        # Queries of cancelled requests finish (interrupted) in their threads;
+        # wait until every cursor is back before closing the connection.
+        for _ in range(500):
+            if db._read_pool.qsize() == database.READ_POOL_SIZE and not db._write_lock.locked():
+                break
+            await asyncio.sleep(0.01)
+        db._conn.close()
+        database._db_instance = None
+    database.invalidate_stats_cache()
+    database._stats_locks.clear()
+
+
+@pytest.fixture
+async def app_env(tmp_path, monkeypatch):
+    """Fresh database and log directory for one test; the app is not started."""
+    monkeypatch.setattr(main, "DB_PATH", tmp_path / "test.duckdb")
+    monkeypatch.setattr(main, "LOGS_DIR", tmp_path / "logs")
+    monkeypatch.setattr(main, "_active_job", None)
+    monkeypatch.setattr(cpi_api, "RETRY_BACKOFF_BASE", 0)
+    database.invalidate_stats_cache()
+    database._stats_locks.clear()
+    yield tmp_path
+    await _close_app_state()
+
+
+@pytest.fixture
+async def client(app_env):
+    """HTTP client against the started app (startup ran, DB initialized)."""
+    async with (
+        LifespanManager(main.app) as manager,
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=manager.app), base_url=BASE_URL) as c,
+    ):
+        yield c
+
+
+@pytest.fixture
+async def db(app_env):
+    """Initialized database without the HTTP app."""
+    await database.init_db(main.DB_PATH)
+    return await database.get_db()
+
+
+@pytest.fixture
+def fake_cpi(monkeypatch):
+    """Fake CPI API; every HTTP client the CPI module creates talks to it."""
+    fake = FakeCpi()
+    real_client = httpx.AsyncClient
+
+    def client_with_fake_transport(*args, **kwargs):
+        kwargs.setdefault("transport", httpx.ASGITransport(app=fake.app))
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(cpi_api.httpx, "AsyncClient", client_with_fake_transport)
+    return fake

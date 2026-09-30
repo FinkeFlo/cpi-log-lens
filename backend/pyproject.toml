@@ -17,7 +17,10 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "asgi-lifespan==2.1.0",
     "mypy==2.3.1",
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
     "ruff==0.16.9",
 ]
 
@@ -51,6 +54,18 @@ ignore = [
 # process_file() in the fetch job closes over loop variables, but it is awaited
 # (asyncio.gather) within the iteration that defines it.
 "main.py" = ["B023"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = ["-ra", "--strict-markers"]
+# A known-bug test (xfail) that starts passing fails the run, so the marker
+# is removed together with the fix.
+xfail_strict = true
+
+[tool.coverage.run]
+source = ["."]
+omit = ["tests/*", "mock/*"]
 
 [tool.mypy]
 python_version = "3.12"
