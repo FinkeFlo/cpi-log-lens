@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="de" data-theme="dark">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>CPI Log Explorer</title>
+  <title>CPI Log Lens</title>
   <link rel="icon" type="image/jpeg" href="/logo.jpg" />
   <!-- Pinned local copies (scripts/vendor-frontend.sh): the UI works offline. -->
   <link href="/vendor/daisyui.full.min.css" rel="stylesheet" />
@@ -24,7 +24,7 @@
   <div class="flex-1 gap-2">
     <span class="text-lg font-bold text-primary flex items-center">
       <img src="/logo.jpg" alt="Logo" class="w-6 h-6 mr-2 rounded" />
-      CPI Log Explorer
+      CPI Log Lens
     </span>
   </div>
   <div class="flex-none">
@@ -53,7 +53,7 @@
     <span class="loading loading-spinner loading-xs text-primary flex-shrink-0"></span>
     <div class="flex-1 min-w-0">
       <div class="flex items-center justify-between gap-2 mb-1">
-        <span class="text-xs text-base-content/70 truncate" x-text="fetch.statusMsg || 'Download läuft…'"></span>
+        <span class="text-xs text-base-content/70 truncate" x-text="fetch.statusMsg || 'Fetching logs…'"></span>
         <span class="text-xs text-base-content/50 flex-shrink-0" x-show="fetch.total > 0"
               x-text="`${fetch.done} / ${fetch.total}`"></span>
       </div>
@@ -62,10 +62,10 @@
     </div>
     <span x-show="fetch.imported > 0"
           class="badge badge-primary badge-sm flex-shrink-0"
-          x-text="`+${fetch.imported.toLocaleString()}`"></span>
+          x-text="`+${fetch.imported.toLocaleString('en-US')}`"></span>
     <button class="btn btn-ghost btn-xs text-error flex-shrink-0" @click="cancelFetch()"
-            title="Download abbrechen">✕ Abbrechen</button>
-    <button class="btn btn-ghost btn-xs flex-shrink-0" @click="page='fetch'">Details →</button>
+            title="Cancel fetch">✕ Cancel</button>
+    <button class="btn btn-ghost btn-xs flex-shrink-0" @click="page='fetch'">View progress →</button>
   </div>
 </div>
 
@@ -79,7 +79,7 @@
         <div>
           <label class="label py-0 pb-1"><span class="label-text text-xs">Tenant</span></label>
           <select class="select select-bordered select-sm w-32" x-model="q.tenant">
-            <option value="">Alle</option>
+            <option value="">All tenants</option>
             <template x-for="t in tenants" :key="t.id">
               <option :value="t.id" x-text="t.name"></option>
             </template>
@@ -88,7 +88,7 @@
         <div>
           <label class="label py-0 pb-1"><span class="label-text text-xs">Level</span></label>
           <select class="select select-bordered select-sm w-24" x-model="q.level">
-            <option value="">Alle</option>
+            <option value="">All levels</option>
             <option>ERROR</option><option>WARN</option><option>INFO</option>
           </select>
         </div>
@@ -97,15 +97,15 @@
           <input class="input input-bordered input-sm w-full" x-model="q.iflow" placeholder="filter…" @keydown.enter="search()" />
         </div>
         <div class="flex-1 min-w-48">
-          <label class="label py-0 pb-1"><span class="label-text text-xs">Suche</span></label>
-          <input class="input input-bordered input-sm w-full" x-model="q.grep" placeholder="Stichwort…" @keydown.enter="search()" />
+          <label class="label py-0 pb-1"><span class="label-text text-xs">Search</span></label>
+          <input class="input input-bordered input-sm w-full" x-model="q.grep" placeholder="Search message or logger…" @keydown.enter="search()" />
         </div>
         <div>
-          <label class="label py-0 pb-1"><span class="label-text text-xs">Von</span></label>
+          <label class="label py-0 pb-1"><span class="label-text text-xs">From</span></label>
           <input type="date" class="input input-bordered input-sm w-36" x-model="q.date_from" />
         </div>
         <div>
-          <label class="label py-0 pb-1"><span class="label-text text-xs">Bis</span></label>
+          <label class="label py-0 pb-1"><span class="label-text text-xs">To</span></label>
           <input type="date" class="input input-bordered input-sm w-36" x-model="q.date_to" />
         </div>
         <button class="btn btn-primary btn-sm" @click="search()">🔍</button>
@@ -118,14 +118,14 @@
   <div class="flex justify-between items-center mb-2 text-xs text-base-content/50 px-1">
     <span>
       <template x-if="logs.total > 0">
-        <span x-text="`${logs.total.toLocaleString()} Einträge`"></span>
+        <span x-text="`${logs.total.toLocaleString('en-US')} entries`"></span>
       </template>
       <template x-if="logs.total === 0 && !loading">
-        <span>Keine Einträge — bitte zuerst Logs laden (📥 Fetch)</span>
+        <span>No logs yet. Open 📥 Fetch to get started.</span>
       </template>
       <span x-show="loading" class="loading loading-spinner loading-xs"></span>
     </span>
-    <span x-show="logs.pages > 1" x-text="`Seite ${logs.page} / ${logs.pages}`"></span>
+    <span x-show="logs.pages > 1" x-text="`Page ${logs.page} of ${logs.pages}`"></span>
   </div>
 
   <!-- Table -->
@@ -134,9 +134,9 @@
       <table class="table table-xs table-zebra w-full">
         <thead>
           <tr class="bg-base-300 text-xs">
-            <th class="w-36">Zeit</th>
+            <th class="w-36">Time</th>
             <th class="w-28">Tenant</th>
-            <th class="w-12">Typ</th>
+            <th class="w-12">Type</th>
             <th class="w-16">Level</th>
             <th class="w-64">IFlow</th>
             <th>Message</th>
@@ -174,7 +174,7 @@
                   </div>
                   <pre class="bg-base-300 rounded p-3 font-mono text-xs whitespace-pre-wrap break-all max-h-64 overflow-y-auto" x-text="row.message"></pre>
                   <details x-show="row.raw_line" class="text-xs">
-                    <summary class="cursor-pointer text-base-content/40 font-semibold select-none">Rohzeile</summary>
+                    <summary class="cursor-pointer text-base-content/40 font-semibold select-none">Raw line</summary>
                     <pre class="bg-base-300 rounded p-3 font-mono whitespace-pre-wrap break-all max-h-64 overflow-y-auto mt-1" x-text="row.raw_line"></pre>
                   </details>
                 </div>
@@ -184,7 +184,7 @@
         </template>
         <tbody>
           <tr x-show="logs.items?.length === 0 && !loading">
-            <td colspan="6" class="text-center text-base-content/40 py-8">Keine Ergebnisse</td>
+            <td colspan="6" class="text-center text-base-content/40 py-8">No matching entries</td>
           </tr>
         </tbody>
       </table>
@@ -209,7 +209,7 @@
 <div x-show="page==='fetch'" class="container mx-auto p-4 max-w-4xl">
   <div class="card bg-base-100 shadow">
     <div class="card-body">
-      <h2 class="card-title mb-4">📥 Logs herunterladen</h2>
+      <h2 class="card-title mb-4">📥 Fetch logs</h2>
 
       <div class="grid grid-cols-1 sm:grid-cols-3 gap-6 mb-6">
         <div>
@@ -226,7 +226,7 @@
           </div>
         </div>
         <div>
-          <p class="text-sm font-semibold mb-2">Log-Typ</p>
+          <p class="text-sm font-semibold mb-2">Log type</p>
           <div class="flex flex-col gap-2">
             <template x-for="[val,label] in [['trace','trace'],['http','http']]" :key="val">
               <label class="flex items-center gap-2 cursor-pointer">
@@ -239,9 +239,9 @@
           </div>
         </div>
         <div>
-          <p class="text-sm font-semibold mb-2">Zeitraum</p>
+          <p class="text-sm font-semibold mb-2">Time range</p>
           <div class="flex flex-col gap-2">
-            <template x-for="[h,label] in [[1,'1 Stunde'],[6,'6 Stunden'],[24,'24 Stunden'],[72,'3 Tage'],[168,'7 Tage'],[0,'Alle']]" :key="h">
+            <template x-for="[h,label] in [[1,'Last hour'],[6,'Last 6 hours'],[24,'Last 24 hours'],[72,'Last 3 days'],[168,'Last 7 days'],[0,'All available']]" :key="h">
               <label class="flex items-center gap-2 cursor-pointer">
                 <input type="radio" class="radio radio-sm radio-primary" :value="h" x-model="fetch.hours" />
                 <span class="text-sm" x-text="label"></span>
@@ -255,7 +255,7 @@
       <div x-show="fetch.status !== 'idle'" class="mb-4 space-y-2">
         <div class="flex justify-between text-sm">
           <span x-text="fetch.statusMsg"></span>
-          <span x-show="fetch.total > 0" x-text="`${fetch.done} / ${fetch.total} Dateien`"></span>
+          <span x-show="fetch.total > 0" x-text="`${fetch.done} / ${fetch.total} files`"></span>
         </div>
         <progress class="progress progress-primary w-full"
                   :value="fetch.done" :max="fetch.total || 1"></progress>
@@ -267,17 +267,17 @@
         <!-- Live import counter while running -->
         <div x-show="fetch.status === 'running'" class="flex items-center gap-2 text-sm text-base-content/60">
           <span class="loading loading-dots loading-xs"></span>
-          <span>Läuft im Hintergrund — du kannst die Seite wechseln</span>
+          <span>Runs in the background. You can leave this page.</span>
           <span x-show="fetch.imported > 0" class="ml-auto badge badge-primary"
-                x-text="`+${fetch.imported.toLocaleString()} Einträge`"></span>
+                x-text="`+${fetch.imported.toLocaleString('en-US')} entries`"></span>
         </div>
 
         <div x-show="fetch.status==='done'" class="alert alert-success">
-          <span>✓ <strong x-text="fetch.imported.toLocaleString()"></strong> Einträge importiert</span>
+          <span>✓ Imported <strong x-text="fetch.imported.toLocaleString('en-US')"></strong> new entries</span>
           <button class="btn btn-sm btn-ghost ml-auto" @click="page='browse'; search()">Browse →</button>
         </div>
         <div x-show="fetch.status==='cancelled'" class="alert alert-warning">
-          <span>⏹ Abgebrochen — <strong x-text="fetch.imported.toLocaleString()"></strong> Einträge bereits importiert</span>
+          <span>⏹ Cancelled. <strong x-text="fetch.imported.toLocaleString('en-US')"></strong> entries were imported before cancelling.</span>
           <button class="btn btn-sm btn-ghost ml-auto" @click="page='browse'; search()">Browse →</button>
         </div>
         <div x-show="fetch.status==='error'" class="alert alert-error">
@@ -288,24 +288,24 @@
       <div class="flex gap-2 items-center">
         <button class="btn btn-primary" :disabled="fetch.status==='running' || fetch.log_types.length===0 || fetch.tenants.length===0"
                 @click="startFetch()">
-          <span x-show="fetch.status!=='running'">▶ Starten</span>
+          <span x-show="fetch.status!=='running'">▶ Start fetch</span>
           <span x-show="fetch.status==='running'" class="flex items-center gap-2">
-            <span class="loading loading-spinner loading-sm"></span> Lädt…
+            <span class="loading loading-spinner loading-sm"></span> Fetching…
           </span>
         </button>
         <button x-show="fetch.status === 'running'"
                 class="btn btn-error btn-outline"
-                @click="cancelFetch()">✕ Abbrechen</button>
+                @click="cancelFetch()">✕ Cancel</button>
         <button x-show="fetch.status === 'done' || fetch.status === 'error' || fetch.status === 'cancelled'"
                 class="btn btn-ghost btn-sm"
-                @click="fetch.status = 'idle'">Zurücksetzen</button>
+                @click="fetch.status = 'idle'">Reset</button>
         <button class="btn btn-ghost btn-sm"
                 :disabled="fetch.log_types.length===0 || fetch.tenants.length===0"
-                @click="saveDefaultFetchConfig()" title="Aktuelle Auswahl als Standard beim nächsten Laden verwenden">
-          💾 Als Standard speichern
+                @click="saveDefaultFetchConfig()" title="Use this selection as the default next time">
+          💾 Save as default
         </button>
         <div x-show="tenants.length===0" class="alert alert-warning py-1 px-3 text-sm">
-          Keine Tenants konfiguriert — bitte zuerst in ⚙ Settings eintragen.
+          No tenants yet. Add one in ⚙ Settings.
         </div>
       </div>
     </div>
@@ -315,19 +315,19 @@
   <div class="card bg-base-100 shadow mt-6">
     <div class="card-body">
       <div class="flex items-center justify-between mb-2">
-        <h2 class="card-title">🔁 Geplante Abrufe</h2>
-        <button class="btn btn-sm btn-primary" @click="openScheduleModal()">+ Neuer Zeitplan</button>
+        <h2 class="card-title">🔁 Scheduled fetches</h2>
+        <button class="btn btn-sm btn-primary" @click="openScheduleModal()">+ New schedule</button>
       </div>
       <p class="text-sm text-base-content/60 mb-2" x-show="schedules.length===0">
-        Kein automatischer Abruf eingerichtet. Lege einen Zeitplan an, um z.B. alle 15 Minuten
-        die letzte Stunde eines Tenants automatisch abzuholen.
+        No scheduled fetches yet. Create one to fetch, for example, the last hour of a tenant
+        every 15 minutes.
       </p>
       <div class="overflow-x-auto" x-show="schedules.length>0">
         <table class="table table-sm">
           <thead>
             <tr>
-              <th>Name</th><th>Tenant(s)</th><th>Log-Typ</th><th>Zeitraum</th>
-              <th>Intervall</th><th>Letzter Lauf</th><th>Aktiv</th><th></th>
+              <th>Name</th><th>Tenants</th><th>Log types</th><th>Time range</th>
+              <th>Interval</th><th>Last run</th><th>Enabled</th><th></th>
             </tr>
           </thead>
           <tbody>
@@ -336,7 +336,7 @@
                 <td x-text="s.name"></td>
                 <td class="text-xs" x-text="scheduleTenantLabel(s)"></td>
                 <td class="text-xs" x-text="s.log_types.join(', ')"></td>
-                <td class="text-xs" x-text="s.hours === 0 ? 'Alle' : `${s.hours}h`"></td>
+                <td class="text-xs" x-text="s.hours === 0 ? 'All' : `${s.hours}h`"></td>
                 <td class="text-xs" x-text="`${s.interval_minutes} min`"></td>
                 <td class="text-xs text-base-content/60" x-text="s.last_run_at || '—'"></td>
                 <td>
@@ -361,16 +361,16 @@
 <!-- ── Modal: Fetch Schedule ── -->
 <dialog class="modal" :class="scheduleModal.open && 'modal-open'">
   <div class="modal-box max-w-lg">
-    <h3 class="font-bold text-lg mb-4" x-text="scheduleModal.editing ? 'Zeitplan bearbeiten' : 'Neuer Zeitplan'"></h3>
+    <h3 class="font-bold text-lg mb-4" x-text="scheduleModal.editing ? 'Edit schedule' : 'New schedule'"></h3>
     <div class="space-y-3">
       <div class="form-control">
         <label class="label py-0 pb-1"><span class="label-text text-sm">Name</span></label>
-        <input type="text" class="input input-bordered input-sm" placeholder="z.B. PRD alle 15 Min"
+        <input type="text" class="input input-bordered input-sm" placeholder="e.g. PRD every 15 min"
                x-model="scheduleModal.form.name" />
       </div>
       <div class="grid grid-cols-2 gap-4">
         <div>
-          <p class="text-sm font-semibold mb-2">Tenant</p>
+          <p class="text-sm font-semibold mb-2">Tenants</p>
           <div class="flex flex-col gap-1 max-h-32 overflow-y-auto">
             <template x-for="t in tenants" :key="t.id">
               <label class="flex items-center gap-2 cursor-pointer">
@@ -383,7 +383,7 @@
           </div>
         </div>
         <div>
-          <p class="text-sm font-semibold mb-2">Log-Typ</p>
+          <p class="text-sm font-semibold mb-2">Log types</p>
           <div class="flex flex-col gap-1">
             <template x-for="[val,label] in [['trace','trace'],['http','http']]" :key="val">
               <label class="flex items-center gap-2 cursor-pointer">
@@ -398,22 +398,22 @@
       </div>
       <div class="grid grid-cols-2 gap-4">
         <div class="form-control">
-          <label class="label py-0 pb-1"><span class="label-text text-sm">Zeitraum pro Lauf (Stunden, 0 = alle)</span></label>
+          <label class="label py-0 pb-1"><span class="label-text text-sm">Time range per run (hours, 0 = all)</span></label>
           <input type="number" min="0" class="input input-bordered input-sm" x-model="scheduleModal.form.hours" />
         </div>
         <div class="form-control">
-          <label class="label py-0 pb-1"><span class="label-text text-sm">Intervall (Minuten)</span></label>
+          <label class="label py-0 pb-1"><span class="label-text text-sm">Interval (minutes)</span></label>
           <input type="number" min="1" class="input input-bordered input-sm" x-model="scheduleModal.form.interval_minutes" />
         </div>
       </div>
       <label class="flex items-center gap-2 cursor-pointer">
         <input type="checkbox" class="toggle toggle-sm toggle-success" x-model="scheduleModal.form.enabled" />
-        <span class="text-sm">Aktiv</span>
+        <span class="text-sm">Enabled</span>
       </label>
     </div>
     <div class="modal-action">
-      <button class="btn btn-primary btn-sm" @click="saveSchedule()">Speichern</button>
-      <button class="btn btn-ghost btn-sm"   @click="scheduleModal.open=false">Abbrechen</button>
+      <button class="btn btn-primary btn-sm" @click="saveSchedule()">Save schedule</button>
+      <button class="btn btn-ghost btn-sm"   @click="scheduleModal.open=false">Cancel</button>
     </div>
   </div>
   <form method="dialog" class="modal-backdrop" @click="scheduleModal.open=false"><button>close</button></form>
@@ -422,11 +422,11 @@
 <!-- ── Modal: Confirm delete schedule ── -->
 <dialog class="modal" :class="confirmDeleteScheduleId && 'modal-open'">
   <div class="modal-box max-w-sm">
-    <h3 class="font-bold text-lg mb-2">Zeitplan löschen?</h3>
-    <p class="text-sm text-base-content/70">Der geplante Abruf wird endgültig entfernt.</p>
+    <h3 class="font-bold text-lg mb-2">Delete schedule?</h3>
+    <p class="text-sm text-base-content/70">This scheduled fetch will be permanently deleted.</p>
     <div class="modal-action">
-      <button class="btn btn-error btn-sm" @click="deleteSchedule(confirmDeleteScheduleId)">Löschen</button>
-      <button class="btn btn-ghost btn-sm" @click="confirmDeleteScheduleId=null">Abbrechen</button>
+      <button class="btn btn-error btn-sm" @click="deleteSchedule(confirmDeleteScheduleId)">Delete</button>
+      <button class="btn btn-ghost btn-sm" @click="confirmDeleteScheduleId=null">Cancel</button>
     </div>
   </div>
   <form method="dialog" class="modal-backdrop" @click="confirmDeleteScheduleId=null"><button>close</button></form>
@@ -437,7 +437,7 @@
 
   <div class="flex gap-2 mb-4 items-center">
     <select class="select select-bordered select-sm w-28" x-model="statsFilter" @change="loadStats()">
-      <option value="">Alle</option>
+      <option value="">All tenants</option>
       <template x-for="t in tenants" :key="t.id">
         <option :value="t.id" x-text="t.name"></option>
       </template>
@@ -448,44 +448,44 @@
   <!-- Summary cards -->
   <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
     <div class="stat bg-base-100 rounded-box shadow py-3">
-      <div class="stat-title text-xs">Gesamt</div>
-      <div class="stat-value text-2xl" x-text="(stats.total||0).toLocaleString()"></div>
-      <div class="stat-desc">Einträge</div>
+      <div class="stat-title text-xs">Total</div>
+      <div class="stat-value text-2xl" x-text="(stats.total||0).toLocaleString('en-US')"></div>
+      <div class="stat-desc">entries</div>
     </div>
     <div class="stat bg-base-100 rounded-box shadow py-3">
-      <div class="stat-title text-xs text-error">Fehler</div>
-      <div class="stat-value text-2xl text-error" x-text="(stats.levels?.find(l=>l.lvl==='ERROR')?.cnt||0).toLocaleString()"></div>
+      <div class="stat-title text-xs text-error">Errors</div>
+      <div class="stat-value text-2xl text-error" x-text="(stats.levels?.find(l=>l.lvl==='ERROR')?.cnt||0).toLocaleString('en-US')"></div>
       <div class="stat-desc" x-text="stats.total ? Math.round(((stats.levels?.find(l=>l.lvl==='ERROR')?.cnt||0)/stats.total)*100)+'%' : '–'"></div>
     </div>
     <div class="stat bg-base-100 rounded-box shadow py-3">
       <div class="stat-title text-xs">IFlows</div>
       <div class="stat-value text-2xl" x-text="(stats.top_errors?.length||0)"></div>
-      <div class="stat-desc">mit Fehlern</div>
+      <div class="stat-desc">with errors</div>
     </div>
     <div class="stat bg-base-100 rounded-box shadow py-3">
       <div class="stat-title text-xs">Tenants</div>
       <div class="stat-value text-2xl" x-text="(stats.per_tenant?.length||0)"></div>
-      <div class="stat-desc">mit Daten</div>
+      <div class="stat-desc">with data</div>
     </div>
   </div>
 
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
     <div class="card bg-base-100 shadow">
       <div class="card-body p-4">
-        <h3 class="font-semibold text-sm mb-2">Top IFlows nach Fehlern</h3>
+        <h3 class="font-semibold text-sm mb-2">Top IFlows by errors</h3>
         <canvas id="chartErrors" height="260"></canvas>
       </div>
     </div>
     <div class="flex flex-col gap-4">
       <div class="card bg-base-100 shadow">
         <div class="card-body p-4">
-          <h3 class="font-semibold text-sm mb-2">Level-Verteilung</h3>
+          <h3 class="font-semibold text-sm mb-2">Level distribution</h3>
           <canvas id="chartLevels" height="130"></canvas>
         </div>
       </div>
       <div class="card bg-base-100 shadow">
         <div class="card-body p-4">
-          <h3 class="font-semibold text-sm mb-2">Fehler pro Stunde (letzte 48h)</h3>
+          <h3 class="font-semibold text-sm mb-2">Errors per hour (last 48 h)</h3>
           <canvas id="chartTimeline" height="100"></canvas>
         </div>
       </div>
@@ -510,10 +510,10 @@
               <tr class="cursor-pointer hover"
                   @click="q.iflow=row.iflow; page='browse'; search()">
                 <td class="font-mono text-xs" x-text="shortIflow(row.iflow)"></td>
-                <td class="text-right font-mono text-xs text-error"   x-text="(row.error||0).toLocaleString()"></td>
-                <td class="text-right font-mono text-xs text-warning" x-text="(row.warn||0).toLocaleString()"></td>
-                <td class="text-right font-mono text-xs text-success" x-text="(row.info||0).toLocaleString()"></td>
-                <td class="text-right font-mono text-xs font-bold"    x-text="(row.total||0).toLocaleString()"></td>
+                <td class="text-right font-mono text-xs text-error"   x-text="(row.error||0).toLocaleString('en-US')"></td>
+                <td class="text-right font-mono text-xs text-warning" x-text="(row.warn||0).toLocaleString('en-US')"></td>
+                <td class="text-right font-mono text-xs text-success" x-text="(row.info||0).toLocaleString('en-US')"></td>
+                <td class="text-right font-mono text-xs font-bold"    x-text="(row.total||0).toLocaleString('en-US')"></td>
               </tr>
             </template>
           </tbody>
@@ -531,7 +531,7 @@
     <div class="card-body">
       <div class="flex justify-between items-center mb-4">
         <h2 class="card-title text-base">Tenants</h2>
-        <button class="btn btn-sm btn-primary" @click="openTenantModal()">+ Hinzufügen</button>
+        <button class="btn btn-sm btn-primary" @click="openTenantModal()">+ Add tenant</button>
       </div>
 
       <template x-for="t in tenants" :key="t.id">
@@ -542,9 +542,9 @@
               <span class="text-xs text-base-content/50" x-text="t.id"></span>
             </div>
             <div class="flex gap-1">
-              <button class="btn btn-xs btn-ghost" @click="testTenant(t)">Testen</button>
-              <button class="btn btn-xs btn-ghost" @click="openTenantModal(t)">Bearbeiten</button>
-              <button class="btn btn-xs btn-ghost text-error" @click="deleteTenant(t.id)">Löschen</button>
+              <button class="btn btn-xs btn-ghost" @click="testTenant(t)">Test connection</button>
+              <button class="btn btn-xs btn-ghost" @click="openTenantModal(t)">Edit</button>
+              <button class="btn btn-xs btn-ghost text-error" @click="deleteTenant(t.id)">Delete</button>
             </div>
           </div>
           <div class="space-y-0.5 text-xs font-mono text-base-content/60">
@@ -561,57 +561,57 @@
       </template>
 
       <div x-show="tenants.length===0" class="text-center text-base-content/40 py-6 text-sm">
-        Noch keine Tenants konfiguriert.<br>
-        Füge einen hinzu oder trage Credentials in die <code>.env</code>-Datei ein.
+        No tenants yet.<br>
+        Add one here or in <code>tenants.jsonc</code>.
       </div>
     </div>
   </div>
 
-  <!-- .env hint -->
+  <!-- tenants.jsonc hint -->
   <div class="alert alert-info mb-4 text-sm">
     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="stroke-current shrink-0 w-5 h-5">
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
     </svg>
     <div>
-      <p class="font-semibold">Per .env vorbelegen</p>
-      <p class="font-mono text-xs mt-1 text-base-content/70">CPI_PRD_API_URL=https://…<br>CPI_PRD_CLIENT_ID=sb-…<br>CPI_PRD_CLIENT_SECRET=…</p>
+      <p class="font-semibold">Preconfigure in tenants.jsonc</p>
+      <p class="text-xs mt-1 text-base-content/70">Tenants can be seeded from <code>tenants.jsonc</code> (see <code>tenants.jsonc.example</code>).</p>
     </div>
   </div>
 
   <!-- DB info -->
   <div class="card bg-base-100 shadow">
     <div class="card-body">
-      <h2 class="card-title text-base mb-3">Datenbank</h2>
+      <h2 class="card-title text-base mb-3">Database</h2>
       <div class="grid grid-cols-2 gap-y-1 text-sm mb-4">
-        <span class="text-base-content/50">Pfad</span>
+        <span class="text-base-content/50">Path</span>
         <span class="font-mono text-xs" x-text="dbInfo.path || '–'"></span>
-        <span class="text-base-content/50">Größe</span>
+        <span class="text-base-content/50">Size</span>
         <span class="font-mono" x-text="dbInfo.size_mb ? dbInfo.size_mb + ' MB' : '–'"></span>
-        <span class="text-base-content/50">Einträge</span>
-        <span class="font-mono" x-text="(dbInfo.entries||0).toLocaleString()"></span>
+        <span class="text-base-content/50">Entries</span>
+        <span class="font-mono" x-text="(dbInfo.entries||0).toLocaleString('en-US')"></span>
       </div>
-      <button class="btn btn-sm btn-error btn-outline" @click="confirmClearOpen=true">🗑 Datenbank leeren</button>
+      <button class="btn btn-sm btn-error btn-outline" @click="confirmClearOpen=true">🗑 Clear database</button>
 
       <div class="divider my-2"></div>
 
-      <h3 class="font-semibold text-sm mb-2">Logs bereinigen</h3>
-      <p class="text-xs text-base-content/50 mb-3">Löscht nur Einträge, die älter als der gewählte Zeitraum sind — optional
-        auf einen Tenant eingeschränkt. Heruntergeladene Dateien bleiben erhalten.</p>
+      <h3 class="font-semibold text-sm mb-2">Delete old entries</h3>
+      <p class="text-xs text-base-content/50 mb-3">Deletes entries older than the given age, optionally for one tenant only.
+        Downloaded files are kept.</p>
       <div class="flex flex-wrap gap-2 items-end">
         <div class="form-control">
           <label class="label py-0 pb-1"><span class="label-text text-xs">Tenant</span></label>
           <select class="select select-bordered select-sm" x-model="cleanup.tenant">
-            <option value="all">Alle Tenants</option>
+            <option value="all">All tenants</option>
             <template x-for="t in tenants" :key="t.id">
               <option :value="t.id" x-text="t.name"></option>
             </template>
           </select>
         </div>
         <div class="form-control">
-          <label class="label py-0 pb-1"><span class="label-text text-xs">Älter als (Tage)</span></label>
+          <label class="label py-0 pb-1"><span class="label-text text-xs">Older than (days)</span></label>
           <input type="number" min="1" class="input input-bordered input-sm w-28" x-model.number="cleanup.olderThanDays" />
         </div>
-        <button class="btn btn-sm btn-warning btn-outline" @click="confirmCleanupOpen=true">🧹 Bereinigen</button>
+        <button class="btn btn-sm btn-warning btn-outline" @click="confirmCleanupOpen=true">🧹 Delete old entries</button>
       </div>
     </div>
   </div>
@@ -620,11 +620,11 @@
 <!-- ── Modal: Tenant ── -->
 <dialog class="modal" :class="tenantModal.open && 'modal-open'">
   <div class="modal-box max-w-lg">
-    <h3 class="font-bold text-lg mb-4" x-text="tenantModal.editing ? 'Tenant bearbeiten' : 'Tenant hinzufügen'"></h3>
+    <h3 class="font-bold text-lg mb-4" x-text="tenantModal.editing ? 'Edit tenant' : 'Add tenant'"></h3>
     <div class="space-y-3">
       <template x-for="[field,label,ph,type] in [
-        ['id',            'ID (Kürzel, z.B. prd)',   'prd',              'text'],
-        ['name',          'Anzeigename',              'PRD',              'text'],
+        ['id',            'ID (short, e.g. prd)',    'prd',              'text'],
+        ['name',          'Display name',             'PRD',              'text'],
         ['api_url',       'API URL',                  'https://…',        'text'],
         ['oauth_url',     'OAuth URL',                'https://…/oauth/token', 'text'],
         ['client_id',     'Client ID',                'sb-…',             'text'],
@@ -640,8 +640,8 @@
       </template>
     </div>
     <div class="modal-action">
-      <button class="btn btn-primary btn-sm" @click="saveTenant()">Speichern</button>
-      <button class="btn btn-ghost btn-sm"   @click="tenantModal.open=false">Abbrechen</button>
+      <button class="btn btn-primary btn-sm" @click="saveTenant()">Save tenant</button>
+      <button class="btn btn-ghost btn-sm"   @click="tenantModal.open=false">Cancel</button>
     </div>
   </div>
   <form method="dialog" class="modal-backdrop" @click="tenantModal.open=false"><button>close</button></form>
@@ -650,35 +650,34 @@
 <!-- ── Modal: Confirm clear DB ── -->
 <dialog class="modal" :class="confirmClearOpen && 'modal-open'">
   <div class="modal-box">
-    <h3 class="font-bold text-lg">Datenbank wirklich leeren?</h3>
-    <p class="py-3 text-sm">Alle importierten Log-Einträge werden gelöscht. Heruntergeladene Dateien bleiben erhalten.</p>
+    <h3 class="font-bold text-lg">Clear the entire database?</h3>
+    <p class="py-3 text-sm">All imported log entries will be deleted. Downloaded files are kept.</p>
     <div class="modal-action">
       <button class="btn btn-error btn-sm" :class="clearDbBusy && 'btn-disabled'" @click="clearDb()">
         <span x-show="clearDbBusy" class="loading loading-spinner loading-xs"></span>
-        <span x-text="clearDbBusy ? 'Leere…' : 'Ja, leeren'"></span>
+        <span x-text="clearDbBusy ? 'Clearing…' : 'Clear database'"></span>
       </button>
-      <button class="btn btn-ghost btn-sm" :disabled="clearDbBusy" @click="confirmClearOpen=false">Abbrechen</button>
+      <button class="btn btn-ghost btn-sm" :disabled="clearDbBusy" @click="confirmClearOpen=false">Cancel</button>
     </div>
   </div>
   <form method="dialog" class="modal-backdrop" @click="!clearDbBusy && (confirmClearOpen=false)"><button>close</button></form>
 </dialog>
 
-<!-- ── Modal: Confirm cleanup (tenant + Zeitraum) ── -->
+<!-- ── Modal: Confirm cleanup (tenant + time range) ── -->
 <dialog class="modal" :class="confirmCleanupOpen && 'modal-open'">
   <div class="modal-box">
-    <h3 class="font-bold text-lg">Logs bereinigen?</h3>
+    <h3 class="font-bold text-lg">Delete old entries?</h3>
     <p class="py-3 text-sm">
-      Löscht alle Einträge
-      <strong x-text="cleanup.tenant==='all' ? 'aller Tenants' : (tenants.find(t=>t.id===cleanup.tenant)?.name || cleanup.tenant)"></strong>,
-      die älter als <strong x-text="cleanup.olderThanDays"></strong> Tage sind. Diese Aktion kann nicht rückgängig
-      gemacht werden.
+      Deletes all entries for
+      <strong x-text="cleanup.tenant==='all' ? 'all tenants' : (tenants.find(t=>t.id===cleanup.tenant)?.name || cleanup.tenant)"></strong>
+      older than <strong x-text="cleanup.olderThanDays"></strong> days. This can't be undone.
     </p>
     <div class="modal-action">
       <button class="btn btn-warning btn-sm" :class="cleanup.busy && 'btn-disabled'" @click="cleanupLogs()">
         <span x-show="cleanup.busy" class="loading loading-spinner loading-xs"></span>
-        <span x-text="cleanup.busy ? 'Bereinige…' : 'Ja, bereinigen'"></span>
+        <span x-text="cleanup.busy ? 'Deleting…' : 'Delete entries'"></span>
       </button>
-      <button class="btn btn-ghost btn-sm" :disabled="cleanup.busy" @click="confirmCleanupOpen=false">Abbrechen</button>
+      <button class="btn btn-ghost btn-sm" :disabled="cleanup.busy" @click="confirmCleanupOpen=false">Cancel</button>
     </div>
   </div>
   <form method="dialog" class="modal-backdrop" @click="!cleanup.busy && (confirmCleanupOpen=false)"><button>close</button></form>

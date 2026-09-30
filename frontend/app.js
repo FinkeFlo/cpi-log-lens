@@ -1,4 +1,4 @@
-/* CPI Log Explorer — App Logic (Alpine.js) */
+/* CPI Log Lens — App Logic (Alpine.js) */
 
 function App() {
   return {
@@ -187,9 +187,9 @@ function App() {
         });
         if (!res.ok) throw new Error(await res.text());
         this._hasDefaultFetchConfig = true;
-        this.notify('Als Standard gespeichert', 'success');
+        this.notify('Saved as default', 'success');
       } catch (e) {
-        this.notify(`Fehler: ${e.message}`, 'error');
+        this.notify(`Couldn't save default: ${e.message}`, 'error');
       }
     },
 
@@ -218,7 +218,7 @@ function App() {
     async saveSchedule() {
       const f = this.scheduleModal.form;
       if (!f.name.trim() || f.tenants.length === 0 || f.log_types.length === 0) {
-        this.notify('Bitte Name, Tenant(s) und Log-Typ(en) angeben', 'error');
+        this.notify('Enter a name and select at least one tenant and log type.', 'error');
         return;
       }
       const body = {
@@ -240,9 +240,9 @@ function App() {
         if (!res.ok) throw new Error(await res.text());
         this.scheduleModal.open = false;
         await this.loadSchedules();
-        this.notify('Zeitplan gespeichert', 'success');
+        this.notify('Schedule saved', 'success');
       } catch (e) {
-        this.notify(`Fehler: ${e.message}`, 'error');
+        this.notify(`Couldn't save schedule: ${e.message}`, 'error');
       }
     },
 
@@ -260,7 +260,7 @@ function App() {
         if (!res.ok) throw new Error(await res.text());
         await this.loadSchedules();
       } catch (e) {
-        this.notify(`Fehler: ${e.message}`, 'error');
+        this.notify(`Couldn't update schedule: ${e.message}`, 'error');
       }
     },
 
@@ -268,11 +268,11 @@ function App() {
       await fetch(`/api/schedules/${id}`, { method: 'DELETE' });
       this.confirmDeleteScheduleId = null;
       await this.loadSchedules();
-      this.notify('Zeitplan gelöscht');
+      this.notify('Schedule deleted');
     },
 
     scheduleTenantLabel(s) {
-      if (s.tenants.includes('all')) return 'Alle Tenants';
+      if (s.tenants.includes('all')) return 'All tenants';
       return s.tenants
         .map(id => this.tenants.find(t => t.id === id)?.name || id)
         .join(', ');
@@ -313,9 +313,9 @@ function App() {
         if (!res.ok) throw new Error(await res.text());
         this.tenantModal.open = false;
         await this.loadTenants();
-        this.notify('Tenant gespeichert', 'success');
+        this.notify('Tenant saved', 'success');
       } catch (e) {
-        this.notify(`Fehler: ${e.message}`, 'error');
+        this.notify(`Couldn't save tenant: ${e.message}`, 'error');
       }
     },
 
@@ -324,18 +324,18 @@ function App() {
         const res = await fetch(`/api/tenants/${t.id}/test`, { method: 'POST' });
         const data = await res.json();
         t._testOk = data.ok;
-        t._testResult = data.ok ? '✓ Verbindung erfolgreich' : `✗ ${data.error}`;
+        t._testResult = data.ok ? '✓ Connection successful' : `✗ Connection failed: ${data.error}`;
       } catch (e) {
         t._testOk = false;
-        t._testResult = `✗ ${e.message}`;
+        t._testResult = `✗ Connection failed: ${e.message}`;
       }
     },
 
     async deleteTenant(id) {
-      if (!confirm(`Tenant "${id}" wirklich löschen?`)) return;
+      if (!confirm(`Delete tenant "${id}"? Imported logs are kept.`)) return;
       const res = await fetch(`/api/tenants/${id}`, { method: 'DELETE' });
       await this.loadTenants();
-      if (res.ok) this.notify('Tenant gelöscht');
+      if (res.ok) this.notify('Tenant deleted');
       else this.notify(`Could not delete tenant (HTTP ${res.status})`, 'error');
     },
 
@@ -356,7 +356,7 @@ function App() {
         // Only sync URL on page 1 — pagination is ephemeral
         if (page === 1) this._pushHash();
       } catch (e) {
-        this.notify(`Fehler beim Laden: ${e.message}`, 'error');
+        this.notify(`Couldn't load logs: ${e.message}`, 'error');
       } finally {
         this.loading = false;
       }
@@ -402,7 +402,7 @@ function App() {
       if (this.fetch.status === 'running') return;
 
       this.fetch.status      = 'running';
-      this.fetch.statusMsg   = 'Verbindung wird hergestellt…';
+      this.fetch.statusMsg   = 'Connecting…';
       this.fetch.done        = 0;
       this.fetch.total       = 0;
       this.fetch.currentFile = '';
@@ -423,7 +423,7 @@ function App() {
         const data = await res.json();
         if (!data.ok) {
           this.fetch.status   = 'error';
-          this.fetch.errorMsg = data.error || 'Unbekannter Fehler';
+          this.fetch.errorMsg = data.error || 'Unknown error';
           return;
         }
 
@@ -502,7 +502,7 @@ function App() {
         case 'files_found':
           this.fetch.total     = ev.count;
           this.fetch.currentTenant = ev.tenant;
-          this.fetch.statusMsg = `${ev.tenant} / ${ev.log_type}: ${ev.count} Dateien gefunden`;
+          this.fetch.statusMsg = `${ev.tenant} · ${ev.log_type}: ${ev.count} files found`;
           break;
         case 'progress':
           this.fetch.done        = ev.done;
@@ -528,7 +528,7 @@ function App() {
         case 'done':
           this.fetch.status      = 'done';
           this.fetch.imported    = ev.imported;
-          this.fetch.statusMsg   = 'Abgeschlossen';
+          this.fetch.statusMsg   = 'Completed';
           if (this._fetchEventSource) {
             this._fetchEventSource.close();
             this._fetchEventSource = null;
@@ -539,7 +539,7 @@ function App() {
         case 'cancelled':
           this.fetch.status      = 'cancelled';
           this.fetch.imported    = ev.imported;
-          this.fetch.statusMsg   = 'Abgebrochen';
+          this.fetch.statusMsg   = 'Cancelled';
           if (this._fetchEventSource) {
             this._fetchEventSource.close();
             this._fetchEventSource = null;
@@ -552,7 +552,7 @@ function App() {
     /** Request cancellation of the currently running fetch job. */
     async cancelFetch() {
       if (this.fetch.status !== 'running') return;
-      this.fetch.statusMsg = 'Abbruch angefordert …';
+      this.fetch.statusMsg = 'Cancelling…';
       try {
         await fetch('/api/fetch/cancel', { method: 'POST' });
       } catch (e) {
@@ -581,7 +581,7 @@ function App() {
 
         this.$nextTick(() => this.renderCharts());
       } catch (e) {
-        this.notify(`Stats-Fehler: ${e.message}`, 'error');
+        this.notify(`Couldn't load statistics: ${e.message}`, 'error');
       } finally {
         this.statsLoading = false;
       }
@@ -605,7 +605,7 @@ function App() {
         type: 'bar',
         data: {
           labels: errLabels,
-          datasets: [{ label: 'Fehler', data: errData, backgroundColor: 'rgba(248,113,113,0.8)', borderRadius: 3 }],
+          datasets: [{ label: 'Errors', data: errData, backgroundColor: 'rgba(248,113,113,0.8)', borderRadius: 3 }],
         },
         options: {
           indexAxis: 'y', responsive: true,
@@ -643,7 +643,7 @@ function App() {
         data: {
           labels: tl.map(r => r.hour?.slice(11) || r.hour),
           datasets: [{
-            label: 'Fehler/h', data: tl.map(r => r.cnt),
+            label: 'Errors per hour', data: tl.map(r => r.cnt),
             borderColor: '#f87171', backgroundColor: 'rgba(248,113,113,0.12)',
             fill: true, tension: 0.4, pointRadius: 0,
           }],
@@ -676,10 +676,10 @@ function App() {
         this.confirmClearOpen = false;
         await this.loadDbInfo();
         await this.search();
-        this.notify('Datenbank geleert');
+        this.notify('Database cleared');
       } catch (e) {
         console.error('clearDb:', e);
-        this.notify('Leeren fehlgeschlagen', 'error');
+        this.notify('Couldn\'t clear the database', 'error');
       } finally {
         this.clearDbBusy = false;
       }
@@ -699,15 +699,15 @@ function App() {
         const data = await res.json();
         this.confirmCleanupOpen = false;
         if (!res.ok || !data.ok) {
-          this.notify(data.detail || 'Bereinigung fehlgeschlagen', 'error');
+          this.notify(data.detail || "Couldn't delete old entries", 'error');
           return;
         }
         await this.loadDbInfo();
         await this.search();
-        this.notify(`${data.deleted.toLocaleString()} Einträge gelöscht (${data.remaining.toLocaleString()} verbleiben)`);
+        this.notify(`Deleted ${data.deleted.toLocaleString('en-US')} entries (${data.remaining.toLocaleString('en-US')} remaining)`);
       } catch (e) {
         console.error('cleanupLogs:', e);
-        this.notify('Bereinigung fehlgeschlagen', 'error');
+        this.notify("Couldn't delete old entries", 'error');
       } finally {
         this.cleanup.busy = false;
       }

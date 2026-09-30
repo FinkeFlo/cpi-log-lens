@@ -1,5 +1,5 @@
 """
-CPI Log Explorer — FastAPI Backend
+CPI Log Lens — FastAPI backend
 Serves the frontend and provides REST + SSE API.
 """
 import asyncio
@@ -94,7 +94,7 @@ class FetchJob:
 _active_job: Optional[FetchJob] = None
 
 # ── App ───────────────────────────────────────────────────────────────────────
-app = FastAPI(title="CPI Log Explorer", version="1.0.0")
+app = FastAPI(title="CPI Log Lens", version="1.0.0")
 
 @app.exception_handler(database.DBBusyError)
 async def db_busy(request, exc: database.DBBusyError):
@@ -452,7 +452,7 @@ async def fetch_logs(body: FetchRequest):
     """Start a background fetch job. Returns job id immediately."""
     global _active_job
     if _active_job and _active_job.status == "running":
-        return {"ok": False, "error": "Ein Download läuft bereits", "job_id": _active_job.id}
+        return {"ok": False, "error": "A fetch is already running.", "job_id": _active_job.id}
 
     job = FetchJob(id=str(uuid.uuid4()))
     _active_job = job
@@ -487,9 +487,9 @@ async def fetch_cancel():
     file currently in flight rather than being killed mid-write, so the DB
     stays consistent) instead of requiring a full container restart."""
     if not _active_job or _active_job.status != "running":
-        return {"ok": False, "error": "Kein Job läuft aktuell"}
+        return {"ok": False, "error": "No fetch is running."}
     _active_job.cancel_requested = True
-    _active_job.push({"type": "status", "msg": "Abbruch angefordert …"})
+    _active_job.push({"type": "status", "msg": "Cancelling…"})
     return {"ok": True, "job_id": _active_job.id}
 
 
@@ -642,7 +642,7 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
 
         if not tenants:
             job.status    = "error"
-            job.error_msg = "Keine Tenants konfiguriert"
+            job.error_msg = "No tenants configured."
             job.push({"type": "error", "msg": job.error_msg})
             return
 
@@ -664,13 +664,13 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
                         break
                     job.current_tenant   = tenant["name"]
                     job.current_log_type = lt
-                    job.status_msg = f"🔑 Token für {tenant['name']} …"
+                    job.status_msg = f"🔑 Requesting token for {tenant['name']}…"
                     job.push({"type": "status", "msg": job.status_msg})
 
                     if MOCK:
                         mock_files = list(MOCK_DIR.glob("*.log"))
                         job.total      = len(mock_files)
-                        job.status_msg = f"{tenant['name']} / {lt}: {len(mock_files)} Dateien"
+                        job.status_msg = f"{tenant['name']} · {lt}: {len(mock_files)} files"
                         job.push({"type": "files_found", "count": len(mock_files),
                                    "tenant": tenant["name"], "log_type": lt})
                         for i, mf in enumerate(mock_files, 1):
@@ -686,7 +686,7 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
                             job.imported  += newly_imported
                             job.done       = i
                             job.current_file = mf.name
-                            job.status_msg = f"{tenant['name']} / {lt}: {mf.name} ({i}/{len(mock_files)})"
+                            job.status_msg = f"{tenant['name']} · {lt}: {mf.name} ({i}/{len(mock_files)})"
                             job.push({"type": "progress", "done": i, "total": len(mock_files),
                                        "file": mf.name, "new_rows": newly_imported,
                                        "imported": job.imported})
@@ -697,20 +697,20 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
                                 tenant["oauth_url"], tenant["client_id"], tenant["client_secret"], client
                             )
                         except Exception as e:
-                            job.push({"type": "error", "msg": f"Token-Fehler für {tenant['name']}: {e}"})
+                            job.push({"type": "error", "msg": f"Couldn't get an OAuth token for {tenant['name']}: {e}"})
                             continue
 
                         try:
                             files = await cpi_api.list_remote_files(tenant["api_url"], token, lt, client)
                         except Exception as e:
-                            job.push({"type": "error", "msg": f"Fehler beim Abrufen der Dateiliste: {e}"})
+                            job.push({"type": "error", "msg": f"Couldn't list log files for {tenant['name']}: {e}"})
                             continue
 
                         if cutoff_ms > 0:
                             files = [f for f in files if cpi_api.epoch_ms(f.get("LastModified", "")) > cutoff_ms]
 
                         job.total      = len(files)
-                        job.status_msg = f"{tenant['name']} / {lt}: {len(files)} Dateien"
+                        job.status_msg = f"{tenant['name']} · {lt}: {len(files)} files"
                         job.push({"type": "files_found", "count": len(files),
                                    "tenant": tenant["name"], "log_type": lt})
 
@@ -746,7 +746,7 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
                                 i = counters["done"]
                                 job.done         = i
                                 job.current_file = f["Name"]
-                                job.status_msg   = f"{tenant['name']} / {lt}: {f['Name']} ({i}/{len(files)})"
+                                job.status_msg   = f"{tenant['name']} · {lt}: {f['Name']} ({i}/{len(files)})"
 
                                 # Skip if already fully imported
                                 if file_import["size"] == remote_size and file_import["lines"] > 0:
@@ -764,7 +764,7 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
                                             client, dest,
                                         )
                                     except Exception as e:
-                                        job.push({"type": "warn", "msg": f"Download fehlgeschlagen: {f['Name']}: {e}"})
+                                        job.push({"type": "warn", "msg": f"Download failed for {f['Name']}: {e}"})
                                         job.push({"type": "progress", "done": i, "total": len(files),
                                                    "file": f["Name"], "new_rows": 0, "imported": counters["imported"]})
                                         return
@@ -792,11 +792,11 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
 
         if job.cancel_requested:
             job.status     = "cancelled"
-            job.status_msg = "Abgebrochen"
+            job.status_msg = "Cancelled"
             job.push({"type": "cancelled", "imported": job.imported})
         else:
             job.status     = "done"
-            job.status_msg = "Abgeschlossen"
+            job.status_msg = "Completed"
             job.push({"type": "done", "imported": job.imported})
 
     except Exception as e:
