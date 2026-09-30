@@ -245,10 +245,7 @@ async def _schedule_loop():
         try:
             if not (_active_job and _active_job.status == "running"):
                 conn = await database.get_db()
-                try:
-                    schedules = await database.get_schedules(conn)
-                finally:
-                    await conn.close()
+                schedules = await database.get_schedules(conn)
 
                 now = time.time()
                 for sched in schedules:
@@ -260,10 +257,7 @@ async def _schedule_loop():
                             continue
 
                     conn2 = await database.get_db()
-                    try:
-                        await database.touch_schedule_last_run(conn2, sched["id"])
-                    finally:
-                        await conn2.close()
+                    await database.touch_schedule_last_run(conn2, sched["id"])
 
                     body = FetchRequest(
                         tenants=json.loads(sched["tenants"]),
@@ -301,28 +295,23 @@ async def _load_tenants_from_json():
         return
 
     conn = await database.get_db()
-    try:
-        added = updated = 0
-        for t in tenant_list:
-            tid = t.get("id", "").strip().lower()
-            name = t.get("name", tid.upper())
-            api = t.get("api_url", "")
-            oauth = t.get("oauth_url", "")
-            cid = t.get("client_id", "")
-            secret = t.get("client_secret", "")
-            if not (tid and api and cid):
-                continue
-            exists = await database.get_tenant(conn, tid) is not None
-            if exists and settings.tenants_seed_mode != "sync":
-                continue
-            await database.upsert_tenant(conn, tid, name, api, oauth, cid, secret)
-            updated += exists
-            added += not exists
-        log.info(
-            "tenants from %s: %d added, %d updated (mode %s)", config_path, added, updated, settings.tenants_seed_mode
-        )
-    finally:
-        await conn.close()
+    added = updated = 0
+    for t in tenant_list:
+        tid = t.get("id", "").strip().lower()
+        name = t.get("name", tid.upper())
+        api = t.get("api_url", "")
+        oauth = t.get("oauth_url", "")
+        cid = t.get("client_id", "")
+        secret = t.get("client_secret", "")
+        if not (tid and api and cid):
+            continue
+        exists = await database.get_tenant(conn, tid) is not None
+        if exists and settings.tenants_seed_mode != "sync":
+            continue
+        await database.upsert_tenant(conn, tid, name, api, oauth, cid, secret)
+        updated += exists
+        added += not exists
+    log.info("tenants from %s: %d added, %d updated (mode %s)", config_path, added, updated, settings.tenants_seed_mode)
 
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
@@ -402,14 +391,11 @@ async def readyz():
 @app.get("/api/tenants")
 async def list_tenants():
     conn = await database.get_db()
-    try:
-        tenants = await database.get_tenants(conn)
-        # Mask secrets in response
-        for t in tenants:
-            t["client_secret"] = "••••••••" if t.get("client_secret") else ""
-        return tenants
-    finally:
-        await conn.close()
+    tenants = await database.get_tenants(conn)
+    # Mask secrets in response
+    for t in tenants:
+        t["client_secret"] = "••••••••" if t.get("client_secret") else ""
+    return tenants
 
 
 @app.post("/api/tenants", status_code=201)
@@ -417,55 +403,46 @@ async def create_tenant(body: TenantCreate):
     if not body.client_secret:
         raise HTTPException(422, "client_secret is required")
     conn = await database.get_db()
-    try:
-        await database.upsert_tenant(
-            conn,
-            body.id,
-            body.name,
-            body.api_url,
-            body.oauth_url,
-            body.client_id,
-            body.client_secret,
-        )
-        return {"ok": True}
-    finally:
-        await conn.close()
+    await database.upsert_tenant(
+        conn,
+        body.id,
+        body.name,
+        body.api_url,
+        body.oauth_url,
+        body.client_id,
+        body.client_secret,
+    )
+    return {"ok": True}
 
 
 @app.put("/api/tenants/{tenant_id}")
 async def update_tenant(tenant_id: str, body: TenantCreate):
     conn = await database.get_db()
-    try:
-        existing = await database.get_tenant(conn, tenant_id)
-        if not existing:
-            raise HTTPException(404, "Tenant not found")
-        # Keep existing secret if an empty or masked value is submitted —
-        # the edit form never pre-fills the stored secret.
-        secret = body.client_secret
-        if not secret or set(secret) == {"•"}:
-            secret = existing["client_secret"]
-        await database.upsert_tenant(
-            conn,
-            tenant_id,
-            body.name,
-            body.api_url,
-            body.oauth_url,
-            body.client_id,
-            secret,
-        )
-        return {"ok": True}
-    finally:
-        await conn.close()
+    existing = await database.get_tenant(conn, tenant_id)
+    if not existing:
+        raise HTTPException(404, "Tenant not found")
+    # Keep existing secret if an empty or masked value is submitted —
+    # the edit form never pre-fills the stored secret.
+    secret = body.client_secret
+    if not secret or set(secret) == {"•"}:
+        secret = existing["client_secret"]
+    await database.upsert_tenant(
+        conn,
+        tenant_id,
+        body.name,
+        body.api_url,
+        body.oauth_url,
+        body.client_id,
+        secret,
+    )
+    return {"ok": True}
 
 
 @app.delete("/api/tenants/{tenant_id}")
 async def remove_tenant(tenant_id: str):
     conn = await database.get_db()
-    try:
-        await database.delete_tenant(conn, tenant_id)
-        return {"ok": True}
-    finally:
-        await conn.close()
+    await database.delete_tenant(conn, tenant_id)
+    return {"ok": True}
 
 
 @app.post("/api/tenants/{tenant_id}/test")
@@ -481,8 +458,6 @@ async def test_tenant(tenant_id: str):
         return {"ok": bool(token), "token_preview": token[:12] + "…"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
-    finally:
-        await conn.close()
 
 
 # ── Demo data ─────────────────────────────────────────────────────────────────
@@ -554,11 +529,8 @@ async def get_default_fetch_config():
     or null if none has been saved yet — the frontend falls back to
     'all tenants + all log types' in that case."""
     conn = await database.get_db()
-    try:
-        raw = await database.get_setting(conn, "default_fetch_config")
-        return json.loads(raw) if raw else None
-    finally:
-        await conn.close()
+    raw = await database.get_setting(conn, "default_fetch_config")
+    return json.loads(raw) if raw else None
 
 
 @app.put("/api/fetch/default-config")
@@ -566,77 +538,62 @@ async def set_default_fetch_config(body: DefaultFetchConfig):
     """Persist the current fetch form selection as the default shown on
     next page load, instead of always defaulting to all tenants/log types."""
     conn = await database.get_db()
-    try:
-        await database.set_setting(conn, "default_fetch_config", body.model_dump_json())
-        return {"ok": True}
-    finally:
-        await conn.close()
+    await database.set_setting(conn, "default_fetch_config", body.model_dump_json())
+    return {"ok": True}
 
 
 # ── Fetch schedules (recurring pulls) ─────────────────────────────────────────
 @app.get("/api/schedules")
 async def list_schedules():
     conn = await database.get_db()
-    try:
-        schedules = await database.get_schedules(conn)
-        for s in schedules:
-            s["tenants"] = json.loads(s["tenants"])
-            s["log_types"] = json.loads(s["log_types"])
-        return schedules
-    finally:
-        await conn.close()
+    schedules = await database.get_schedules(conn)
+    for s in schedules:
+        s["tenants"] = json.loads(s["tenants"])
+        s["log_types"] = json.loads(s["log_types"])
+    return schedules
 
 
 @app.post("/api/schedules", status_code=201)
 async def create_schedule(body: ScheduleRequest):
     conn = await database.get_db()
-    try:
-        schedule_id = str(uuid.uuid4())
-        await database.create_schedule(
-            conn,
-            schedule_id,
-            body.name,
-            json.dumps(body.tenants),
-            json.dumps(body.log_types),
-            body.hours,
-            body.interval_minutes,
-            body.enabled,
-        )
-        return {"ok": True, "id": schedule_id}
-    finally:
-        await conn.close()
+    schedule_id = str(uuid.uuid4())
+    await database.create_schedule(
+        conn,
+        schedule_id,
+        body.name,
+        json.dumps(body.tenants),
+        json.dumps(body.log_types),
+        body.hours,
+        body.interval_minutes,
+        body.enabled,
+    )
+    return {"ok": True, "id": schedule_id}
 
 
 @app.put("/api/schedules/{schedule_id}")
 async def update_schedule(schedule_id: str, body: ScheduleRequest):
     conn = await database.get_db()
-    try:
-        existing = await database.get_schedule(conn, schedule_id)
-        if not existing:
-            raise HTTPException(404, "Schedule not found")
-        await database.update_schedule(
-            conn,
-            schedule_id,
-            body.name,
-            json.dumps(body.tenants),
-            json.dumps(body.log_types),
-            body.hours,
-            body.interval_minutes,
-            body.enabled,
-        )
-        return {"ok": True}
-    finally:
-        await conn.close()
+    existing = await database.get_schedule(conn, schedule_id)
+    if not existing:
+        raise HTTPException(404, "Schedule not found")
+    await database.update_schedule(
+        conn,
+        schedule_id,
+        body.name,
+        json.dumps(body.tenants),
+        json.dumps(body.log_types),
+        body.hours,
+        body.interval_minutes,
+        body.enabled,
+    )
+    return {"ok": True}
 
 
 @app.delete("/api/schedules/{schedule_id}")
 async def remove_schedule(schedule_id: str):
     conn = await database.get_db()
-    try:
-        await database.delete_schedule(conn, schedule_id)
-        return {"ok": True}
-    finally:
-        await conn.close()
+    await database.delete_schedule(conn, schedule_id)
+    return {"ok": True}
 
 
 @app.get("/api/fetch/stream")
@@ -901,8 +858,6 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
         job.status = "error"
         job.error_msg = str(e)
         job.push({"type": "error", "msg": str(e)})
-    finally:
-        await conn.close()
 
 
 # ── LLM query API ─────────────────────────────────────────────────────────────
@@ -922,10 +877,7 @@ class LLMQueryRequest(BaseModel):
 async def llm_query_schema():
     """Describes the query API for LLM tool-use / function-calling."""
     conn = await database.get_db()
-    try:
-        tenants = await database.get_tenants(conn)
-    finally:
-        await conn.close()
+    tenants = await database.get_tenants(conn)
 
     return {
         "description": (
@@ -972,20 +924,17 @@ async def llm_query(req: LLMQueryRequest):
     _check_datetime(req.date_to, "date_to")
     limit = max(1, min(req.limit, 200))
     conn = await database.get_db()
-    try:
-        result = await database.query_logs(
-            conn,
-            tenant=req.tenant,
-            level=req.level,
-            iflow=req.iflow,
-            grep=req.grep,
-            date_from=req.date_from,
-            date_to=req.date_to,
-            page=1,
-            page_size=limit,
-        )
-    finally:
-        await conn.close()
+    result = await database.query_logs(
+        conn,
+        tenant=req.tenant,
+        level=req.level,
+        iflow=req.iflow,
+        grep=req.grep,
+        date_from=req.date_from,
+        date_to=req.date_to,
+        page=1,
+        page_size=limit,
+    )
 
     total = result["total"]
     items = result["items"]
@@ -1034,62 +983,47 @@ async def get_logs(
     _check_datetime(date_from, "date_from")
     _check_datetime(date_to, "date_to")
     conn = await database.get_db()
-    try:
-        return await database.query_logs(
-            conn,
-            tenant=tenant,
-            level=level,
-            iflow=iflow,
-            grep=grep,
-            date_from=date_from,
-            date_to=date_to,
-            page=page,
-            page_size=page_size,
-        )
-    finally:
-        await conn.close()
+    return await database.query_logs(
+        conn,
+        tenant=tenant,
+        level=level,
+        iflow=iflow,
+        grep=grep,
+        date_from=date_from,
+        date_to=date_to,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @app.get("/api/logs/{entry_id}")
 async def get_log_entry(entry_id: int):
     conn = await database.get_db()
-    try:
-        entry = await database.get_log_entry(conn, entry_id)
-        if not entry:
-            raise HTTPException(404, "Entry not found")
-        return entry
-    finally:
-        await conn.close()
+    entry = await database.get_log_entry(conn, entry_id)
+    if not entry:
+        raise HTTPException(404, "Entry not found")
+    return entry
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
 @app.get("/api/stats")
 async def get_stats(tenant: str | None = None):
     conn = await database.get_db()
-    try:
-        return await database.get_stats(conn, tenant)
-    finally:
-        await conn.close()
+    return await database.get_stats(conn, tenant)
 
 
 # ── DB info ───────────────────────────────────────────────────────────────────
 @app.get("/api/db/info")
 async def db_info():
     conn = await database.get_db()
-    try:
-        return await database.get_db_info(conn, settings.db_path)
-    finally:
-        await conn.close()
+    return await database.get_db_info(conn, settings.db_path)
 
 
 @app.post("/api/db/clear")
 async def db_clear():
     conn = await database.get_db()
-    try:
-        await database.clear_db(conn)
-        return {"ok": True}
-    finally:
-        await conn.close()
+    await database.clear_db(conn)
+    return {"ok": True}
 
 
 class CleanupRequest(BaseModel):
@@ -1101,11 +1035,8 @@ class CleanupRequest(BaseModel):
 async def db_cleanup(req: CleanupRequest):
     """Delete log entries older than N days, optionally filtered by tenant."""
     conn = await database.get_db()
-    try:
-        result = await database.cleanup_old_logs(conn, req.older_than_days, req.tenant)
-        return {"ok": True, **result}
-    finally:
-        await conn.close()
+    result = await database.cleanup_old_logs(conn, req.older_than_days, req.tenant)
+    return {"ok": True, **result}
 
 
 # ── Serve frontend ────────────────────────────────────────────────────────────

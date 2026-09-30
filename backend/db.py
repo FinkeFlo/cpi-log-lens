@@ -180,12 +180,28 @@ class DuckDBConnection:
     background, instead of queuing behind it.
     """
 
-    def __init__(self, path: Path):
-        self._conn = duckdb.connect(str(path), config=_duckdb_config())
+    def __init__(self, conn: duckdb.DuckDBPyConnection):
+        """Wrap an open connection whose schema is up to date; see open()."""
+        self._conn = conn
         self._write_lock = asyncio.Lock()
         self._read_pool: asyncio.Queue = asyncio.Queue()
         for _ in range(READ_POOL_SIZE):
             self._read_pool.put_nowait(self._conn.cursor())
+
+    @classmethod
+    def open(cls, path: Path) -> "DuckDBConnection":
+        """Connect with the configured memory budget and bring the schema up to date."""
+        conn = duckdb.connect(str(path), config=_duckdb_config())
+        try:
+            memory_limit, threads = conn.execute(
+                "SELECT current_setting('memory_limit'), current_setting('threads')"
+            ).fetchall()[0]
+            log.info(f"duckdb {duckdb.__version__}: memory_limit={memory_limit}, threads={threads}")
+            _create_schema(conn)
+        except BaseException:
+            conn.close()
+            raise
+        return cls(conn)
 
     @staticmethod
     def _execute(cur, sql: str, params=None):
@@ -279,9 +295,6 @@ class DuckDBConnection:
         except asyncio.CancelledError:
             cur.interrupt()
             raise
-
-    async def close(self):
-        pass  # singleton — stays open for the lifetime of the process
 
 
 # ── Singleton connection ──────────────────────────────────────────────────────
@@ -378,13 +391,7 @@ def _migrate_add_raw_line_column(conn: duckdb.DuckDBPyConnection):
     log.info("migrate: Done — logs.raw_line added (NULL for pre-existing rows).")
 
 
-async def init_db(path: Path):
-    global _db_instance
-    conn = duckdb.connect(str(path), config=_duckdb_config())
-    memory_limit, threads = conn.execute(
-        "SELECT current_setting('memory_limit'), current_setting('threads')"
-    ).fetchall()[0]
-    log.info(f"duckdb {duckdb.__version__}: memory_limit={memory_limit}, threads={threads}")
+def _create_schema(conn: duckdb.DuckDBPyConnection) -> None:
     for stmt in SCHEMA.split(";"):
         stmt = stmt.strip()
         if stmt:
@@ -392,12 +399,11 @@ async def init_db(path: Path):
     _migrate_drop_logs_unique_constraint(conn)
     _migrate_timestamp_to_native(conn)
     _migrate_add_raw_line_column(conn)
-    _db_instance = DuckDBConnection.__new__(DuckDBConnection)
-    _db_instance._conn = conn
-    _db_instance._write_lock = asyncio.Lock()
-    _db_instance._read_pool = asyncio.Queue()
-    for _ in range(READ_POOL_SIZE):
-        _db_instance._read_pool.put_nowait(conn.cursor())
+
+
+async def init_db(path: Path):
+    global _db_instance
+    _db_instance = DuckDBConnection.open(path)
 
 
 async def get_db() -> DuckDBConnection:
