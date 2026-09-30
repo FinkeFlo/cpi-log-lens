@@ -3,6 +3,9 @@ import re
 import os
 import gzip
 import asyncio
+import time
+from concurrent.futures import ThreadPoolExecutor
+
 import duckdb
 import pyarrow as pa
 from pathlib import Path
@@ -126,6 +129,17 @@ CREATE TABLE IF NOT EXISTS unparsed_lines (
 READ_POOL_SIZE = 4
 # How long a write waits for the single writer before giving up (HTTP 503).
 WRITE_LOCK_TIMEOUT_S = float(os.getenv("WRITE_LOCK_TIMEOUT_S", "120"))
+# Reads wait at most this long for a free cursor, then fail fast with 503
+# instead of queueing without limit behind slow queries.
+POOL_ACQUIRE_TIMEOUT_S = float(os.getenv("POOL_ACQUIRE_TIMEOUT_S", "10"))
+# A single read query is interrupted after this long.
+QUERY_TIMEOUT_S = float(os.getenv("QUERY_TIMEOUT_S", "30"))
+
+# Dedicated, bounded threads for DB work instead of asyncio's shared default
+# executor: reads can never occupy more threads than there are cursors, and
+# the single writer always has its own thread.
+_read_executor = ThreadPoolExecutor(READ_POOL_SIZE, thread_name_prefix="duckdb-read")
+_write_executor = ThreadPoolExecutor(1, thread_name_prefix="duckdb-write")
 
 
 class DBBusyError(Exception):
@@ -221,7 +235,7 @@ class DuckDBConnection:
             print(f"[db] gave up waiting {WRITE_LOCK_TIMEOUT_S:.0f}s for the write lock")
             raise DBBusyError("database busy: another write is still running") from None
         loop = asyncio.get_running_loop()
-        fut = loop.run_in_executor(None, lambda: fn(self._conn, *args, **kwargs))
+        fut = loop.run_in_executor(_write_executor, lambda: fn(self._conn, *args, **kwargs))
         fut.add_done_callback(lambda f: self._write_lock.release())
         return await asyncio.shield(fut)
 
@@ -230,15 +244,32 @@ class DuckDBConnection:
         against it, off the event loop. Runs concurrently with `run()` writes and
         with other `read()` calls (bounded by READ_POOL_SIZE).
 
-        Uses `asyncio.shield` + a done-callback so the cursor is only returned to
-        the pool once its query has actually finished, even if the caller is
-        cancelled early — otherwise a cancelled request could hand the cursor to
-        a new reader while the abandoned query is still executing on it."""
-        cur = await self._read_pool.get()
+        Backpressure and timeouts, so slow or abandoned queries can't lock up
+        the API for minutes:
+        - waiting for a free cursor is bounded (POOL_ACQUIRE_TIMEOUT_S → DBBusyError, HTTP 503);
+        - a query running longer than QUERY_TIMEOUT_S, or whose caller was
+          cancelled, is stopped with `cursor.interrupt()`.
+
+        `asyncio.shield` + a done-callback still make sure the cursor only
+        returns to the pool once its query has actually finished, so a new
+        reader never gets a cursor that is still executing."""
+        try:
+            cur = await asyncio.wait_for(self._read_pool.get(), POOL_ACQUIRE_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            raise DBBusyError("database busy: no free read connection") from None
         loop = asyncio.get_running_loop()
-        fut = loop.run_in_executor(None, lambda: fn(cur, *args, **kwargs))
+        fut = loop.run_in_executor(_read_executor, lambda: fn(cur, *args, **kwargs))
         fut.add_done_callback(lambda f: self._read_pool.put_nowait(cur))
-        return await asyncio.shield(fut)
+        t0 = time.perf_counter()
+        try:
+            return await asyncio.wait_for(asyncio.shield(fut), QUERY_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            cur.interrupt()
+            print(f"[db] query interrupted after {time.perf_counter() - t0:.1f}s (timeout)")
+            raise DBBusyError(f"query took longer than {QUERY_TIMEOUT_S:g}s and was cancelled") from None
+        except asyncio.CancelledError:
+            cur.interrupt()
+            raise
 
     async def close(self):
         pass  # singleton — stays open for the lifetime of the process
@@ -555,7 +586,9 @@ async def update_file_import_size(db: DuckDBConnection, tenant: str, filename: s
 
 
 async def get_file_import(db: DuckDBConnection, tenant: str, filename: str) -> dict:
-    row = await db.read(db._fetchone_dict,
+    # Fetch-job bookkeeping goes through the writer (which the job needs
+    # anyway) so a read pool saturated by the UI can never fail a running job.
+    row = await db.run(db._fetchone_dict,
         "SELECT lines, size FROM file_imports WHERE tenant=? AND filename=?",
         [tenant, filename],
     )
