@@ -456,6 +456,8 @@ async def test_tenant(tenant_id: str):
         tenant = await database.get_tenant(conn, tenant_id)
         if not tenant:
             raise HTTPException(404, "Tenant not found")
+        if tenant["api_url"].startswith(DEMO_URL):
+            return {"ok": True, "demo": True}
         token = await cpi_api.get_token(
             tenant["oauth_url"], tenant["client_id"], tenant["client_secret"]
         )
@@ -464,6 +466,22 @@ async def test_tenant(tenant_id: str):
         return {"ok": False, "error": str(e)}
     finally:
         await conn.close()
+
+
+# ── Demo data ─────────────────────────────────────────────────────────────────
+# A tenant whose URLs use this scheme imports the bundled sample logs instead
+# of calling SAP CPI, so new users can try the app without credentials.
+DEMO_URL = "demo://"
+DEMO_TENANT_ID = "demo"
+
+
+@app.post("/api/demo")
+async def start_demo():
+    """Create the demo tenant (if needed) and import the bundled sample logs."""
+    conn = await database.get_db(DB_PATH)
+    await database.upsert_tenant(conn, DEMO_TENANT_ID, "Demo", f"{DEMO_URL}sample",
+                                 f"{DEMO_URL}sample", "demo", "demo")
+    return await fetch_logs(FetchRequest(tenants=[DEMO_TENANT_ID], log_types=["trace"], hours=0))
 
 
 # ── Fetch: start background job ───────────────────────────────────────────────
@@ -687,7 +705,7 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
                     job.status_msg = f"🔑 Requesting token for {tenant['name']}…"
                     job.push({"type": "status", "msg": job.status_msg})
 
-                    if MOCK:
+                    if MOCK or tenant["api_url"].startswith(DEMO_URL):
                         mock_files = list(MOCK_DIR.glob("*.log"))
                         job.total      = len(mock_files)
                         job.status_msg = f"{tenant['name']} · {lt}: {len(mock_files)} files"

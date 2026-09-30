@@ -55,7 +55,11 @@ function App() {
       open: false,
       editing: false,
       form: { id: '', name: '', api_url: '', oauth_url: '', client_id: '', client_secret: '' },
+      serviceKey: '',
+      serviceKeyError: '',
     },
+    tenantsLoaded: false,
+    demoStarting: false,
 
     // Toast
     toast: { show: false, msg: '', type: 'info' },
@@ -139,6 +143,7 @@ function App() {
       try {
         const res = await fetch('/api/tenants');
         this.tenants = await res.json();
+        this.tenantsLoaded = true;
         if (this._wantAllTenants) {
           // Saved default config was ["all"] — resolve to the concrete list
           // now that tenants are known.
@@ -292,11 +297,50 @@ function App() {
       }
     },
 
+    // Fill the tenant form from a CPI service key (BTP cockpit → service
+    // instance → service key), which users usually have as JSON.
+    applyServiceKey() {
+      const m = this.tenantModal;
+      if (!m.serviceKey.trim()) { m.serviceKeyError = ''; return; }
+      try {
+        const key = JSON.parse(m.serviceKey);
+        const o = key.oauth || key;
+        if (!o.url || !o.tokenurl || !o.clientid || !o.clientsecret) throw new Error('missing fields');
+        m.form.api_url = o.url.replace(/\/+$/, '');
+        m.form.oauth_url = o.tokenurl;
+        m.form.client_id = o.clientid;
+        m.form.client_secret = o.clientsecret;
+        m.serviceKeyError = '';
+      } catch (e) {
+        m.serviceKeyError = 'Not a CPI service key: expected JSON with url, tokenurl, clientid and clientsecret.';
+      }
+    },
+
+    async startDemo() {
+      this.demoStarting = true;
+      try {
+        const res = await fetch('/api/demo', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || data.detail || `HTTP ${res.status}`);
+        await this.loadTenants();
+        this.fetch.status = 'running';
+        this.fetch.jobId = data.job_id;
+        this._openFetchStream();
+        this.notify('Importing demo data…', 'success');
+      } catch (e) {
+        this.notify(`Couldn't start the demo: ${e.message}`, 'error');
+      } finally {
+        this.demoStarting = false;
+      }
+    },
+
     openTenantModal(tenant = null) {
       this.tenantModal.editing = !!tenant;
       this.tenantModal.form = tenant
         ? { ...tenant, client_secret: '' }
         : { id: '', name: '', api_url: '', oauth_url: '', client_id: '', client_secret: '' };
+      this.tenantModal.serviceKey = '';
+      this.tenantModal.serviceKeyError = '';
       this.tenantModal.open = true;
     },
 
