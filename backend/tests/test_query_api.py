@@ -6,8 +6,10 @@ from typing import Any
 
 import pytest
 
-from app import db as database
 from app import main
+from app.repositories import database
+from app.repositories import tenants as tenants_repo
+from app.services import importer
 from tests.support import log_line, numbered_lines, write_log
 
 pytestmark = pytest.mark.anyio
@@ -55,8 +57,8 @@ async def seeded(client, tmp_path):
         *numbered_lines(3, start_minute=60),
     ]
     path = write_log(tmp_path / "a.log", lines)
-    await database.import_log_file(db, "dev", "trace", path, "a.log", 0)
-    await database.upsert_tenant(db, "dev", "DEV", "https://x.example", "https://x.example/t", "c", "s")
+    await importer.import_log_file(db, "dev", "trace", path, "a.log", 0)
+    await tenants_repo.upsert_tenant(db, "dev", "DEV", "https://x.example", "https://x.example/t", "c", "s")
     return client
 
 

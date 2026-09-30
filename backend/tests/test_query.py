@@ -2,7 +2,8 @@
 
 import pytest
 
-from app import db as database
+from app.repositories import database
+from app.services import importer
 from tests.support import log_line, numbered_lines, write_log
 
 pytestmark = pytest.mark.anyio
@@ -31,7 +32,7 @@ async def seeded(client, tmp_path):
     db = await database.get_db()
     for tenant, lines in ROWS.items():
         path = write_log(tmp_path / f"{tenant}.log", lines)
-        await database.import_log_file(db, tenant, "trace", path, path.name, 0)
+        await importer.import_log_file(db, tenant, "trace", path, path.name, 0)
     return client
 
 
@@ -133,7 +134,7 @@ async def test_invalid_dates_are_rejected_with_422(seeded, value):
 async def test_paging(client, tmp_path):
     db = await database.get_db()
     path = write_log(tmp_path / "p.log", numbered_lines(5))
-    await database.import_log_file(db, "p", "trace", path, "p.log", 0)
+    await importer.import_log_file(db, "p", "trace", path, "p.log", 0)
     res = (await client.get("/api/logs", params={"page": 2, "page_size": 2})).json()
     assert res["total"] == 5
     assert res["pages"] == 3

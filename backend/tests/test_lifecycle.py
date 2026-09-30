@@ -10,8 +10,8 @@ import httpx
 import pytest
 from asgi_lifespan import LifespanManager
 
-from app import db as database
 from app import main
+from app.repositories import database
 from tests.support import FAKE_TENANT, numbered_lines, wait_for_job
 
 pytestmark = pytest.mark.anyio
@@ -83,7 +83,7 @@ async def test_close_interrupts_a_write_that_takes_too_long(db, settings, caplog
 
 async def test_close_interrupts_running_reads(db, settings, monkeypatch):
     monkeypatch.setattr(settings, "query_timeout_s", 60)
-    read = asyncio.create_task(db.read(db._fetchone_val, SLOW_READ))
+    read = asyncio.create_task(db.read(db.fetch_val, SLOW_READ))
     await asyncio.sleep(0.1)
     t0 = time.perf_counter()
     await database.close_db()

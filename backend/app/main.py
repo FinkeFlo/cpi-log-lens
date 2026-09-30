@@ -33,8 +33,14 @@ settings = get_settings()
 setup_logging(settings.log_level, settings.log_format)
 
 # Logging must be configured before these modules create their loggers.
-from app import db as database  # noqa: E402
 from app.cpi import client as cpi_api  # noqa: E402
+from app.repositories import app_settings as settings_repo  # noqa: E402
+from app.repositories import database  # noqa: E402
+from app.repositories import file_imports as file_imports_repo  # noqa: E402
+from app.repositories import logs as logs_repo  # noqa: E402
+from app.repositories import schedules as schedules_repo  # noqa: E402
+from app.repositories import tenants as tenants_repo  # noqa: E402
+from app.services import importer, stats  # noqa: E402
 
 log = logging.getLogger("cpi")
 
@@ -245,7 +251,8 @@ async def _retention_loop():
             continue
         try:
             conn = await database.get_db()
-            result = await database.cleanup_old_logs(conn, settings.retention_days)
+            result = await logs_repo.cleanup_old_logs(conn, settings.retention_days)
+            stats.invalidate()
             if result["deleted"]:
                 log.info(
                     f"retention: deleted {result['deleted']} log entries "
@@ -268,7 +275,7 @@ async def _schedule_loop():
         try:
             if not (_active_job and _active_job.status == "running"):
                 conn = await database.get_db()
-                schedules = await database.get_schedules(conn)
+                schedules = await schedules_repo.get_schedules(conn)
 
                 now = time.time()
                 for sched in schedules:
@@ -280,7 +287,7 @@ async def _schedule_loop():
                             continue
 
                     conn2 = await database.get_db()
-                    await database.touch_schedule_last_run(conn2, sched["id"])
+                    await schedules_repo.touch_schedule_last_run(conn2, sched["id"])
 
                     body = FetchRequest(
                         tenants=json.loads(sched["tenants"]),
@@ -328,10 +335,10 @@ async def _load_tenants_from_json():
         secret = t.get("client_secret", "")
         if not (tid and api and cid):
             continue
-        exists = await database.get_tenant(conn, tid) is not None
+        exists = await tenants_repo.get_tenant(conn, tid) is not None
         if exists and settings.tenants_seed_mode != "sync":
             continue
-        await database.upsert_tenant(conn, tid, name, api, oauth, cid, secret)
+        await tenants_repo.upsert_tenant(conn, tid, name, api, oauth, cid, secret)
         updated += exists
         added += not exists
     log.info("tenants from %s: %d added, %d updated (mode %s)", config_path, added, updated, settings.tenants_seed_mode)
@@ -404,7 +411,7 @@ async def readyz():
     """Readiness: the database answers a trivial query within 2 s."""
     conn = await database.get_db()
     try:
-        await asyncio.wait_for(conn.read(conn._fetchone_val, "SELECT 1"), 2)
+        await asyncio.wait_for(conn.read(conn.fetch_val, "SELECT 1"), 2)
     except Exception as e:
         return JSONResponse({"ok": False, "error": type(e).__name__}, status_code=503)
     return {"ok": True, "fetch_job": _active_job.status if _active_job else "idle"}
@@ -414,7 +421,7 @@ async def readyz():
 @app.get("/api/tenants")
 async def list_tenants():
     conn = await database.get_db()
-    tenants = await database.get_tenants(conn)
+    tenants = await tenants_repo.get_tenants(conn)
     # Mask secrets in response
     for t in tenants:
         t["client_secret"] = "••••••••" if t.get("client_secret") else ""
@@ -426,7 +433,7 @@ async def create_tenant(body: TenantCreate):
     if not body.client_secret:
         raise HTTPException(422, "client_secret is required")
     conn = await database.get_db()
-    await database.upsert_tenant(
+    await tenants_repo.upsert_tenant(
         conn,
         body.id,
         body.name,
@@ -441,7 +448,7 @@ async def create_tenant(body: TenantCreate):
 @app.put("/api/tenants/{tenant_id}")
 async def update_tenant(tenant_id: str, body: TenantCreate):
     conn = await database.get_db()
-    existing = await database.get_tenant(conn, tenant_id)
+    existing = await tenants_repo.get_tenant(conn, tenant_id)
     if not existing:
         raise HTTPException(404, "Tenant not found")
     # Keep existing secret if an empty or masked value is submitted —
@@ -449,7 +456,7 @@ async def update_tenant(tenant_id: str, body: TenantCreate):
     secret = body.client_secret
     if not secret or set(secret) == {"•"}:
         secret = existing["client_secret"]
-    await database.upsert_tenant(
+    await tenants_repo.upsert_tenant(
         conn,
         tenant_id,
         body.name,
@@ -464,7 +471,7 @@ async def update_tenant(tenant_id: str, body: TenantCreate):
 @app.delete("/api/tenants/{tenant_id}")
 async def remove_tenant(tenant_id: str):
     conn = await database.get_db()
-    await database.delete_tenant(conn, tenant_id)
+    await tenants_repo.delete_tenant(conn, tenant_id)
     return {"ok": True}
 
 
@@ -472,7 +479,7 @@ async def remove_tenant(tenant_id: str):
 async def test_tenant(tenant_id: str):
     conn = await database.get_db()
     try:
-        tenant = await database.get_tenant(conn, tenant_id)
+        tenant = await tenants_repo.get_tenant(conn, tenant_id)
         if not tenant:
             raise HTTPException(404, "Tenant not found")
         if tenant["api_url"].startswith(DEMO_URL):
@@ -494,7 +501,9 @@ DEMO_TENANT_ID = "demo"
 async def start_demo():
     """Create the demo tenant (if needed) and import the bundled sample logs."""
     conn = await database.get_db()
-    await database.upsert_tenant(conn, DEMO_TENANT_ID, "Demo", f"{DEMO_URL}sample", f"{DEMO_URL}sample", "demo", "demo")
+    await tenants_repo.upsert_tenant(
+        conn, DEMO_TENANT_ID, "Demo", f"{DEMO_URL}sample", f"{DEMO_URL}sample", "demo", "demo"
+    )
     return await fetch_logs(FetchRequest(tenants=[DEMO_TENANT_ID], log_types=["trace"], hours=0))
 
 
@@ -552,7 +561,7 @@ async def get_default_fetch_config():
     or null if none has been saved yet — the frontend falls back to
     'all tenants + all log types' in that case."""
     conn = await database.get_db()
-    raw = await database.get_setting(conn, "default_fetch_config")
+    raw = await settings_repo.get_setting(conn, "default_fetch_config")
     return json.loads(raw) if raw else None
 
 
@@ -561,7 +570,7 @@ async def set_default_fetch_config(body: DefaultFetchConfig):
     """Persist the current fetch form selection as the default shown on
     next page load, instead of always defaulting to all tenants/log types."""
     conn = await database.get_db()
-    await database.set_setting(conn, "default_fetch_config", body.model_dump_json())
+    await settings_repo.set_setting(conn, "default_fetch_config", body.model_dump_json())
     return {"ok": True}
 
 
@@ -569,7 +578,7 @@ async def set_default_fetch_config(body: DefaultFetchConfig):
 @app.get("/api/schedules")
 async def list_schedules():
     conn = await database.get_db()
-    schedules = await database.get_schedules(conn)
+    schedules = await schedules_repo.get_schedules(conn)
     for s in schedules:
         s["tenants"] = json.loads(s["tenants"])
         s["log_types"] = json.loads(s["log_types"])
@@ -580,7 +589,7 @@ async def list_schedules():
 async def create_schedule(body: ScheduleRequest):
     conn = await database.get_db()
     schedule_id = str(uuid.uuid4())
-    await database.create_schedule(
+    await schedules_repo.create_schedule(
         conn,
         schedule_id,
         body.name,
@@ -596,10 +605,10 @@ async def create_schedule(body: ScheduleRequest):
 @app.put("/api/schedules/{schedule_id}")
 async def update_schedule(schedule_id: str, body: ScheduleRequest):
     conn = await database.get_db()
-    existing = await database.get_schedule(conn, schedule_id)
+    existing = await schedules_repo.get_schedule(conn, schedule_id)
     if not existing:
         raise HTTPException(404, "Schedule not found")
-    await database.update_schedule(
+    await schedules_repo.update_schedule(
         conn,
         schedule_id,
         body.name,
@@ -615,7 +624,7 @@ async def update_schedule(schedule_id: str, body: ScheduleRequest):
 @app.delete("/api/schedules/{schedule_id}")
 async def remove_schedule(schedule_id: str):
     conn = await database.get_db()
-    await database.delete_schedule(conn, schedule_id)
+    await schedules_repo.delete_schedule(conn, schedule_id)
     return {"ok": True}
 
 
@@ -679,9 +688,9 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
     try:
         # Resolve tenants
         if "all" in body.tenants:
-            tenants = await database.get_tenants(conn)
+            tenants = await tenants_repo.get_tenants(conn)
         else:
-            tenants = [t for tid in body.tenants if (t := await database.get_tenant(conn, tid.lower())) is not None]
+            tenants = [t for tid in body.tenants if (t := await tenants_repo.get_tenant(conn, tid.lower())) is not None]
 
         if not tenants:
             job.status = "error"
@@ -720,9 +729,9 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
                         for i, mf in enumerate(mock_files, 1):
                             if job.cancel_requested:
                                 break
-                            already = (await database.get_file_import(conn, tenant["id"], mf.name))["lines"]
+                            already = (await file_imports_repo.get_file_import(conn, tenant["id"], mf.name))["lines"]
                             try:
-                                newly_imported = await database.import_log_file(
+                                newly_imported = await importer.import_log_file(
                                     conn, tenant["id"], lt, mf, mf.name, already
                                 )
                             except Exception as e:
@@ -785,12 +794,14 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
                                     return
                                 dest = tenant_log_dir / name
                                 remote_size = int(f.get("Size", 0))
-                                file_import = await database.get_file_import(conn, tenant["id"], f["Name"])
+                                file_import = await file_imports_repo.get_file_import(conn, tenant["id"], f["Name"])
 
                                 # Backfill size from local file if missing (legacy imports)
                                 if file_import["lines"] > 0 and file_import["size"] == 0 and dest.exists():
                                     local_size = dest.stat().st_size
-                                    await database.update_file_import_size(conn, tenant["id"], f["Name"], local_size)
+                                    await file_imports_repo.update_file_import_size(
+                                        conn, tenant["id"], f["Name"], local_size
+                                    )
                                     file_import["size"] = local_size
 
                                 counters["done"] += 1
@@ -844,7 +855,7 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
                                 # gzip) keeps the rows committed so far, is not marked
                                 # as fully imported and is retried on the next fetch.
                                 try:
-                                    newly_imported = await database.import_log_file(
+                                    newly_imported = await importer.import_log_file(
                                         conn, tenant["id"], lt, dest, f["Name"], file_import["lines"], remote_size
                                     )
                                 except Exception as e:
@@ -900,7 +911,7 @@ class LLMQueryRequest(BaseModel):
 async def llm_query_schema():
     """Describes the query API for LLM tool-use / function-calling."""
     conn = await database.get_db()
-    tenants = await database.get_tenants(conn)
+    tenants = await tenants_repo.get_tenants(conn)
 
     return {
         "description": (
@@ -947,7 +958,7 @@ async def llm_query(req: LLMQueryRequest):
     _check_datetime(req.date_to, "date_to")
     limit = max(1, min(req.limit, 200))
     conn = await database.get_db()
-    result = await database.query_logs(
+    result = await logs_repo.query_logs(
         conn,
         tenant=req.tenant,
         level=req.level,
@@ -1006,7 +1017,7 @@ async def get_logs(
     _check_datetime(date_from, "date_from")
     _check_datetime(date_to, "date_to")
     conn = await database.get_db()
-    return await database.query_logs(
+    return await logs_repo.query_logs(
         conn,
         tenant=tenant,
         level=level,
@@ -1022,7 +1033,7 @@ async def get_logs(
 @app.get("/api/logs/{entry_id}")
 async def get_log_entry(entry_id: int):
     conn = await database.get_db()
-    entry = await database.get_log_entry(conn, entry_id)
+    entry = await logs_repo.get_log_entry(conn, entry_id)
     if not entry:
         raise HTTPException(404, "Entry not found")
     return entry
@@ -1032,20 +1043,21 @@ async def get_log_entry(entry_id: int):
 @app.get("/api/stats")
 async def get_stats(tenant: str | None = None):
     conn = await database.get_db()
-    return await database.get_stats(conn, tenant)
+    return await stats.get_stats(conn, tenant)
 
 
 # ── DB info ───────────────────────────────────────────────────────────────────
 @app.get("/api/db/info")
 async def db_info():
     conn = await database.get_db()
-    return await database.get_db_info(conn, settings.db_path)
+    return await logs_repo.get_db_info(conn, settings.db_path)
 
 
 @app.post("/api/db/clear")
 async def db_clear():
     conn = await database.get_db()
-    await database.clear_db(conn)
+    await logs_repo.clear_db(conn)
+    stats.invalidate()
     return {"ok": True}
 
 
@@ -1058,7 +1070,8 @@ class CleanupRequest(BaseModel):
 async def db_cleanup(req: CleanupRequest):
     """Delete log entries older than N days, optionally filtered by tenant."""
     conn = await database.get_db()
-    result = await database.cleanup_old_logs(conn, req.older_than_days, req.tenant)
+    result = await logs_repo.cleanup_old_logs(conn, req.older_than_days, req.tenant)
+    stats.invalidate()
     return {"ok": True, **result}
 
 

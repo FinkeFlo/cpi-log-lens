@@ -16,10 +16,11 @@ import httpx
 import pytest
 from asgi_lifespan import LifespanManager
 
-from app import db as database
 from app import main
 from app.config import Settings, get_settings
 from app.cpi import client as cpi_api
+from app.repositories import database
+from app.services import stats
 from tests.support import FakeCpi
 
 BASE_URL = "http://localhost"
@@ -38,8 +39,8 @@ async def _close_app_state():
     await asyncio.gather(*main._background_tasks, return_exceptions=True)
     main._background_tasks.clear()
     await database.close_db()
-    database.invalidate_stats_cache()
-    database._stats_locks.clear()
+    stats.invalidate()
+    stats._locks.clear()
 
 
 @pytest.fixture
@@ -55,8 +56,8 @@ async def app_env(tmp_path, monkeypatch, settings):
     monkeypatch.setattr(settings, "logs_dir", tmp_path / "logs")
     monkeypatch.setattr(main, "_active_job", None)
     monkeypatch.setattr(cpi_api, "RETRY_BACKOFF_BASE", 0)
-    database.invalidate_stats_cache()
-    database._stats_locks.clear()
+    stats.invalidate()
+    stats._locks.clear()
     yield tmp_path
     await _close_app_state()
 

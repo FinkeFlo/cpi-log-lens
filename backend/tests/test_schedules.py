@@ -5,8 +5,9 @@ from datetime import datetime
 
 import pytest
 
-from app import db as database
 from app import main
+from app.repositories import logs as logs_repo
+from app.repositories import schedules as schedules_repo
 
 pytestmark = pytest.mark.anyio
 
@@ -54,9 +55,9 @@ async def test_update_of_an_unknown_schedule_is_404(client):
 
 
 async def add_schedule(db, sid, *, enabled=True, interval=15, last_run_sql=None):
-    await database.create_schedule(db, sid, sid, '["all"]', '["trace"]', 2, interval, enabled)
+    await schedules_repo.create_schedule(db, sid, sid, '["all"]', '["trace"]', 2, interval, enabled)
     if last_run_sql:
-        await db.run(db._execute, f"UPDATE fetch_schedules SET last_run_at = {last_run_sql} WHERE id = ?", [sid])
+        await db.run(db.execute, f"UPDATE fetch_schedules SET last_run_at = {last_run_sql} WHERE id = ?", [sid])
 
 
 async def run_scheduler(monkeypatch, *, seconds=0.3, job_status="done"):
@@ -78,7 +79,7 @@ async def run_scheduler(monkeypatch, *, seconds=0.3, job_status="done"):
 
 
 async def last_run(db, sid):
-    schedule = await database.get_schedule(db, sid)
+    schedule = await schedules_repo.get_schedule(db, sid)
     assert schedule is not None
     return schedule["last_run_at"]
 
@@ -140,7 +141,7 @@ async def run_retention(monkeypatch, *, check_hours, seconds, job=None, finish_j
         calls.append(days)
         return {"deleted": 0, "remaining": 0}
 
-    monkeypatch.setattr(database, "cleanup_old_logs", fake_cleanup)
+    monkeypatch.setattr(logs_repo, "cleanup_old_logs", fake_cleanup)
     monkeypatch.setattr(main.settings, "retention_days", 30)
     monkeypatch.setattr(main.settings, "retention_check_hours", check_hours)
     monkeypatch.setattr(main, "_active_job", job)

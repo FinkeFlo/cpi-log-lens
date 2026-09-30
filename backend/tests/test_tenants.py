@@ -2,9 +2,10 @@
 
 import pytest
 
-from app import db as database
 from app import main
 from app.config import get_settings
+from app.repositories import database
+from app.repositories import tenants as tenants_repo
 from tests.support import FAKE_TENANT, fetch, numbered_lines
 
 pytestmark = pytest.mark.anyio
@@ -13,7 +14,7 @@ MASK = "••••••••"
 
 
 async def stored_secret(tenant_id):
-    tenant = await database.get_tenant(await database.get_db(), tenant_id)
+    tenant = await tenants_repo.get_tenant(await database.get_db(), tenant_id)
     assert tenant is not None
     return tenant["client_secret"]
 
@@ -106,7 +107,9 @@ async def test_connection_test_reports_a_failed_token_request(client, fake_cpi):
 
 
 async def test_connection_test_of_the_demo_tenant_needs_no_request(client, fake_cpi):
-    await database.upsert_tenant(await database.get_db(), "demo", "Demo", "demo://sample", "demo://sample", "d", "d")
+    await tenants_repo.upsert_tenant(
+        await database.get_db(), "demo", "Demo", "demo://sample", "demo://sample", "d", "d"
+    )
     assert (await client.post("/api/tenants/demo/test")).json() == {"ok": True, "demo": True}
     assert fake_cpi.requests == []
 
@@ -133,7 +136,7 @@ async def seed(monkeypatch, tmp_path, text, mode="create"):
     monkeypatch.setattr(settings, "tenants_config", path)
     monkeypatch.setattr(settings, "tenants_seed_mode", mode)
     await main._load_tenants_from_json()
-    return await database.get_tenants(await database.get_db())
+    return await tenants_repo.get_tenants(await database.get_db())
 
 
 async def test_seed_adds_tenants_and_normalizes_ids(db, monkeypatch, tmp_path):
@@ -145,13 +148,13 @@ async def test_seed_adds_tenants_and_normalizes_ids(db, monkeypatch, tmp_path):
 
 
 async def test_seed_in_create_mode_keeps_existing_tenants(db, monkeypatch, tmp_path):
-    await database.upsert_tenant(db, "dev", "Edited in UI", "https://ui.example", "https://ui.example/t", "c", "s")
+    await tenants_repo.upsert_tenant(db, "dev", "Edited in UI", "https://ui.example", "https://ui.example/t", "c", "s")
     tenants = await seed(monkeypatch, tmp_path, SEED)
     assert tenants[0]["name"] == "Edited in UI"
 
 
 async def test_seed_in_sync_mode_overwrites_existing_tenants(db, monkeypatch, tmp_path):
-    await database.upsert_tenant(db, "dev", "Edited in UI", "https://ui.example", "https://ui.example/t", "c", "s")
+    await tenants_repo.upsert_tenant(db, "dev", "Edited in UI", "https://ui.example", "https://ui.example/t", "c", "s")
     tenants = await seed(monkeypatch, tmp_path, SEED, mode="sync")
     assert tenants[0]["name"] == "Development"
 
@@ -165,4 +168,4 @@ async def test_missing_or_directory_seed_path_is_ignored(db, monkeypatch, tmp_pa
     await main._load_tenants_from_json()
     monkeypatch.setattr(settings, "tenants_config", tmp_path / "missing.jsonc")
     await main._load_tenants_from_json()
-    assert await database.get_tenants(db) == []
+    assert await tenants_repo.get_tenants(db) == []
