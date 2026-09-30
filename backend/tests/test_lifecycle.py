@@ -56,7 +56,11 @@ async def test_shutdown_cancels_a_running_fetch(app_env, fake_cpi):
 
 
 async def test_close_waits_for_a_running_write(db):
-    write = asyncio.create_task(db.run(lambda conn: (time.sleep(0.3), conn.execute("CREATE TABLE t AS SELECT 1 AS x"))))
+    def slow_write(conn):
+        time.sleep(0.3)
+        conn.execute("CREATE TABLE t AS SELECT 1 AS x")
+
+    write = asyncio.create_task(db.run(slow_write))
     await asyncio.sleep(0.05)
     await database.close_db()
     await write
