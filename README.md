@@ -23,7 +23,7 @@ With Docker (no clone, no build):
 docker run -d --name cpi-log-lens \
   -p 127.0.0.1:8080:8080 \
   -v cpi-log-lens-data:/data \
-  --restart unless-stopped \
+  --restart unless-stopped --stop-timeout 60 \
   ghcr.io/finkeflo/cpi-log-lens:latest
 ```
 
@@ -56,7 +56,8 @@ the file the source of truth.
 ## Configuration
 
 Everything is optional. With Compose, put variables in a `.env` file next to `docker-compose.yml`
-(see [`.env.example`](.env.example)); with `docker run`, pass them with `-e`.
+(see [`.env.example`](.env.example)); with `docker run`, pass them with `-e`. Empty values count as
+unset; an invalid value stops the app at start with a message naming the variable.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -74,6 +75,7 @@ Everything is optional. With Compose, put variables in a `.env` file next to `do
 | `TENANTS_SEED_MODE` | `create` | `create`: only add missing tenants. `sync`: the file overwrites stored tenants. |
 | `DB_PATH` | `/data/cpi_logs.duckdb` | DuckDB database file. |
 | `LOGS_DIR` | `/data/logs` | Downloaded log files (gzip). |
+| `FRONTEND_DIR` | `/app/frontend` | Directory of the web UI; the API is served alone if it is missing. |
 | `DUCKDB_MEMORY_LIMIT` | `1.5GB` | Memory DuckDB may use. Keep well below the container limit. |
 | `DUCKDB_THREADS` | `4` | Threads DuckDB may use. |
 | `DUCKDB_TEMP_DIR` | *(next to the DB)* | Spill directory for large queries. |
@@ -123,6 +125,10 @@ not shrink after deletions, but the space is reused.
 
 **Health.** `GET /healthz` reports liveness and the version, `GET /readyz` checks the database. The
 image's `HEALTHCHECK` uses `/healthz`.
+
+**Stopping.** On `docker stop` the app cancels a running fetch, lets the current database write
+finish (up to 5 s), writes all pending changes from the WAL into the database file and closes it.
+Allow enough stop time (Compose: `stop_grace_period: 60s`; `docker run`: `--stop-timeout 60`).
 
 ## Troubleshooting
 

@@ -3,7 +3,6 @@
 import asyncio
 import gzip
 import logging
-import os
 import re
 import time
 from collections.abc import Iterator
@@ -12,6 +11,8 @@ from pathlib import Path
 
 import duckdb
 import pyarrow as pa
+
+from config import get_settings
 
 log = logging.getLogger("cpi.db")
 
@@ -129,13 +130,10 @@ CREATE TABLE IF NOT EXISTS unparsed_lines (
 
 
 READ_POOL_SIZE = 4
-# How long a write waits for the single writer before giving up (HTTP 503).
-WRITE_LOCK_TIMEOUT_S = float(os.getenv("WRITE_LOCK_TIMEOUT_S", "120"))
-# Reads wait at most this long for a free cursor, then fail fast with 503
-# instead of queueing without limit behind slow queries.
-POOL_ACQUIRE_TIMEOUT_S = float(os.getenv("POOL_ACQUIRE_TIMEOUT_S", "10"))
-# A single read query is interrupted after this long.
-QUERY_TIMEOUT_S = float(os.getenv("QUERY_TIMEOUT_S", "30"))
+# On shutdown, a running write (an import batch) gets this long to finish
+# before it is interrupted. Interrupting is safe: rows and file offset are
+# committed together, so an interrupted batch is simply imported again.
+SHUTDOWN_WRITE_WAIT_S = 5.0
 
 # Dedicated, bounded threads for DB work instead of asyncio's shared default
 # executor: reads can never occupy more threads than there are cursors, and
@@ -148,26 +146,19 @@ class DBBusyError(Exception):
     """The database could not serve the request in time (mapped to HTTP 503)."""
 
 
-# DuckDB defaults to 80% of the RAM it can see — inside Docker that is the
-# whole VM, not the container limit — and to one thread per CPU. Together with
-# the Python heap this pushed the process past the VM memory and got it
-# OOM-killed. Keep the engine inside an explicit budget instead.
-DUCKDB_MEMORY_LIMIT = os.getenv("DUCKDB_MEMORY_LIMIT", "1.5GB")
-DUCKDB_THREADS = int(os.getenv("DUCKDB_THREADS", "4"))
-DUCKDB_TEMP_DIR = os.getenv("DUCKDB_TEMP_DIR", "")  # "" = DuckDB default (<db file>.tmp)
-# The default (16MB) checkpoints after nearly every 20k-row import batch, which
-# made bulk imports 2.5-4x slower (measured).
-DUCKDB_CHECKPOINT_THRESHOLD = os.getenv("DUCKDB_CHECKPOINT_THRESHOLD", "512MB")
-
-
 def _duckdb_config() -> dict:
-    config = {
-        "memory_limit": DUCKDB_MEMORY_LIMIT,
-        "threads": DUCKDB_THREADS,
-        "checkpoint_threshold": DUCKDB_CHECKPOINT_THRESHOLD,
+    # DuckDB defaults to 80% of the RAM it can see — inside Docker that is the
+    # whole VM, not the container limit — and to one thread per CPU. Together
+    # with the Python heap this pushed the process past the VM memory and got
+    # it OOM-killed. Keep the engine inside an explicit budget instead.
+    settings = get_settings()
+    config: dict[str, str | int] = {
+        "memory_limit": settings.duckdb_memory_limit,
+        "threads": settings.duckdb_threads,
+        "checkpoint_threshold": settings.duckdb_checkpoint_threshold,
     }
-    if DUCKDB_TEMP_DIR:
-        config["temp_directory"] = DUCKDB_TEMP_DIR
+    if settings.duckdb_temp_dir:
+        config["temp_directory"] = settings.duckdb_temp_dir
     return config
 
 
@@ -193,12 +184,29 @@ class DuckDBConnection:
     background, instead of queuing behind it.
     """
 
-    def __init__(self, path: Path):
-        self._conn = duckdb.connect(str(path), config=_duckdb_config())
+    def __init__(self, conn: duckdb.DuckDBPyConnection):
+        """Wrap an open connection whose schema is up to date; see open()."""
+        self._conn = conn
         self._write_lock = asyncio.Lock()
+        self._cursors = [conn.cursor() for _ in range(READ_POOL_SIZE)]
         self._read_pool: asyncio.Queue = asyncio.Queue()
-        for _ in range(READ_POOL_SIZE):
-            self._read_pool.put_nowait(self._conn.cursor())
+        for cur in self._cursors:
+            self._read_pool.put_nowait(cur)
+
+    @classmethod
+    def open(cls, path: Path) -> "DuckDBConnection":
+        """Connect with the configured memory budget and bring the schema up to date."""
+        conn = duckdb.connect(str(path), config=_duckdb_config())
+        try:
+            memory_limit, threads = conn.execute(
+                "SELECT current_setting('memory_limit'), current_setting('threads')"
+            ).fetchall()[0]
+            log.info(f"duckdb {duckdb.__version__}: memory_limit={memory_limit}, threads={threads}")
+            _create_schema(conn)
+        except BaseException:
+            conn.close()
+            raise
+        return cls(conn)
 
     @staticmethod
     def _execute(cur, sql: str, params=None):
@@ -241,9 +249,10 @@ class DuckDBConnection:
         otherwise a new writer could start against the same connection while the
         abandoned one is still running, corrupting/blocking future calls."""
         try:
-            await asyncio.wait_for(self._write_lock.acquire(), WRITE_LOCK_TIMEOUT_S)
+            # How long a write waits for the single writer before giving up (HTTP 503).
+            await asyncio.wait_for(self._write_lock.acquire(), get_settings().write_lock_timeout_s)
         except TimeoutError:
-            log.warning(f"gave up waiting {WRITE_LOCK_TIMEOUT_S:.0f}s for the write lock")
+            log.warning(f"gave up waiting {get_settings().write_lock_timeout_s:.0f}s for the write lock")
             raise DBBusyError("database busy: another write is still running") from None
         loop = asyncio.get_running_loop()
         fut = loop.run_in_executor(_write_executor, lambda: fn(self._conn, *args, **kwargs))
@@ -270,7 +279,7 @@ class DuckDBConnection:
         returns to the pool once its query has actually finished, so a new
         reader never gets a cursor that is still executing."""
         try:
-            cur = await asyncio.wait_for(self._read_pool.get(), POOL_ACQUIRE_TIMEOUT_S)
+            cur = await asyncio.wait_for(self._read_pool.get(), get_settings().pool_acquire_timeout_s)
         except TimeoutError:
             raise DBBusyError("database busy: no free read connection") from None
         loop = asyncio.get_running_loop()
@@ -283,17 +292,43 @@ class DuckDBConnection:
         fut.add_done_callback(give_back)
         t0 = time.perf_counter()
         try:
-            return await asyncio.wait_for(asyncio.shield(fut), QUERY_TIMEOUT_S)
+            return await asyncio.wait_for(asyncio.shield(fut), get_settings().query_timeout_s)
         except TimeoutError:
             cur.interrupt()
             log.warning(f"query interrupted after {time.perf_counter() - t0:.1f}s (timeout)")
-            raise DBBusyError(f"query took longer than {QUERY_TIMEOUT_S:g}s and was cancelled") from None
+            raise DBBusyError(f"query took longer than {get_settings().query_timeout_s:g}s and was cancelled") from None
         except asyncio.CancelledError:
             cur.interrupt()
             raise
 
-    async def close(self):
-        pass  # singleton — stays open for the lifetime of the process
+    async def close(self, write_wait_s: float = SHUTDOWN_WRITE_WAIT_S) -> None:
+        """Shut down cleanly: let the running write finish (interrupt it after
+        write_wait_s), stop running reads, CHECKPOINT so the WAL is folded into
+        the database file, and close. The wrapper is unusable afterwards."""
+        t0 = time.perf_counter()
+        try:
+            await asyncio.wait_for(self._write_lock.acquire(), write_wait_s)
+        except TimeoutError:
+            log.warning("shutdown: interrupting the running write after %.0fs", write_wait_s)
+            self._conn.interrupt()
+            await self._write_lock.acquire()
+        if self._read_pool.qsize() < READ_POOL_SIZE:
+            for cur in self._cursors:
+                cur.interrupt()
+            for _ in range(READ_POOL_SIZE):
+                await self._read_pool.get()
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(_write_executor, self._checkpoint_and_close)
+        log.info("database checkpointed and closed in %.1fs", time.perf_counter() - t0)
+
+    def _checkpoint_and_close(self) -> None:
+        try:
+            self._conn.execute("CHECKPOINT")
+        except duckdb.Error as e:
+            log.warning("shutdown: checkpoint failed (%s); the WAL is replayed on the next start", e)
+        for cur in self._cursors:
+            cur.close()
+        self._conn.close()
 
 
 # ── Singleton connection ──────────────────────────────────────────────────────
@@ -390,13 +425,7 @@ def _migrate_add_raw_line_column(conn: duckdb.DuckDBPyConnection):
     log.info("migrate: Done — logs.raw_line added (NULL for pre-existing rows).")
 
 
-async def init_db(path: Path):
-    global _db_instance
-    conn = duckdb.connect(str(path), config=_duckdb_config())
-    memory_limit, threads = conn.execute(
-        "SELECT current_setting('memory_limit'), current_setting('threads')"
-    ).fetchall()[0]
-    log.info(f"duckdb {duckdb.__version__}: memory_limit={memory_limit}, threads={threads}")
+def _create_schema(conn: duckdb.DuckDBPyConnection) -> None:
     for stmt in SCHEMA.split(";"):
         stmt = stmt.strip()
         if stmt:
@@ -404,12 +433,18 @@ async def init_db(path: Path):
     _migrate_drop_logs_unique_constraint(conn)
     _migrate_timestamp_to_native(conn)
     _migrate_add_raw_line_column(conn)
-    _db_instance = DuckDBConnection.__new__(DuckDBConnection)
-    _db_instance._conn = conn
-    _db_instance._write_lock = asyncio.Lock()
-    _db_instance._read_pool = asyncio.Queue()
-    for _ in range(READ_POOL_SIZE):
-        _db_instance._read_pool.put_nowait(conn.cursor())
+
+
+async def init_db(path: Path):
+    global _db_instance
+    _db_instance = DuckDBConnection.open(path)
+
+
+async def close_db() -> None:
+    global _db_instance
+    db, _db_instance = _db_instance, None
+    if db is not None:
+        await db.close()
 
 
 async def get_db() -> DuckDBConnection:
@@ -857,7 +892,6 @@ async def get_log_entry(db: DuckDBConnection, entry_id: int) -> dict | None:
 # get_stats() runs five aggregations over the whole table; the Stats page and
 # its auto-refresh called it on every visit. Results are cached briefly and
 # dropped whenever imports, cleanup or clear change the data.
-STATS_CACHE_SECONDS = float(os.getenv("STATS_CACHE_SECONDS", "30"))
 _stats_cache: dict[str, tuple[float, dict]] = {}
 _stats_locks: dict[str, asyncio.Lock] = {}
 
@@ -869,12 +903,12 @@ def invalidate_stats_cache() -> None:
 async def get_stats(db: DuckDBConnection, tenant: str | None = None) -> dict:
     key = tenant or "all"
     cached = _stats_cache.get(key)
-    if cached and time.monotonic() - cached[0] < STATS_CACHE_SECONDS:
+    if cached and time.monotonic() - cached[0] < get_settings().stats_cache_seconds:
         return cached[1]
     # Single flight: concurrent requests for the same key share one computation.
     async with _stats_locks.setdefault(key, asyncio.Lock()):
         cached = _stats_cache.get(key)
-        if cached and time.monotonic() - cached[0] < STATS_CACHE_SECONDS:
+        if cached and time.monotonic() - cached[0] < get_settings().stats_cache_seconds:
             return cached[1]
         result = await _compute_stats(db, tenant)
         _stats_cache[key] = (time.monotonic(), result)

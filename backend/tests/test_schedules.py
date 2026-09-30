@@ -68,7 +68,7 @@ async def run_scheduler(monkeypatch, *, seconds=0.3, job_status="done"):
         job.status = job_status
 
     monkeypatch.setattr(main, "_run_fetch", fake_run_fetch)
-    monkeypatch.setattr(main, "SCHEDULE_CHECK_SECONDS", 0.02)
+    monkeypatch.setattr(main.settings, "schedule_check_seconds", 0.02)
     task = asyncio.create_task(main._schedule_loop())
     await asyncio.sleep(seconds)
     task.cancel()
@@ -141,8 +141,8 @@ async def run_retention(monkeypatch, *, check_hours, seconds, job=None, finish_j
         return {"deleted": 0, "remaining": 0}
 
     monkeypatch.setattr(database, "cleanup_old_logs", fake_cleanup)
-    monkeypatch.setattr(main, "RETENTION_DAYS", 30)
-    monkeypatch.setattr(main, "RETENTION_CHECK_HOURS", check_hours)
+    monkeypatch.setattr(main.settings, "retention_days", 30)
+    monkeypatch.setattr(main.settings, "retention_check_hours", check_hours)
     monkeypatch.setattr(main, "_active_job", job)
     task = asyncio.create_task(main._retention_loop())
     if finish_job_after is not None:

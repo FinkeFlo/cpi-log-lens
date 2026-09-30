@@ -4,6 +4,7 @@ import pytest
 
 import db as database
 import main
+from config import get_settings
 from tests.support import FAKE_TENANT, fetch, numbered_lines
 
 pytestmark = pytest.mark.anyio
@@ -128,8 +129,9 @@ SEED = """
 async def seed(monkeypatch, tmp_path, text, mode="create"):
     path = tmp_path / "tenants.jsonc"
     path.write_text(text)
-    monkeypatch.setenv("TENANTS_CONFIG", str(path))
-    monkeypatch.setattr(main, "TENANTS_SEED_MODE", mode)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "tenants_config", path)
+    monkeypatch.setattr(settings, "tenants_seed_mode", mode)
     await main._load_tenants_from_json()
     return await database.get_tenants(await database.get_db())
 
@@ -158,9 +160,9 @@ async def test_invalid_seed_file_is_ignored(db, monkeypatch, tmp_path):
     assert await seed(monkeypatch, tmp_path, "{ not json") == []
 
 
-async def test_missing_or_directory_seed_path_is_ignored(db, monkeypatch, tmp_path):
-    monkeypatch.setenv("TENANTS_CONFIG", str(tmp_path))
+async def test_missing_or_directory_seed_path_is_ignored(db, monkeypatch, tmp_path, settings):
+    monkeypatch.setattr(settings, "tenants_config", tmp_path)
     await main._load_tenants_from_json()
-    monkeypatch.setenv("TENANTS_CONFIG", str(tmp_path / "missing.jsonc"))
+    monkeypatch.setattr(settings, "tenants_config", tmp_path / "missing.jsonc")
     await main._load_tenants_from_json()
     assert await database.get_tenants(db) == []

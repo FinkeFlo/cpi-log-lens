@@ -13,6 +13,7 @@ dependencies = [
     "duckdb==1.5.6",
     "json5==0.15.0",
     "pyarrow==25.0.1",
+    "pydantic-settings==2.15.0",
 ]
 
 [dependency-groups]
@@ -69,6 +70,7 @@ omit = ["tests/*", "mock/*"]
 
 [tool.mypy]
 python_version = "3.12"
+plugins = ["pydantic.mypy"]
 check_untyped_defs = true
 warn_unused_ignores = true
 warn_redundant_casts = true

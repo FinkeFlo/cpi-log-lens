@@ -9,7 +9,6 @@ import time
 import pytest
 
 import db as database
-import main
 from tests.support import FAKE_TENANT, fetch, numbered_lines, wait_for_job
 
 pytestmark = pytest.mark.anyio
@@ -166,8 +165,8 @@ async def test_a_second_start_while_running_is_refused(client, tenant):
     await wait_for_job(client)
 
 
-async def test_cancel_stops_at_the_next_file(client, tenant, monkeypatch):
-    monkeypatch.setattr(main, "FETCH_CONCURRENCY", 1)
+async def test_cancel_stops_at_the_next_file(client, tenant, monkeypatch, settings):
+    monkeypatch.setattr(settings, "fetch_concurrency", 1)
     for i in range(5):
         tenant.add(f"f{i}.log", numbered_lines(1))
     tenant.download_delay = 0.1
@@ -240,8 +239,8 @@ async def test_demo_creates_the_demo_tenant_and_imports_the_sample(client):
     assert await total(client) == 1803
 
 
-async def test_mock_mode_imports_the_sample_for_any_tenant(client, fake_cpi, monkeypatch):
-    monkeypatch.setattr(main, "MOCK", True)
+async def test_mock_mode_imports_the_sample_for_any_tenant(client, fake_cpi, monkeypatch, settings):
+    monkeypatch.setattr(settings, "mock", True)
     await client.post("/api/tenants", json=FAKE_TENANT)
     status = await fetch(client, **TRACE)
     assert status["imported"] == 1803
@@ -249,8 +248,8 @@ async def test_mock_mode_imports_the_sample_for_any_tenant(client, fake_cpi, mon
 
 
 @pytest.mark.xfail(reason="ARC-01: the sample file name is shared by both log types, http imports nothing")
-async def test_mock_mode_imports_both_log_types(client, monkeypatch):
-    monkeypatch.setattr(main, "MOCK", True)
+async def test_mock_mode_imports_both_log_types(client, monkeypatch, settings):
+    monkeypatch.setattr(settings, "mock", True)
     await client.post("/api/tenants", json=FAKE_TENANT)
     await fetch(client, tenants=["fake"], log_types=["trace", "http"], hours=0)
     assert await total(client) == 2 * 1803

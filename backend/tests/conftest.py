@@ -19,6 +19,7 @@ from asgi_lifespan import LifespanManager
 import api as cpi_api
 import db as database
 import main
+from config import Settings, get_settings
 from tests.support import FakeCpi
 
 BASE_URL = "http://localhost"
@@ -30,29 +31,28 @@ def anyio_backend():
 
 
 async def _close_app_state():
+    # Normally done by the app's shutdown; tests without the app (db fixture) or
+    # that stopped a loop themselves clean up here.
     for task in list(main._background_tasks):
         task.cancel()
     await asyncio.gather(*main._background_tasks, return_exceptions=True)
     main._background_tasks.clear()
-    db = database._db_instance
-    if db is not None:
-        # Queries of cancelled requests finish (interrupted) in their threads;
-        # wait until every cursor is back before closing the connection.
-        for _ in range(500):
-            if db._read_pool.qsize() == database.READ_POOL_SIZE and not db._write_lock.locked():
-                break
-            await asyncio.sleep(0.01)
-        db._conn.close()
-        database._db_instance = None
+    await database.close_db()
     database.invalidate_stats_cache()
     database._stats_locks.clear()
 
 
 @pytest.fixture
-async def app_env(tmp_path, monkeypatch):
+def settings() -> Settings:
+    """The app's settings; change them with monkeypatch.setattr(settings, ...)."""
+    return get_settings()
+
+
+@pytest.fixture
+async def app_env(tmp_path, monkeypatch, settings):
     """Fresh database and log directory for one test; the app is not started."""
-    monkeypatch.setattr(main, "DB_PATH", tmp_path / "test.duckdb")
-    monkeypatch.setattr(main, "LOGS_DIR", tmp_path / "logs")
+    monkeypatch.setattr(settings, "db_path", tmp_path / "test.duckdb")
+    monkeypatch.setattr(settings, "logs_dir", tmp_path / "logs")
     monkeypatch.setattr(main, "_active_job", None)
     monkeypatch.setattr(cpi_api, "RETRY_BACKOFF_BASE", 0)
     database.invalidate_stats_cache()
@@ -74,7 +74,7 @@ async def client(app_env):
 @pytest.fixture
 async def db(app_env):
     """Initialized database without the HTTP app."""
-    await database.init_db(main.DB_PATH)
+    await database.init_db(get_settings().db_path)
     return await database.get_db()
 
 

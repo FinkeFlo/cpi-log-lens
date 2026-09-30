@@ -12,7 +12,7 @@ import os
 import threading
 import time
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -26,9 +26,11 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
+from config import get_settings
 from logging_config import setup_logging
 
-setup_logging()
+settings = get_settings()
+setup_logging(settings.log_level, settings.log_format)
 
 # Logging must be configured before these modules create their loggers.
 import api as cpi_api  # noqa: E402
@@ -36,23 +38,7 @@ import db as database  # noqa: E402
 
 log = logging.getLogger("cpi")
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
-DB_PATH = Path(os.getenv("DB_PATH", "cpi_logs.duckdb"))
-LOGS_DIR = Path(os.getenv("LOGS_DIR", "logs"))
-MOCK = os.getenv("MOCK", "false").lower() == "true"
-# Concurrent file downloads per tenant/log_type during a fetch job. CPI's
-# LogFiles $value endpoint has high per-request latency (server-side
-# decompression, ~30-90s/file observed) so parallelism is the main client-side
-# lever we have; tune via env if your tenant tolerates more/less concurrency.
-FETCH_CONCURRENCY = int(os.getenv("FETCH_CONCURRENCY", "4"))
-# Optional automatic retention: if set (>0), a background task periodically
-# deletes log entries older than this many days across all tenants, so DB
-# size doesn't grow unbounded without someone remembering to call
-# /api/db/cleanup manually. Unset/0 (default) disables it — fully opt-in.
-RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "0"))
-RETENTION_CHECK_HOURS = float(os.getenv("RETENTION_CHECK_HOURS", "24"))
 MOCK_DIR = Path(__file__).parent / "mock"
-FRONTEND = Path(os.getenv("FRONTEND_DIR", str(Path(__file__).parent.parent / "frontend")))
 
 
 # ── Global fetch-job state ────────────────────────────────────────────────────
@@ -113,10 +99,44 @@ def _spawn(coro) -> asyncio.Task:
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
-# Set at image build time (Dockerfile ARG VERSION); "dev" when run from source.
-APP_VERSION = os.getenv("APP_VERSION", "dev")
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Start: open (and migrate) the database, seed tenants, start the background
+    loops. Stop: cancel them and any running fetch, then checkpoint and close the
+    database so no work is left in the WAL."""
+    settings.db_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.logs_dir.mkdir(parents=True, exist_ok=True)
+    await database.init_db(settings.db_path)
+    await _load_tenants_from_json()
+    watchdog_stop = threading.Event()
+    _spawn(_heartbeat())
+    if settings.watchdog_stall_seconds > 0:
+        threading.Thread(target=_watchdog, args=(watchdog_stop,), name="loop-watchdog", daemon=True).start()
+    if settings.retention_days > 0:
+        _spawn(_retention_loop())
+    _spawn(_schedule_loop())
+    try:
+        yield
+    finally:
+        log.info("shutting down")
+        watchdog_stop.set()
+        await _stop_background_tasks()
+        await database.close_db()
 
-app = FastAPI(title="CPI Log Lens", version=APP_VERSION)
+
+async def _stop_background_tasks() -> None:
+    job = _active_job
+    if job and job.status == "running":
+        log.info("shutdown: cancelling fetch job %s", job.id[:8])
+        job.cancel_requested = True
+        job.status = "cancelled"
+        job.status_msg = "Cancelled (shutdown)"
+    for task in list(_background_tasks):
+        task.cancel()
+    await asyncio.gather(*_background_tasks, return_exceptions=True)
+
+
+app = FastAPI(title="CPI Log Lens", version=settings.app_version, lifespan=lifespan)
 
 
 @app.exception_handler(database.DBBusyError)
@@ -131,14 +151,11 @@ async def db_busy(request, exc: database.DBBusyError):
 #   pages cannot read API responses. CORS_ORIGINS opts specific origins in.
 # - Writes coming from another origin are rejected (see below), because a
 #   page can still *send* simple cross-site requests without CORS.
-ALLOWED_HOSTS = [h.strip() for h in os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h.strip()]
-CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
-
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
-if CORS_ORIGINS:
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
+if settings.cors_origins:
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=CORS_ORIGINS,
+        allow_origins=settings.cors_origins,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -154,7 +171,7 @@ async def reject_cross_origin_writes(request, call_next):
     affected."""
     if request.method not in ("GET", "HEAD", "OPTIONS"):
         origin = request.headers.get("origin")
-        if origin and origin not in CORS_ORIGINS and urlsplit(origin).netloc != request.headers.get("host"):
+        if origin and origin not in settings.cors_origins and urlsplit(origin).netloc != request.headers.get("host"):
             return JSONResponse({"detail": "cross-origin request refused"}, status_code=403)
     return await call_next(request)
 
@@ -191,25 +208,7 @@ async def request_log_and_no_cache_js(request, call_next):
     return response
 
 
-SCHEDULE_CHECK_SECONDS = int(os.getenv("SCHEDULE_CHECK_SECONDS", "60"))
-# If the event loop does not advance for this long, the process dumps all
-# thread stacks and exits so the container restarts (0 disables the watchdog).
-WATCHDOG_STALL_SECONDS = float(os.getenv("WATCHDOG_STALL_SECONDS", "120"))
 _loop_heartbeat = time.monotonic()
-
-
-@app.on_event("startup")
-async def startup():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    LOGS_DIR.mkdir(parents=True, exist_ok=True)
-    await database.init_db(DB_PATH)
-    await _load_tenants_from_json()
-    _spawn(_heartbeat())
-    if WATCHDOG_STALL_SECONDS > 0:
-        threading.Thread(target=_watchdog, name="loop-watchdog", daemon=True).start()
-    if RETENTION_DAYS > 0:
-        _spawn(_retention_loop())
-    _spawn(_schedule_loop())
 
 
 async def _heartbeat():
@@ -219,15 +218,15 @@ async def _heartbeat():
         await asyncio.sleep(1)
 
 
-def _watchdog():
+def _watchdog(stop: threading.Event):
     """Runs in its own thread. A blocked event loop means every request hangs
     while the process looks alive, so no restart policy would kick in. After
     WATCHDOG_STALL_SECONDS without a heartbeat, dump all stacks (for the
-    post-mortem) and exit hard; Docker's restart policy brings the app back."""
-    while True:
-        time.sleep(5)
+    post-mortem) and exit hard; Docker's restart policy brings the app back.
+    Ends when `stop` is set (shutdown)."""
+    while not stop.wait(5):
         stalled = time.monotonic() - _loop_heartbeat
-        if stalled > WATCHDOG_STALL_SECONDS:
+        if stalled > settings.watchdog_stall_seconds:
             log.critical("event loop stalled for %.0fs, dumping stacks and exiting", stalled)
             faulthandler.dump_traceback(all_threads=True)
             os._exit(70)
@@ -242,19 +241,19 @@ async def _retention_loop():
     slow down the download instead of running for free in the background."""
     while True:
         if _active_job and _active_job.status == "running":
-            await asyncio.sleep(RETENTION_CHECK_HOURS * 3600)
+            await asyncio.sleep(settings.retention_check_hours * 3600)
             continue
         try:
             conn = await database.get_db()
-            result = await database.cleanup_old_logs(conn, RETENTION_DAYS)
+            result = await database.cleanup_old_logs(conn, settings.retention_days)
             if result["deleted"]:
                 log.info(
                     f"retention: deleted {result['deleted']} log entries "
-                    f"older than {RETENTION_DAYS} days ({result['remaining']} remaining)."
+                    f"older than {settings.retention_days} days ({result['remaining']} remaining)."
                 )
         except Exception as e:
             log.exception(f"retention: cleanup failed: {e}")
-        await asyncio.sleep(RETENTION_CHECK_HOURS * 3600)
+        await asyncio.sleep(settings.retention_check_hours * 3600)
 
 
 async def _schedule_loop():
@@ -269,10 +268,7 @@ async def _schedule_loop():
         try:
             if not (_active_job and _active_job.status == "running"):
                 conn = await database.get_db()
-                try:
-                    schedules = await database.get_schedules(conn)
-                finally:
-                    await conn.close()
+                schedules = await database.get_schedules(conn)
 
                 now = time.time()
                 for sched in schedules:
@@ -284,10 +280,7 @@ async def _schedule_loop():
                             continue
 
                     conn2 = await database.get_db()
-                    try:
-                        await database.touch_schedule_last_run(conn2, sched["id"])
-                    finally:
-                        await conn2.close()
+                    await database.touch_schedule_last_run(conn2, sched["id"])
 
                     body = FetchRequest(
                         tenants=json.loads(sched["tenants"]),
@@ -304,18 +297,12 @@ async def _schedule_loop():
                     break  # one job at a time — remaining due schedules wait for next tick
         except Exception as e:
             log.exception(f"schedule: loop error: {e}")
-        await asyncio.sleep(SCHEDULE_CHECK_SECONDS)
-
-
-# How TENANTS_CONFIG is applied on start:
-#   create (default) — add tenants that don't exist yet; edits made in the UI stay
-#   sync             — the file is the source of truth; its values overwrite the DB
-TENANTS_SEED_MODE = os.getenv("TENANTS_SEED_MODE", "create").lower()
+        await asyncio.sleep(settings.schedule_check_seconds)
 
 
 async def _load_tenants_from_json():
     """Seed tenants from the optional TENANTS_CONFIG file (JSON with comments)."""
-    config_path = Path(os.getenv("TENANTS_CONFIG", "/config/tenants.jsonc"))
+    config_path = settings.tenants_config
     if not config_path.is_file():
         if config_path.exists():
             log.warning("%s is not a file, ignoring it", config_path)
@@ -331,26 +318,23 @@ async def _load_tenants_from_json():
         return
 
     conn = await database.get_db()
-    try:
-        added = updated = 0
-        for t in tenant_list:
-            tid = t.get("id", "").strip().lower()
-            name = t.get("name", tid.upper())
-            api = t.get("api_url", "")
-            oauth = t.get("oauth_url", "")
-            cid = t.get("client_id", "")
-            secret = t.get("client_secret", "")
-            if not (tid and api and cid):
-                continue
-            exists = await database.get_tenant(conn, tid) is not None
-            if exists and TENANTS_SEED_MODE != "sync":
-                continue
-            await database.upsert_tenant(conn, tid, name, api, oauth, cid, secret)
-            updated += exists
-            added += not exists
-        log.info("tenants from %s: %d added, %d updated (mode %s)", config_path, added, updated, TENANTS_SEED_MODE)
-    finally:
-        await conn.close()
+    added = updated = 0
+    for t in tenant_list:
+        tid = t.get("id", "").strip().lower()
+        name = t.get("name", tid.upper())
+        api = t.get("api_url", "")
+        oauth = t.get("oauth_url", "")
+        cid = t.get("client_id", "")
+        secret = t.get("client_secret", "")
+        if not (tid and api and cid):
+            continue
+        exists = await database.get_tenant(conn, tid) is not None
+        if exists and settings.tenants_seed_mode != "sync":
+            continue
+        await database.upsert_tenant(conn, tid, name, api, oauth, cid, secret)
+        updated += exists
+        added += not exists
+    log.info("tenants from %s: %d added, %d updated (mode %s)", config_path, added, updated, settings.tenants_seed_mode)
 
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
@@ -412,7 +396,7 @@ def _check_datetime(value: str | None, field: str) -> None:
 @app.get("/healthz")
 async def healthz():
     """Liveness: answers as long as the event loop runs; no database access."""
-    return {"ok": True, "version": APP_VERSION, "loop_lag_s": round(time.monotonic() - _loop_heartbeat, 2)}
+    return {"ok": True, "version": settings.app_version, "loop_lag_s": round(time.monotonic() - _loop_heartbeat, 2)}
 
 
 @app.get("/readyz")
@@ -430,14 +414,11 @@ async def readyz():
 @app.get("/api/tenants")
 async def list_tenants():
     conn = await database.get_db()
-    try:
-        tenants = await database.get_tenants(conn)
-        # Mask secrets in response
-        for t in tenants:
-            t["client_secret"] = "••••••••" if t.get("client_secret") else ""
-        return tenants
-    finally:
-        await conn.close()
+    tenants = await database.get_tenants(conn)
+    # Mask secrets in response
+    for t in tenants:
+        t["client_secret"] = "••••••••" if t.get("client_secret") else ""
+    return tenants
 
 
 @app.post("/api/tenants", status_code=201)
@@ -445,55 +426,46 @@ async def create_tenant(body: TenantCreate):
     if not body.client_secret:
         raise HTTPException(422, "client_secret is required")
     conn = await database.get_db()
-    try:
-        await database.upsert_tenant(
-            conn,
-            body.id,
-            body.name,
-            body.api_url,
-            body.oauth_url,
-            body.client_id,
-            body.client_secret,
-        )
-        return {"ok": True}
-    finally:
-        await conn.close()
+    await database.upsert_tenant(
+        conn,
+        body.id,
+        body.name,
+        body.api_url,
+        body.oauth_url,
+        body.client_id,
+        body.client_secret,
+    )
+    return {"ok": True}
 
 
 @app.put("/api/tenants/{tenant_id}")
 async def update_tenant(tenant_id: str, body: TenantCreate):
     conn = await database.get_db()
-    try:
-        existing = await database.get_tenant(conn, tenant_id)
-        if not existing:
-            raise HTTPException(404, "Tenant not found")
-        # Keep existing secret if an empty or masked value is submitted —
-        # the edit form never pre-fills the stored secret.
-        secret = body.client_secret
-        if not secret or set(secret) == {"•"}:
-            secret = existing["client_secret"]
-        await database.upsert_tenant(
-            conn,
-            tenant_id,
-            body.name,
-            body.api_url,
-            body.oauth_url,
-            body.client_id,
-            secret,
-        )
-        return {"ok": True}
-    finally:
-        await conn.close()
+    existing = await database.get_tenant(conn, tenant_id)
+    if not existing:
+        raise HTTPException(404, "Tenant not found")
+    # Keep existing secret if an empty or masked value is submitted —
+    # the edit form never pre-fills the stored secret.
+    secret = body.client_secret
+    if not secret or set(secret) == {"•"}:
+        secret = existing["client_secret"]
+    await database.upsert_tenant(
+        conn,
+        tenant_id,
+        body.name,
+        body.api_url,
+        body.oauth_url,
+        body.client_id,
+        secret,
+    )
+    return {"ok": True}
 
 
 @app.delete("/api/tenants/{tenant_id}")
 async def remove_tenant(tenant_id: str):
     conn = await database.get_db()
-    try:
-        await database.delete_tenant(conn, tenant_id)
-        return {"ok": True}
-    finally:
-        await conn.close()
+    await database.delete_tenant(conn, tenant_id)
+    return {"ok": True}
 
 
 @app.post("/api/tenants/{tenant_id}/test")
@@ -509,8 +481,6 @@ async def test_tenant(tenant_id: str):
         return {"ok": bool(token), "token_preview": token[:12] + "…"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
-    finally:
-        await conn.close()
 
 
 # ── Demo data ─────────────────────────────────────────────────────────────────
@@ -582,11 +552,8 @@ async def get_default_fetch_config():
     or null if none has been saved yet — the frontend falls back to
     'all tenants + all log types' in that case."""
     conn = await database.get_db()
-    try:
-        raw = await database.get_setting(conn, "default_fetch_config")
-        return json.loads(raw) if raw else None
-    finally:
-        await conn.close()
+    raw = await database.get_setting(conn, "default_fetch_config")
+    return json.loads(raw) if raw else None
 
 
 @app.put("/api/fetch/default-config")
@@ -594,77 +561,62 @@ async def set_default_fetch_config(body: DefaultFetchConfig):
     """Persist the current fetch form selection as the default shown on
     next page load, instead of always defaulting to all tenants/log types."""
     conn = await database.get_db()
-    try:
-        await database.set_setting(conn, "default_fetch_config", body.model_dump_json())
-        return {"ok": True}
-    finally:
-        await conn.close()
+    await database.set_setting(conn, "default_fetch_config", body.model_dump_json())
+    return {"ok": True}
 
 
 # ── Fetch schedules (recurring pulls) ─────────────────────────────────────────
 @app.get("/api/schedules")
 async def list_schedules():
     conn = await database.get_db()
-    try:
-        schedules = await database.get_schedules(conn)
-        for s in schedules:
-            s["tenants"] = json.loads(s["tenants"])
-            s["log_types"] = json.loads(s["log_types"])
-        return schedules
-    finally:
-        await conn.close()
+    schedules = await database.get_schedules(conn)
+    for s in schedules:
+        s["tenants"] = json.loads(s["tenants"])
+        s["log_types"] = json.loads(s["log_types"])
+    return schedules
 
 
 @app.post("/api/schedules", status_code=201)
 async def create_schedule(body: ScheduleRequest):
     conn = await database.get_db()
-    try:
-        schedule_id = str(uuid.uuid4())
-        await database.create_schedule(
-            conn,
-            schedule_id,
-            body.name,
-            json.dumps(body.tenants),
-            json.dumps(body.log_types),
-            body.hours,
-            body.interval_minutes,
-            body.enabled,
-        )
-        return {"ok": True, "id": schedule_id}
-    finally:
-        await conn.close()
+    schedule_id = str(uuid.uuid4())
+    await database.create_schedule(
+        conn,
+        schedule_id,
+        body.name,
+        json.dumps(body.tenants),
+        json.dumps(body.log_types),
+        body.hours,
+        body.interval_minutes,
+        body.enabled,
+    )
+    return {"ok": True, "id": schedule_id}
 
 
 @app.put("/api/schedules/{schedule_id}")
 async def update_schedule(schedule_id: str, body: ScheduleRequest):
     conn = await database.get_db()
-    try:
-        existing = await database.get_schedule(conn, schedule_id)
-        if not existing:
-            raise HTTPException(404, "Schedule not found")
-        await database.update_schedule(
-            conn,
-            schedule_id,
-            body.name,
-            json.dumps(body.tenants),
-            json.dumps(body.log_types),
-            body.hours,
-            body.interval_minutes,
-            body.enabled,
-        )
-        return {"ok": True}
-    finally:
-        await conn.close()
+    existing = await database.get_schedule(conn, schedule_id)
+    if not existing:
+        raise HTTPException(404, "Schedule not found")
+    await database.update_schedule(
+        conn,
+        schedule_id,
+        body.name,
+        json.dumps(body.tenants),
+        json.dumps(body.log_types),
+        body.hours,
+        body.interval_minutes,
+        body.enabled,
+    )
+    return {"ok": True}
 
 
 @app.delete("/api/schedules/{schedule_id}")
 async def remove_schedule(schedule_id: str):
     conn = await database.get_db()
-    try:
-        await database.delete_schedule(conn, schedule_id)
-        return {"ok": True}
-    finally:
-        await conn.close()
+    await database.delete_schedule(conn, schedule_id)
+    return {"ok": True}
 
 
 @app.get("/api/fetch/stream")
@@ -758,7 +710,7 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
                     job.status_msg = f"🔑 Requesting token for {tenant['name']}…"
                     job.push({"type": "status", "msg": job.status_msg})
 
-                    if MOCK or tenant["api_url"].startswith(DEMO_URL):
+                    if settings.mock or tenant["api_url"].startswith(DEMO_URL):
                         mock_files = list(MOCK_DIR.glob("*.log"))
                         job.total = len(mock_files)
                         job.status_msg = f"{tenant['name']} · {lt}: {len(mock_files)} files"
@@ -813,10 +765,10 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
                         job.status_msg = f"{tenant['name']} · {lt}: {len(files)} files"
                         job.push({"type": "files_found", "count": len(files), "tenant": tenant["name"], "log_type": lt})
 
-                        tenant_log_dir = LOGS_DIR / tenant["id"]
+                        tenant_log_dir = settings.logs_dir / tenant["id"]
                         tenant_log_dir.mkdir(parents=True, exist_ok=True)
 
-                        semaphore = asyncio.Semaphore(FETCH_CONCURRENCY)
+                        semaphore = asyncio.Semaphore(settings.fetch_concurrency)
                         counters = {"done": 0, "imported": job.imported}
 
                         async def process_file(f):
@@ -929,8 +881,6 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
         job.status = "error"
         job.error_msg = str(e)
         job.push({"type": "error", "msg": str(e)})
-    finally:
-        await conn.close()
 
 
 # ── LLM query API ─────────────────────────────────────────────────────────────
@@ -950,10 +900,7 @@ class LLMQueryRequest(BaseModel):
 async def llm_query_schema():
     """Describes the query API for LLM tool-use / function-calling."""
     conn = await database.get_db()
-    try:
-        tenants = await database.get_tenants(conn)
-    finally:
-        await conn.close()
+    tenants = await database.get_tenants(conn)
 
     return {
         "description": (
@@ -1000,20 +947,17 @@ async def llm_query(req: LLMQueryRequest):
     _check_datetime(req.date_to, "date_to")
     limit = max(1, min(req.limit, 200))
     conn = await database.get_db()
-    try:
-        result = await database.query_logs(
-            conn,
-            tenant=req.tenant,
-            level=req.level,
-            iflow=req.iflow,
-            grep=req.grep,
-            date_from=req.date_from,
-            date_to=req.date_to,
-            page=1,
-            page_size=limit,
-        )
-    finally:
-        await conn.close()
+    result = await database.query_logs(
+        conn,
+        tenant=req.tenant,
+        level=req.level,
+        iflow=req.iflow,
+        grep=req.grep,
+        date_from=req.date_from,
+        date_to=req.date_to,
+        page=1,
+        page_size=limit,
+    )
 
     total = result["total"]
     items = result["items"]
@@ -1062,62 +1006,47 @@ async def get_logs(
     _check_datetime(date_from, "date_from")
     _check_datetime(date_to, "date_to")
     conn = await database.get_db()
-    try:
-        return await database.query_logs(
-            conn,
-            tenant=tenant,
-            level=level,
-            iflow=iflow,
-            grep=grep,
-            date_from=date_from,
-            date_to=date_to,
-            page=page,
-            page_size=page_size,
-        )
-    finally:
-        await conn.close()
+    return await database.query_logs(
+        conn,
+        tenant=tenant,
+        level=level,
+        iflow=iflow,
+        grep=grep,
+        date_from=date_from,
+        date_to=date_to,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @app.get("/api/logs/{entry_id}")
 async def get_log_entry(entry_id: int):
     conn = await database.get_db()
-    try:
-        entry = await database.get_log_entry(conn, entry_id)
-        if not entry:
-            raise HTTPException(404, "Entry not found")
-        return entry
-    finally:
-        await conn.close()
+    entry = await database.get_log_entry(conn, entry_id)
+    if not entry:
+        raise HTTPException(404, "Entry not found")
+    return entry
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
 @app.get("/api/stats")
 async def get_stats(tenant: str | None = None):
     conn = await database.get_db()
-    try:
-        return await database.get_stats(conn, tenant)
-    finally:
-        await conn.close()
+    return await database.get_stats(conn, tenant)
 
 
 # ── DB info ───────────────────────────────────────────────────────────────────
 @app.get("/api/db/info")
 async def db_info():
     conn = await database.get_db()
-    try:
-        return await database.get_db_info(conn, DB_PATH)
-    finally:
-        await conn.close()
+    return await database.get_db_info(conn, settings.db_path)
 
 
 @app.post("/api/db/clear")
 async def db_clear():
     conn = await database.get_db()
-    try:
-        await database.clear_db(conn)
-        return {"ok": True}
-    finally:
-        await conn.close()
+    await database.clear_db(conn)
+    return {"ok": True}
 
 
 class CleanupRequest(BaseModel):
@@ -1129,15 +1058,12 @@ class CleanupRequest(BaseModel):
 async def db_cleanup(req: CleanupRequest):
     """Delete log entries older than N days, optionally filtered by tenant."""
     conn = await database.get_db()
-    try:
-        result = await database.cleanup_old_logs(conn, req.older_than_days, req.tenant)
-        return {"ok": True, **result}
-    finally:
-        await conn.close()
+    result = await database.cleanup_old_logs(conn, req.older_than_days, req.tenant)
+    return {"ok": True, **result}
 
 
 # ── Serve frontend ────────────────────────────────────────────────────────────
-if FRONTEND.exists():
-    app.mount("/", StaticFiles(directory=str(FRONTEND), html=True), name="frontend")
+if settings.frontend_dir.exists():
+    app.mount("/", StaticFiles(directory=str(settings.frontend_dir), html=True), name="frontend")
 else:
-    log.warning("frontend directory %s not found; serving the API only", FRONTEND)
+    log.warning("frontend directory %s not found; serving the API only", settings.frontend_dir)
