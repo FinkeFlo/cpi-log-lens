@@ -138,10 +138,17 @@ class DBBusyError(Exception):
 DUCKDB_MEMORY_LIMIT = os.getenv("DUCKDB_MEMORY_LIMIT", "1.5GB")
 DUCKDB_THREADS      = int(os.getenv("DUCKDB_THREADS", "4"))
 DUCKDB_TEMP_DIR     = os.getenv("DUCKDB_TEMP_DIR", "")  # "" = DuckDB default (<db file>.tmp)
+# The default (16MB) checkpoints after nearly every 20k-row import batch, which
+# made bulk imports 2.5-4x slower (measured).
+DUCKDB_CHECKPOINT_THRESHOLD = os.getenv("DUCKDB_CHECKPOINT_THRESHOLD", "512MB")
 
 
 def _duckdb_config() -> dict:
-    config = {"memory_limit": DUCKDB_MEMORY_LIMIT, "threads": DUCKDB_THREADS}
+    config = {
+        "memory_limit": DUCKDB_MEMORY_LIMIT,
+        "threads": DUCKDB_THREADS,
+        "checkpoint_threshold": DUCKDB_CHECKPOINT_THRESHOLD,
+    }
     if DUCKDB_TEMP_DIR:
         config["temp_directory"] = DUCKDB_TEMP_DIR
     return config
