@@ -6,9 +6,10 @@ from typing import Any
 
 import pytest
 
-import db as database
-import main
-from tests.support import log_line, numbered_lines, write_log
+from app.api.schemas import LLMQueryRequest
+from app.repositories import tenants as tenants_repo
+from app.services import importer
+from tests.support import app_db, log_line, numbered_lines, write_log
 
 pytestmark = pytest.mark.anyio
 
@@ -49,14 +50,14 @@ EXPECTED_SCHEMA: dict[str, Any] = {
 
 @pytest.fixture
 async def seeded(client, tmp_path):
-    db = await database.get_db()
+    db = app_db()
     lines = [
         log_line(ts="2026-01-15 08:00:00", level="ERROR", thread="1-Demo_A_Worker-1", message="refused"),
         *numbered_lines(3, start_minute=60),
     ]
     path = write_log(tmp_path / "a.log", lines)
-    await database.import_log_file(db, "dev", "trace", path, "a.log", 0)
-    await database.upsert_tenant(db, "dev", "DEV", "https://x.example", "https://x.example/t", "c", "s")
+    await importer.import_log_file(db, "dev", "trace", path, "a.log", 0)
+    await tenants_repo.upsert_tenant(db, "dev", "DEV", "https://x.example", "https://x.example/t", "c", "s")
     return client
 
 
@@ -69,7 +70,7 @@ async def test_schema_snapshot(seeded):
 
 async def test_schema_body_matches_the_request_model():
     documented = set(EXPECTED_SCHEMA["endpoints"]["POST /api/query"]["body"])
-    assert documented == set(main.LLMQueryRequest.model_fields)
+    assert documented == set(LLMQueryRequest.model_fields)
 
 
 async def test_response_shape_and_documented_item_fields(seeded):

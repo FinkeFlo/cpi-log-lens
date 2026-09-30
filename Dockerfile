@@ -40,7 +40,7 @@ RUN groupadd --system --gid 10001 app \
  && chown app:app /data
 
 COPY --from=builder /opt/venv /opt/venv
-COPY backend/*.py     /app/backend/
+COPY backend/app/     /app/backend/app/
 COPY backend/mock/    /app/backend/mock/
 COPY frontend/        /app/frontend/
 
@@ -69,5 +69,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
 # No --reload: uvicorn itself is PID 1, so a crashed or OOM-killed server ends
 # the container and the restart policy brings it back. (With the reloader as
 # PID 1 the port stayed open but unanswered.) Use compose.dev.yaml to develop.
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", \
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", \
      "--timeout-graceful-shutdown", "10", "--timeout-keep-alive", "5", "--no-server-header"]

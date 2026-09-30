@@ -6,8 +6,10 @@ from datetime import datetime, timedelta
 
 import pytest
 
-import db as database
-from tests.support import log_line, numbered_lines, write_log
+from app.repositories import database
+from app.repositories import logs as logs_repo
+from app.services import importer, stats
+from tests.support import app_db, log_line, numbered_lines, write_log
 
 pytestmark = pytest.mark.anyio
 
@@ -22,9 +24,9 @@ TENANT = {
 
 
 async def import_lines(tmp_path, tenant, lines, name="a.log"):
-    db = await database.get_db()
+    db = app_db()
     path = write_log(tmp_path / f"{tenant}-{name}", lines)
-    await database.import_log_file(db, tenant, "trace", path, name, 0)
+    await importer.import_log_file(db, tenant, "trace", path, name, 0)
 
 
 def ts(delta: timedelta) -> str:
@@ -57,9 +59,9 @@ async def test_clear_deletes_logs_and_bookkeeping_but_keeps_tenants(client, tmp_
     await client.post("/api/tenants", json=TENANT)
     await import_lines(tmp_path, "t1", numbered_lines(3))
     assert (await client.post("/api/db/clear")).json() == {"ok": True}
-    db = await database.get_db()
-    assert await db.read(db._fetchone_val, "SELECT count(*) FROM logs") == 0
-    assert await db.read(db._fetchone_val, "SELECT count(*) FROM file_imports") == 0
+    db = app_db()
+    assert await db.read(db.fetch_val, "SELECT count(*) FROM logs") == 0
+    assert await db.read(db.fetch_val, "SELECT count(*) FROM file_imports") == 0
     assert len((await client.get("/api/tenants")).json()) == 1
     assert (await client.get("/api/stats")).json()["total"] == 0
 
@@ -68,8 +70,8 @@ async def test_clear_deletes_logs_and_bookkeeping_but_keeps_tenants(client, tmp_
 async def test_clear_also_deletes_unparsed_lines(client, tmp_path):
     await import_lines(tmp_path, "t1", ["garbage", *numbered_lines(1)])
     await client.post("/api/db/clear")
-    db = await database.get_db()
-    assert await db.read(db._fetchone_val, "SELECT count(*) FROM unparsed_lines") == 0
+    db = app_db()
+    assert await db.read(db.fetch_val, "SELECT count(*) FROM unparsed_lines") == 0
 
 
 async def test_cleanup_deletes_entries_older_than_n_days(client, tmp_path):
@@ -122,13 +124,13 @@ async def test_stats(client, tmp_path):
 
 async def test_stats_are_cached_until_data_changes(client, tmp_path, monkeypatch):
     calls = []
-    real = database._compute_stats
+    real = logs_repo.compute_stats
 
     async def counting(db, tenant=None):
         calls.append(tenant)
         return await real(db, tenant)
 
-    monkeypatch.setattr(database, "_compute_stats", counting)
+    monkeypatch.setattr(logs_repo, "compute_stats", counting)
     await client.get("/api/stats")
     await client.get("/api/stats")
     assert len(calls) == 1
@@ -146,19 +148,19 @@ async def test_slow_read_is_interrupted_after_the_query_timeout(db, monkeypatch,
     monkeypatch.setattr(settings, "query_timeout_s", 0.2)
     t0 = time.perf_counter()
     with pytest.raises(database.DBBusyError, match=r"longer than 0\.2s"):
-        await db.read(db._fetchone_val, SLOW_QUERY)
+        await db.read(db.fetch_val, SLOW_QUERY)
     assert time.perf_counter() - t0 < 2
     # The interrupted cursor goes back to the pool and works again.
-    assert await db.read(db._fetchone_val, "SELECT 42") == 42
+    assert await db.read(db.fetch_val, "SELECT 42") == 42
 
 
 async def test_read_fails_fast_when_all_cursors_are_busy(db, monkeypatch, settings):
     monkeypatch.setattr(settings, "query_timeout_s", 1.0)
     monkeypatch.setattr(settings, "pool_acquire_timeout_s", 0.1)
-    slow = [asyncio.create_task(db.read(db._fetchone_val, SLOW_QUERY)) for _ in range(database.READ_POOL_SIZE)]
+    slow = [asyncio.create_task(db.read(db.fetch_val, SLOW_QUERY)) for _ in range(database.READ_POOL_SIZE)]
     await asyncio.sleep(0.05)
     with pytest.raises(database.DBBusyError, match="no free read connection"):
-        await db.read(db._fetchone_val, "SELECT 1")
+        await db.read(db.fetch_val, "SELECT 1")
     results = await asyncio.gather(*slow, return_exceptions=True)
     assert all(isinstance(r, database.DBBusyError) for r in results)
 
@@ -176,7 +178,7 @@ async def test_busy_database_answers_503_with_retry_after(client, monkeypatch):
     async def busy(*args, **kwargs):
         raise database.DBBusyError("database busy: no free read connection")
 
-    monkeypatch.setattr(database, "get_stats", busy)
+    monkeypatch.setattr(stats, "get_stats", busy)
     res = await client.get("/api/stats")
     assert res.status_code == 503
     assert res.headers["retry-after"] == "5"

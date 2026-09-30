@@ -5,7 +5,7 @@ import gzip
 
 import pytest
 
-from db import _extract_iflow, iter_log_batches
+from app.parsing.cpi_log import extract_iflow, iter_log_batches
 from tests.support import log_line, numbered_lines, write_log
 
 
@@ -57,7 +57,7 @@ def test_valid_line_yields_all_fields(tmp_path):
     ],
 )
 def test_iflow_is_extracted_from_the_thread_name(thread, iflow):
-    assert _extract_iflow(thread) == iflow
+    assert extract_iflow(thread) == iflow
 
 
 def test_continuation_lines_are_appended_to_message_and_raw_line(tmp_path):

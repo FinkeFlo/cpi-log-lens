@@ -23,21 +23,30 @@ with its tests; strict `xfail` markers pin known bugs and must be removed with t
 
 ## Architecture
 
-- `backend/config.py` — all settings (`Settings`, pydantic-settings; env var = upper-case field
-  name). Read them via `get_settings()`, never with `os.getenv`.
-- `backend/main.py` — FastAPI app: `lifespan` (open DB, seed tenants, start loops; on shutdown
-  cancel them, checkpoint and close the DB), routes, request models (validated with Pydantic),
-  middleware (trusted hosts, cross-origin write guard, request log), the fetch job (`FetchJob`,
-  `_run_fetch`; one job at a time, progress via SSE on `/api/fetch/stream`), scheduler and
-  retention loops, tenant seeding from `TENANTS_CONFIG`, `/healthz`, `/readyz`, event-loop watchdog.
-- `backend/db.py` — all DuckDB access. `DuckDBConnection.open()` connects and migrates; the
-  wrapper has one writer (`run()`, single writer
-  thread, `WRITE_LOCK_TIMEOUT_S`) and a bounded pool of read cursors (`read()`, pool and query
-  timeouts, `cursor.interrupt()`; busy → `DBBusyError` → HTTP 503). Schema and ad-hoc migrations,
-  the streaming parser `iter_log_batches` and `import_log_file`, queries and a short stats cache.
-- `backend/api.py` — CPI client: OAuth token, file list, streaming download to gzip on disk, retry
-  with backoff.
-- `backend/logging_config.py` — stdout logging, `LOG_FORMAT=text|json`.
+The backend is the `app` package in `backend/` (`uvicorn app.main:app`). Dependencies point one way:
+`api` → `services` → `repositories` / `cpi` / `parsing`. `parsing` and `cpi` know nothing about the
+database; `repositories` know nothing about FastAPI or HTTP.
+
+- `app/main.py` — `create_app()`: error handlers, middleware, one router per resource, the UI mount.
+- `app/lifespan.py` — start: open the database (`app.state.db`), seed tenants, start the background
+  loops and the watchdog; stop: cancel them and a running fetch, checkpoint and close the database.
+- `app/config.py` — all settings (`Settings`, pydantic-settings; env var = upper-case field name).
+  Read them via `get_settings()`, never with `os.getenv`.
+- `app/api/` — routers (`health`, `tenants`, `fetch` incl. SSE and demo, `schedules`, `logs`, `query`,
+  `stats`, `admin`), request models in `schemas.py`, `middleware.py` (trusted hosts, cross-origin
+  write guard, request log), `deps.py` (`DbDep`: the database for a request).
+- `app/services/` — `fetch` (the fetch job: one at a time, progress events for SSE), `importer`
+  (parse a file, insert rows past the stored offset), `scheduler` (schedule and retention loops),
+  `tenants` (seeding from `TENANTS_CONFIG`, demo tenant), `stats` (cached statistics), `query`.
+- `app/repositories/` — `database.py` (`Database`: one writer via `run()` in a single writer thread,
+  a bounded pool of read cursors via `read()` with pool and query timeouts and
+  `cursor.interrupt()`; busy → `DBBusyError` → HTTP 503; clean `close()`), `schema.py` (schema and
+  ad-hoc migrations), one module per table group with SQL only.
+- `app/parsing/cpi_log.py` — streaming parser `iter_log_batches` (pure, fully typed).
+- `app/cpi/client.py` — CPI client: OAuth token, file list, streaming download to gzip on disk,
+  retry with backoff.
+- `app/tasks.py` (background tasks kept referenced), `app/watchdog.py` (heartbeat and the thread
+  that exits a hung process), `app/errors.py`, `app/logging_config.py` (`LOG_FORMAT=text|json`).
 - `frontend/index.html` + `frontend/app.js` — single Alpine component `App()`, hash routing;
   libraries vendored in `frontend/vendor/` (`scripts/vendor-frontend.sh`).
 - `Dockerfile` (repo root) — multi-stage, non-root, `HEALTHCHECK`, no `--reload`.
@@ -48,7 +57,7 @@ with its tests; strict `xfail` markers pin known bugs and must be removed with t
 - Duplicate protection comes from `file_imports.lines` only (no UNIQUE constraint, see ADR 2);
   keep rows and offset in the same transaction.
 - Never do CPU-heavy or blocking work on the event loop; use the DB threads or `asyncio.to_thread`.
-- Never read DuckDB results with `fetchone()` and leave them open; use the `_fetch*` helpers.
+- Never read DuckDB results with `fetchone()` and leave them open; use `Database.fetch_*`.
 - `/api/query` and `/api/query/schema` form a contract for external tools; keep them in sync with
-  `db.query_logs` filter semantics.
+  the filter semantics of `repositories/logs.query_logs`.
 - UI and API texts are English. Don't commit credentials, service keys or real log data.

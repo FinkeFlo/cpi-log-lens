@@ -21,7 +21,7 @@ Without Docker:
 cd backend
 uv sync        # .venv with the locked dependencies and the dev tools
 DB_PATH=../data/cpi_logs.duckdb LOGS_DIR=../data/logs TENANTS_CONFIG=../config/tenants.jsonc \
-  uv run uvicorn main:app --reload --port 8080
+  uv run uvicorn app.main:app --reload --port 8080
 ```
 
 Python dependencies are declared in `backend/pyproject.toml` and pinned, including all transitive

@@ -11,7 +11,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BeforeValidator, Field
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-BACKEND_DIR = Path(__file__).resolve().parent
+BACKEND_DIR = Path(__file__).resolve().parent.parent
 
 
 def _comma_list(value: Any) -> Any:

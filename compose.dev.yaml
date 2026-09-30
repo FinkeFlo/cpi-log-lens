@@ -4,7 +4,7 @@
 # restarted and the app hangs silently.
 services:
   app:
-    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
     volumes:
       - ./backend:/app/backend
       - ./frontend:/app/frontend
