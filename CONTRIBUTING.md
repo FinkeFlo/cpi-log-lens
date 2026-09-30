@@ -37,6 +37,11 @@ uv run mypy .            # type check
 uv run pytest            # tests
 ```
 
+**Schema changes** go into a new migration file in `backend/app/migrations/` with the next number:
+`vNNNN_<what>.sql`, or `vNNNN_<what>.py` with an `upgrade(conn)` function for data changes. Each
+migration runs once, in its own transaction, recorded in `schema_version`. Never edit a migration
+that has been released; add a new one.
+
 Tests live in `backend/tests/`. Each test gets a fresh DuckDB file and a started app, called through
 httpx without a server; CPI requests go to an in-process fake (`tests/support.py`), so no tenant is
 needed. Use synthetic log lines only (`log_line()` / `numbered_lines()`). A known bug can be pinned

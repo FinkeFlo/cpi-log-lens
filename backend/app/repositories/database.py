@@ -9,8 +9,8 @@ from pathlib import Path
 
 import duckdb
 
+from app import migrations
 from app.config import get_settings
-from app.repositories.schema import create_schema
 
 log = logging.getLogger("cpi.db")
 
@@ -81,14 +81,14 @@ class Database:
 
     @classmethod
     def open(cls, path: Path) -> "Database":
-        """Connect with the configured memory budget and bring the schema up to date."""
+        """Connect with the configured memory budget and apply pending schema migrations."""
         conn = duckdb.connect(str(path), config=_duckdb_config())
         try:
             memory_limit, threads = conn.execute(
                 "SELECT current_setting('memory_limit'), current_setting('threads')"
             ).fetchall()[0]
             log.info(f"duckdb {duckdb.__version__}: memory_limit={memory_limit}, threads={threads}")
-            create_schema(conn)
+            migrations.migrate(conn, get_settings().app_version)
         except BaseException:
             conn.close()
             raise
