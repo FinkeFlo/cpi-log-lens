@@ -5,6 +5,7 @@ import gzip
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -32,12 +33,11 @@ def log_line(
 
 def numbered_lines(n: int, start_minute: int = 0, **kw) -> list[str]:
     """n parsable lines with increasing timestamps (one per minute) and messages 'msg <i>'."""
-    lines = []
-    for i in range(n):
-        minute = start_minute + i
-        ts = f"2026-01-15 {8 + minute // 60:02d}:{minute % 60:02d}:00"
-        lines.append(log_line(ts=ts, message=f"msg {i}", **kw))
-    return lines
+    start = datetime(2026, 1, 15, 8, 0, 0) + timedelta(minutes=start_minute)
+    return [
+        log_line(ts=(start + timedelta(minutes=i)).strftime("%Y-%m-%d %H:%M:%S"), message=f"msg {i}", **kw)
+        for i in range(n)
+    ]
 
 
 def write_log(path: Path, lines: list[str], *, gz: bool = False) -> Path:

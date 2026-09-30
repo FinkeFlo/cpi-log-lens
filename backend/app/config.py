@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     # ── Storage ──
     db_path: Path = Path("cpi_logs.duckdb")
     logs_dir: Path = Path("logs")
+    # Where POST /api/db/backup writes backups (default: "backups" next to the database).
+    backup_dir: Path | None = None
 
     # ── Tenants ──
     tenants_config: Path = Path("/config/tenants.jsonc")
@@ -79,6 +81,10 @@ class Settings(BaseSettings):
     frontend_dir: Path = BACKEND_DIR.parent / "frontend"
     # Set at image build time (Dockerfile ARG VERSION).
     app_version: str = "dev"
+
+
+def backup_dir(settings: Settings) -> Path:
+    return settings.backup_dir or settings.db_path.parent / "backups"
 
 
 @lru_cache

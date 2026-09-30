@@ -10,6 +10,7 @@ from app.config import BACKEND_DIR, Settings
 ALL_VARS = [
     "DB_PATH",
     "LOGS_DIR",
+    "BACKUP_DIR",
     "TENANTS_CONFIG",
     "TENANTS_SEED_MODE",
     "MOCK",
@@ -47,6 +48,7 @@ def test_defaults(clean_env):
     assert s.model_dump() == {
         "db_path": Path("cpi_logs.duckdb"),
         "logs_dir": Path("logs"),
+        "backup_dir": None,
         "tenants_config": Path("/config/tenants.jsonc"),
         "tenants_seed_mode": "create",
         "mock": False,

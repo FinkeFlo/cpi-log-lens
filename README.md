@@ -75,6 +75,7 @@ unset; an invalid value stops the app at start with a message naming the variabl
 | `TENANTS_SEED_MODE` | `create` | `create`: only add missing tenants. `sync`: the file overwrites stored tenants. |
 | `DB_PATH` | `/data/cpi_logs.duckdb` | DuckDB database file. |
 | `LOGS_DIR` | `/data/logs` | Downloaded log files (gzip). |
+| `BACKUP_DIR` | `backups` next to the database | Where `POST /api/db/backup` writes backups. |
 | `FRONTEND_DIR` | `/app/frontend` | Directory of the web UI; the API is served alone if it is missing. |
 | `DUCKDB_MEMORY_LIMIT` | `1.5GB` | Memory DuckDB may use. Keep well below the container limit. |
 | `DUCKDB_THREADS` | `4` | Threads DuckDB may use. |
@@ -105,15 +106,21 @@ accordingly. Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 **Data.** Everything lives in `/data` (Compose: `./data`): the database `cpi_logs.duckdb` (plus a
 `.wal` file while running) and the downloaded log files under `logs/`.
 
-**Backup.** Stop the container and copy the database file together with its `.wal` file, if any:
+**Backup.** While the app runs, `POST /api/db/backup` writes a consistent copy of the database to
+`/data/backups/cpi_logs-<UTC time>.duckdb` (Compose: `./data/backups`; set `BACKUP_DIR` to use another
+directory, e.g. a mounted backup volume) and answers with its path and size; `GET /api/db/backups`
+lists the files. Imports wait while the copy is written, so a backup is refused while a fetch runs.
 
 ```bash
-docker compose stop
-cp data/cpi_logs.duckdb* /path/to/backup/
-docker compose start
+curl -X POST http://localhost:8080/api/db/backup
 ```
 
-Don't copy the file while the app is running: recent changes may only be in the WAL.
+Without the app, stop the container and copy the database file together with its `.wal` file, if
+any. Don't copy the file of a running app: recent changes may only be in the WAL.
+
+**Restore.** Stop the app, replace `cpi_logs.duckdb` with the backup file, delete a
+`cpi_logs.duckdb.wal` if there is one, and start the app again. Backups contain the tenant secrets:
+protect them like the database.
 
 **Upgrading.** Pull the new image (`docker compose pull && docker compose up -d`, or rebuild from
 source). On start the app applies pending schema migrations (logged as `migration NNNN …`); the
