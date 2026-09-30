@@ -1,6 +1,0 @@
-fastapi==0.142.2
-uvicorn[standard]==0.54.0
-httpx==0.28.1
-duckdb==1.5.6
-json5==0.15.0
-pyarrow==25.0.1

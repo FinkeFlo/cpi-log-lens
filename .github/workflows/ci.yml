@@ -17,27 +17,31 @@ concurrency:
 jobs:
   checks:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: astral-sh/setup-uv@v10
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: backend/requirements.txt
-      - name: Install dependencies
-        run: pip install -r backend/requirements.txt pip-audit
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: Install dependencies (fails if uv.lock is out of date)
+        run: uv sync --locked
       - name: Python compiles and imports
-        working-directory: backend
         run: |
-          python -m compileall -q .
-          DB_PATH=/tmp/ci.duckdb TENANTS_CONFIG=/nonexistent python -c "import main"
+          uv run --locked python -m compileall -q -x '/\.venv/' .
+          DB_PATH=/tmp/ci.duckdb TENANTS_CONFIG=/nonexistent uv run --locked python -c "import main"
       - uses: actions/setup-node@v7
         with:
           node-version: 24
       - name: Frontend script parses
-        run: node --check frontend/app.js
+        run: node --check ../frontend/app.js
       - name: Dependency vulnerabilities
-        run: pip-audit -r backend/requirements.txt
+        run: |
+          uv export --locked --no-dev --no-emit-project --format requirements-txt -o /tmp/requirements.txt
+          uvx pip-audit --disable-pip -r /tmp/requirements.txt
 
   image:
     runs-on: ubuntu-latest

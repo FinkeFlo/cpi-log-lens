@@ -4,7 +4,8 @@ Thanks for your interest in improving CPI Log Lens.
 
 ## Development setup
 
-Requirements: Docker. Python 3.12 is optional if you want to run the backend directly.
+Requirements: Docker. To run the backend directly, [uv](https://docs.astral.sh/uv/) (it installs a
+matching Python if needed).
 
 ```bash
 # Live reload of backend and frontend from the working tree
@@ -18,11 +19,14 @@ Without Docker:
 
 ```bash
 cd backend
-python -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt
+uv sync        # .venv with the locked dependencies and the dev tools
 DB_PATH=../data/cpi_logs.duckdb LOGS_DIR=../data/logs TENANTS_CONFIG=../config/tenants.jsonc \
-  uvicorn main:app --reload --port 8080
+  uv run uvicorn main:app --reload --port 8080
 ```
+
+Python dependencies are declared in `backend/pyproject.toml` and pinned, including all transitive
+packages, in `backend/uv.lock`. After changing them, run `uv lock` and commit both files; CI and the
+image build fail if the lock file is out of date.
 
 The frontend has no build step. Its libraries are vendored in `frontend/vendor/`. After using new
 Tailwind classes, or to bump a library version, run `scripts/vendor-frontend.sh` (downloads are

@@ -2,11 +2,21 @@
 #   docker build -t cpi-log-lens .
 ARG PYTHON_VERSION=3.12
 
+# uv installs the locked dependencies (backend/uv.lock); pinned, kept current by Dependabot.
+FROM ghcr.io/astral-sh/uv:0.12.21 AS uv
+
 # ── Stage 1: install dependencies into an isolated virtualenv ─────────────────
 FROM python:${PYTHON_VERSION}-slim AS builder
-RUN python -m venv /opt/venv
-COPY backend/requirements.txt /tmp/requirements.txt
-RUN /opt/venv/bin/pip install --no-cache-dir -r /tmp/requirements.txt
+COPY --from=uv /uv /bin/uv
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_PYTHON_DOWNLOADS=0 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
+WORKDIR /build
+COPY backend/pyproject.toml backend/uv.lock ./
+# --locked: fail if uv.lock does not match pyproject.toml instead of re-resolving.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-dev --no-install-project
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
 FROM python:${PYTHON_VERSION}-slim
