@@ -1,8 +1,13 @@
 """CPI API client — OAuth2 + Log file fetching."""
 import asyncio
+import gzip
+import os
 import re
-import httpx
+from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
+
+import httpx
 
 # Per-download-request timeouts and retry-with-backoff for the CPI LogFiles
 # API: individual file downloads have been observed taking 30-90s (server-side
@@ -98,21 +103,40 @@ async def list_remote_files(
     return await _retry(_do, what="list_remote_files")
 
 
-async def download_file(
-    api_url: str, token: str, name: str, application: str, client: Optional[httpx.AsyncClient] = None
-) -> bytes:
-    from urllib.parse import quote
+async def download_to_file(
+    api_url: str, token: str, name: str, application: str,
+    client: httpx.AsyncClient, dest: Path,
+) -> int:
+    """Stream a log file to `dest` as gzip, chunk by chunk, and return the
+    number of bytes received.
+
+    CPI's LogFiles $value endpoint decompresses server-side before streaming,
+    even though the name and Content-Type say .gz — the body is 30-40x larger
+    than the announced Size. Holding it in memory (resp.content) and then
+    compressing a second copy was the main reason fetches got the app
+    OOM-killed. Here memory stays constant: each chunk is compressed and
+    written in a worker thread, into `<dest>.part`, which replaces `dest`
+    only once the download is complete."""
     url = f"{api_url}/api/v1/LogFiles(Name='{quote(name)}',Application='{quote(application)}')/$value"
+    part = dest.with_name(dest.name + ".part")
 
     async def _do():
-        c = client or httpx.AsyncClient(timeout=DOWNLOAD_TIMEOUT, follow_redirects=True)
-        owns = client is None
-        try:
-            resp = await c.get(url, headers={"Authorization": f"Bearer {token}"})
+        received = 0
+        async with client.stream("GET", url, headers={"Authorization": f"Bearer {token}"}) as resp:
             resp.raise_for_status()
-            return resp.content
-        finally:
-            if owns:
-                await c.aclose()
+            raw = open(part, "wb")
+            gz: Optional[gzip.GzipFile] = None
+            try:
+                async for chunk in resp.aiter_bytes(1 << 20):
+                    if received == 0 and not chunk.startswith(b"\x1f\x8b"):
+                        gz = gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=6)
+                    received += len(chunk)
+                    await asyncio.to_thread((gz or raw).write, chunk)
+            finally:
+                if gz is not None:
+                    await asyncio.to_thread(gz.close)
+                raw.close()
+        os.replace(part, dest)
+        return received
 
-    return await _retry(_do, what=f"download_file({name})")
+    return await _retry(_do, what=f"download_to_file({name})")

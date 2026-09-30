@@ -3,7 +3,6 @@ CPI Log Explorer — FastAPI Backend
 Serves the frontend and provides REST + SSE API.
 """
 import asyncio
-import gzip
 import json
 import os
 import time
@@ -554,10 +553,12 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
                             if job.cancel_requested:
                                 break
                             already = (await database.get_file_import(conn, tenant["id"], mf.name))["lines"]
-                            rows, unparsed = database.parse_log_file(tenant["id"], lt, mf)
-                            new_rows = rows[already:]
-                            newly_imported = await database.import_rows(conn, new_rows, tenant["id"], mf.name, len(rows)) if new_rows else 0
-                            await database.import_unparsed_lines(conn, unparsed, tenant["id"], lt, mf.name)
+                            try:
+                                newly_imported = await database.import_log_file(
+                                    conn, tenant["id"], lt, mf, mf.name, already)
+                            except Exception as e:
+                                job.push({"type": "warn", "msg": f"Import failed: {mf.name}: {e}"})
+                                newly_imported = 0
                             job.imported  += newly_imported
                             job.done       = i
                             job.current_file = mf.name
@@ -624,29 +625,28 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
                                 # Download if new or grown
                                 if not dest.exists() or dest.stat().st_size != remote_size:
                                     try:
-                                        content = await cpi_api.download_file(
-                                            tenant["api_url"], token, f["Name"], f["Application"], client
+                                        # Streamed to disk as gzip with constant memory; the
+                                        # parser auto-detects gzip via magic bytes.
+                                        await cpi_api.download_to_file(
+                                            tenant["api_url"], token, f["Name"], f["Application"],
+                                            client, dest,
                                         )
-                                        # CPI's LogFiles $value endpoint decompresses server-side
-                                        # before streaming even though the filename/Content-Type say
-                                        # .gz (~30-40x larger than the announced Size). Re-compress
-                                        # before writing to disk to actually save space — raw log
-                                        # files must be kept (per requirement) but don't need to stay
-                                        # as plaintext. parse_log_file() already auto-detects gzip via
-                                        # magic bytes, so reading is unaffected.
-                                        if not content.startswith(b"\x1f\x8b"):
-                                            content = await asyncio.to_thread(gzip.compress, content)
-                                        await asyncio.to_thread(dest.write_bytes, content)
                                     except Exception as e:
                                         job.push({"type": "warn", "msg": f"Download fehlgeschlagen: {f['Name']}: {e}"})
                                         job.push({"type": "progress", "done": i, "total": len(files),
                                                    "file": f["Name"], "new_rows": 0, "imported": counters["imported"]})
                                         return
 
-                                rows, unparsed = database.parse_log_file(tenant["id"], lt, dest)
-                                new_rows  = rows[file_import["lines"]:]
-                                newly_imported = await database.import_rows(conn, new_rows, tenant["id"], f["Name"], len(rows), remote_size) if new_rows else 0
-                                await database.import_unparsed_lines(conn, unparsed, tenant["id"], lt, f["Name"])
+                                # A file that can't be read completely (e.g. truncated
+                                # gzip) keeps the rows committed so far, is not marked
+                                # as fully imported and is retried on the next fetch.
+                                try:
+                                    newly_imported = await database.import_log_file(
+                                        conn, tenant["id"], lt, dest, f["Name"],
+                                        file_import["lines"], remote_size)
+                                except Exception as e:
+                                    job.push({"type": "warn", "msg": f"Import failed: {f['Name']}: {e}"})
+                                    newly_imported = 0
                                 counters["imported"] += newly_imported
                                 job.imported          = counters["imported"]
 

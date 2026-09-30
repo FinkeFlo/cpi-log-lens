@@ -6,7 +6,7 @@ import asyncio
 import duckdb
 import pyarrow as pa
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 DB_PATH: Path = Path("/data/cpi_logs.db")
 
@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS logs (
 -- ~3 files/hour (100% CPU) once `logs` passed ~5.8M rows. Duplicate
 -- protection across fetch runs is instead provided entirely by
 -- `file_imports.lines` (only rows beyond the last-imported line are ever
--- parsed/inserted into `import_rows()`) — see migration below for how this
+-- parsed/inserted into `import_log_file()`) — see migration below for how this
 -- constraint is retroactively dropped from existing DB files.
 DROP INDEX IF EXISTS idx_logs_tenant;
 DROP INDEX IF EXISTS idx_logs_level;
@@ -106,7 +106,7 @@ CREATE TABLE IF NOT EXISTS settings (
 
 CREATE SEQUENCE IF NOT EXISTS unparsed_lines_id_seq;
 
--- Lines that parse_log_file() could neither match against LINE_RE nor
+-- Lines that iter_log_batches() could neither match against LINE_RE nor
 -- attach as a continuation of the previous parsed row (i.e. the very first
 -- line of a file/parse run is itself unparsable, so there is no prior
 -- message to append it to). Kept here instead of being silently dropped so
@@ -303,7 +303,7 @@ def _migrate_timestamp_to_native(conn: duckdb.DuckDBPyConnection):
     query_logs, get_stats, cleanup_old_logs) and stores more compactly than
     the equivalent TEXT. Idempotent: no-op once the column is already
     TIMESTAMP. Safe to run on any size table — all values in `logs.timestamp`
-    are written by parse_log_file() in the strict 'YYYY-MM-DD HH:MM:SS'
+    are written by iter_log_batches() in the strict 'YYYY-MM-DD HH:MM:SS'
     format (see LINE_RE), which DuckDB parses unambiguously."""
     col_type = conn.execute("""
         SELECT data_type FROM duckdb_columns()
@@ -395,61 +395,69 @@ def _is_gzip(path: Path) -> bool:
         return False
 
 
-def parse_log_file(tenant: str, log_type: str, filepath: Path) -> tuple[list[tuple], list[tuple]]:
-    """Parse a CPI log file into structured rows.
+def iter_log_batches(tenant: str, log_type: str, filepath: Path,
+                     batch_size: int = 20000) -> Iterator[tuple[list[tuple], list[tuple]]]:
+    """Parse a CPI log file into structured rows, in batches of `batch_size`.
 
-    Returns (rows, unparsed):
-    - rows: list of tuples matching _INSERT_COLUMNS order (tenant, log_type,
+    Yields (rows, unparsed):
+    - rows: tuples matching _INSERT_COLUMNS order (tenant, log_type,
       filename, timestamp, level, logger, iflow, message, ip, node, raw_line).
-    - unparsed: list of (line_no, raw_text) for lines that could not be
-      matched against LINE_RE *and* had no preceding parsed row in this file
-      to attach to (see below) — kept so nothing is silently dropped.
+    - unparsed: (line_no, raw_text) for lines that could not be matched
+      against LINE_RE *and* had no preceding parsed row in this file to
+      attach to — kept so nothing is silently dropped.
 
     Lines that don't match LINE_RE (e.g. a stacktrace continuation of a
     multi-line log message) are appended to the message/raw_line of the
-    previously parsed row instead of being discarded, as long as there is a
-    previous row in this file to attach them to.
+    previously parsed row. A row is only emitted once the next row (or the
+    end of the file) is seen, so continuations that span a batch boundary
+    stay attached to their row. Memory stays bounded by one batch, however
+    large the file is.
 
-    NOTE on incremental re-fetch bookkeeping (see import_rows/file_imports):
-    the file's whole content is re-parsed on every fetch, and only rows past
-    the offset stored in file_imports.lines are (re-)imported — that offset
-    counts *top-level rows* (post-merge), not raw physical lines. This is
-    safe for the normal case (a file only ever grows by new complete lines
-    at the end). Edge case: if a multi-line message is only partially
-    written when a fetch runs (e.g. a stacktrace still being flushed) and
-    more continuation lines for that *same* message appear by the next
-    fetch, those extra lines won't be picked up — the row they belong to is
-    already before the offset. This is considered acceptable: rare, and the
-    message is still captured (just possibly truncated to what existed at
-    fetch time) rather than silently duplicated or corrupted.
+    NOTE on incremental re-fetch bookkeeping (see import_log_file /
+    file_imports): the file's whole content is re-parsed on every fetch, and
+    only rows past the offset stored in file_imports.lines are imported — that
+    offset counts *top-level rows* (post-merge), not raw physical lines. This
+    is safe for the normal case (a file only ever grows by new complete lines
+    at the end). Edge case: if a multi-line message is only partially written
+    when a fetch runs and more continuation lines for that *same* message
+    appear by the next fetch, those extra lines won't be picked up — the row
+    they belong to is already before the offset. Considered acceptable: rare,
+    and the message is still captured (possibly truncated) rather than
+    duplicated or corrupted.
     """
-    rows: list[list] = []
+    batch: list[tuple] = []
     unparsed: list[tuple] = []
-    try:
-        opener = gzip.open if _is_gzip(filepath) else open
-        with opener(filepath, "rt", encoding="utf-8", errors="replace") as f:
-            for line_no, line in enumerate(f, 1):
-                raw = line.rstrip("\n")
-                m = LINE_RE.match(raw)
-                if not m:
-                    if rows:
-                        # Continuation line (e.g. stacktrace) — append to the
-                        # previous row's message and raw_line.
-                        rows[-1][7] += "\n" + raw
-                        rows[-1][10] += "\n" + raw
-                    else:
-                        unparsed.append((line_no, raw))
-                    continue
-                ts, level, logger, iflow, message, ip, node = m.groups()
-                rows.append([
-                    tenant, log_type, filepath.name,
-                    ts, level.strip(), logger.strip(),
-                    _extract_iflow(iflow), message.strip(),
-                    ip.strip(), node.strip(), raw,
-                ])
-    except Exception:
-        pass
-    return [tuple(r) for r in rows], unparsed
+    current: Optional[list] = None
+    opener = gzip.open if _is_gzip(filepath) else open
+    with opener(filepath, "rt", encoding="utf-8", errors="replace") as f:
+        for line_no, line in enumerate(f, 1):
+            raw = line.rstrip("\n")
+            m = LINE_RE.match(raw)
+            if not m:
+                if current is not None:
+                    # Continuation line (e.g. stacktrace) — append to the
+                    # current row's message and raw_line.
+                    current[7] += "\n" + raw
+                    current[10] += "\n" + raw
+                else:
+                    unparsed.append((line_no, raw))
+                continue
+            if current is not None:
+                batch.append(tuple(current))
+                if len(batch) >= batch_size:
+                    yield batch, unparsed
+                    batch, unparsed = [], []
+            ts, level, logger, iflow, message, ip, node = m.groups()
+            current = [
+                tenant, log_type, filepath.name,
+                ts, level.strip(), logger.strip(),
+                _extract_iflow(iflow), message.strip(),
+                ip.strip(), node.strip(), raw,
+            ]
+    if current is not None:
+        batch.append(tuple(current))
+    if batch or unparsed:
+        yield batch, unparsed
 
 
 # ── Tenants ───────────────────────────────────────────────────────────────────
@@ -554,19 +562,15 @@ async def get_file_import(db: DuckDBConnection, tenant: str, filename: str) -> d
     return row if row else {"lines": 0, "size": 0}
 
 
-# Row count per pyarrow-registered batch. Batching keeps peak memory bounded
-# for very large files/imports; pyarrow avoids the per-row Python->DuckDB
-# parameter-marshalling cost entirely (see benchmark below).
+# Row count per parsed/inserted batch. Batching keeps peak memory bounded
+# for very large files; pyarrow avoids the per-row Python->DuckDB
+# parameter-marshalling cost entirely (see _insert_rows).
 _INSERT_BATCH_SIZE = 20000
 _INSERT_COLUMNS = ["tenant", "log_type", "filename", "timestamp", "level",
                    "logger", "iflow", "message", "ip", "node", "raw_line"]
 
 
-async def import_rows(db: DuckDBConnection, rows: list[tuple], tenant: str, filename: str,
-                       total_lines: Optional[int] = None, size: int = 0) -> int:
-    if not rows:
-        return 0
-
+def _insert_rows(conn, rows: list[tuple]):
     # Bulk-insert via a registered pyarrow Table + `INSERT INTO ... SELECT`,
     # instead of a parameterized multi-row `INSERT ... VALUES (?,?,...)`.
     # Benchmarked against a copy of the real (6M-row) production table: the
@@ -577,70 +581,78 @@ async def import_rows(db: DuckDBConnection, rows: list[tuple], tenant: str, file
     # pyarrow path measured ~0.0015 ms/row on the same data (~800-1000x
     # faster), because DuckDB ingests the whole batch as a columnar buffer in
     # one call instead of binding each value individually.
-    #
-    # No UNIQUE constraint / ON CONFLICT / in-batch dedupe here anymore (see
-    # SCHEMA comment on `logs`): duplicate protection across fetch runs comes
-    # entirely from file_imports.lines (only rows past the last-imported line
-    # of a file are ever handed to this function). This also fixes a latent
-    # correctness issue the old UNIQUE constraint had: legitimate repeated log
-    # lines (e.g. heartbeat/timer messages with identical
-    # tenant/type/filename/timestamp/level/logger/message within the same
-    # second) used to be silently dropped as "duplicates" — they are now
-    # imported as the distinct log entries they actually are.
-    #
-    # `rows` here is only the *new* slice past the last-imported line — but
-    # file_imports.lines must record the file's *total* parsed line count so
-    # the next incremental fetch computes the correct offset. Callers pass
-    # `total_lines` (= previously-imported lines + len(rows)) explicitly;
-    # defaulting it to len(rows) is only correct for a brand-new file. Using
-    # len(rows) unconditionally here was a bug: on a growing file it kept
-    # resetting file_imports.lines back down to just the latest delta, so
-    # every subsequent fetch re-imported already-imported lines as "new",
-    # silently accumulating real duplicate rows over time.
-    if total_lines is None:
-        total_lines = len(rows)
+    columns = list(zip(*rows))
+    arrow_table = pa.table({
+        col: pa.array(values, type=pa.string())
+        for col, values in zip(_INSERT_COLUMNS, columns)
+    })
+    conn.register("_import_batch", arrow_table)
+    try:
+        conn.execute(
+            f"INSERT INTO logs ({','.join(_INSERT_COLUMNS)}) "
+            f"SELECT {','.join(_INSERT_COLUMNS)} FROM _import_batch"
+        )
+    finally:
+        conn.unregister("_import_batch")
 
+
+async def import_log_file(db: DuckDBConnection, tenant: str, log_type: str,
+                          filepath: Path, filename: str, already: int, size: int = 0) -> int:
+    """Parse `filepath` and import every row past the first `already` rows.
+    Returns the number of newly inserted rows.
+
+    Parsing and inserting both run batch by batch in the single DB writer
+    thread: the event loop never runs CPU-bound parsing, and memory is bounded
+    by one batch instead of the whole file.
+
+    Duplicate protection: there is no UNIQUE constraint / ON CONFLICT /
+    dedupe on `logs` (see SCHEMA comment). Protection across fetch runs comes
+    entirely from file_imports.lines — only rows past the last-imported row
+    of a file are inserted. Legitimate repeated log lines (e.g. heartbeats
+    with identical timestamp/level/logger/message) are distinct entries and
+    are imported as such.
+
+    Each batch is inserted in one transaction together with the updated
+    file_imports.lines, so the offset always matches what is committed: if
+    the import stops midway, the next fetch continues where it stopped
+    instead of duplicating rows. file_imports.size (which lets the next
+    fetch skip an unchanged file) is only written once the whole file was
+    parsed. Unparsable lines before the first row are stored only on the
+    first import of a file, not again on every re-fetch."""
     def _run(conn):
-        for i in range(0, len(rows), _INSERT_BATCH_SIZE):
-            chunk = rows[i:i + _INSERT_BATCH_SIZE]
-            columns = list(zip(*chunk))
-            arrow_table = pa.table({
-                col: pa.array(values, type=pa.string())
-                for col, values in zip(_INSERT_COLUMNS, columns)
-            })
-            view_name = f"_import_batch_{id(chunk)}"
-            conn.register(view_name, arrow_table)
+        total = inserted = 0
+        for rows, unparsed in iter_log_batches(tenant, log_type, filepath, _INSERT_BATCH_SIZE):
+            skip = max(0, already - total)
+            total += len(rows)
+            new = rows[skip:]
+            if not new and not (unparsed and already == 0):
+                continue
+            conn.begin()
             try:
-                conn.execute(
-                    f"INSERT INTO logs ({','.join(_INSERT_COLUMNS)}) "
-                    f"SELECT {','.join(_INSERT_COLUMNS)} FROM {view_name}"
-                )
-            finally:
-                conn.unregister(view_name)
-        db._execute(conn, """
-            INSERT INTO file_imports (tenant, filename, lines, size) VALUES (?, ?, ?, ?)
-            ON CONFLICT (tenant, filename) DO UPDATE SET lines=excluded.lines, size=excluded.size
-        """, [tenant, filename, total_lines, size])
-        return len(rows)
+                if new:
+                    _insert_rows(conn, new)
+                    db._execute(conn, """
+                        INSERT INTO file_imports (tenant, filename, lines, size) VALUES (?, ?, ?, 0)
+                        ON CONFLICT (tenant, filename) DO UPDATE SET lines=excluded.lines
+                    """, [tenant, filename, total])
+                if unparsed and already == 0:
+                    conn.executemany("""
+                        INSERT INTO unparsed_lines (tenant, log_type, filename, line_no, raw_text)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, [[tenant, log_type, filename, n, t] for n, t in unparsed])
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+            inserted += len(new)
+        if total:
+            db._execute(conn, """
+                INSERT INTO file_imports (tenant, filename, lines, size) VALUES (?, ?, ?, ?)
+                ON CONFLICT (tenant, filename) DO UPDATE SET lines=excluded.lines, size=excluded.size
+            """, [tenant, filename, max(total, already), size])
+        return inserted
 
     return await db.run(_run)
-
-
-async def import_unparsed_lines(db: DuckDBConnection, unparsed: list[tuple],
-                                 tenant: str, log_type: str, filename: str):
-    """Persist lines that parse_log_file() couldn't attribute to any parsed
-    row (see parse_log_file docstring) instead of silently dropping them."""
-    if not unparsed:
-        return
-
-    def _run(conn):
-        for line_no, raw_text in unparsed:
-            db._execute(conn, """
-                INSERT INTO unparsed_lines (tenant, log_type, filename, line_no, raw_text)
-                VALUES (?, ?, ?, ?, ?)
-            """, [tenant, log_type, filename, line_no, raw_text])
-
-    await db.run(_run)
 
 
 # ── Query ─────────────────────────────────────────────────────────────────────
@@ -807,7 +819,7 @@ async def cleanup_old_logs(db: DuckDBConnection, older_than_days: int, tenant: O
 
 # NOTE: a dedupe-by-content function (matching on tenant/log_type/filename/
 # timestamp/level/logger/message) was considered and deliberately rejected —
-# see the comment on import_rows() above: CPI logs legitimately contain
+# see the comment on import_log_file() above: CPI logs legitimately contain
 # repeated messages with identical timestamp/level/logger/message text
 # (e.g. heartbeats, generic per-second status lines) that are NOT
 # duplicates. There is no reliable content-based uniqueness key available;
