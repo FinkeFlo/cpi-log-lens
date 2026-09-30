@@ -94,7 +94,10 @@ class FetchJob:
 _active_job: Optional[FetchJob] = None
 
 # ── App ───────────────────────────────────────────────────────────────────────
-app = FastAPI(title="CPI Log Lens", version="1.0.0")
+# Set at image build time (Dockerfile ARG VERSION); "dev" when run from source.
+APP_VERSION = os.getenv("APP_VERSION", "dev")
+
+app = FastAPI(title="CPI Log Lens", version=APP_VERSION)
 
 @app.exception_handler(database.DBBusyError)
 async def db_busy(request, exc: database.DBBusyError):
@@ -372,7 +375,7 @@ def _check_datetime(value: Optional[str], field: str) -> None:
 @app.get("/healthz")
 async def healthz():
     """Liveness: answers as long as the event loop runs; no database access."""
-    return {"ok": True, "loop_lag_s": round(time.monotonic() - _loop_heartbeat, 2)}
+    return {"ok": True, "version": APP_VERSION, "loop_lag_s": round(time.monotonic() - _loop_heartbeat, 2)}
 
 
 @app.get("/readyz")

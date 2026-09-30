@@ -1,0 +1,78 @@
+# Pull request / main gate: static checks, dependency audit, and an image
+# build with a smoke test (container starts, UI is served, MOCK import works).
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install dependencies
+        run: pip install -r backend/requirements.txt pip-audit
+      - name: Python compiles and imports
+        working-directory: backend
+        run: |
+          python -m compileall -q .
+          DB_PATH=/tmp/ci.duckdb TENANTS_CONFIG=/nonexistent python -c "import main"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Frontend script parses
+        run: node --check frontend/app.js
+      - name: Dependency vulnerabilities
+        run: pip-audit -r backend/requirements.txt
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          tags: cpi-log-lens:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test
+        run: |
+          docker run -d --name smoke -p 127.0.0.1:8080:8080 -e MOCK=true cpi-log-lens:ci
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/healthz && break; sleep 1; done
+          curl -fsS http://127.0.0.1:8080/ | grep -q "<title>CPI Log Lens</title>"
+          curl -fsS -X POST http://127.0.0.1:8080/api/tenants -H 'Content-Type: application/json' \
+            -d '{"id":"demo","name":"DEMO","api_url":"https://example.invalid","oauth_url":"https://example.invalid/token","client_id":"c","client_secret":"s"}'
+          curl -fsS -X POST http://127.0.0.1:8080/api/fetch -H 'Content-Type: application/json' \
+            -d '{"tenants":["demo"],"log_types":["trace"],"hours":0}'
+          for i in $(seq 1 30); do
+            status=$(curl -fsS http://127.0.0.1:8080/api/fetch/status)
+            echo "$status" | grep -q '"status":"running"' || break
+            sleep 1
+          done
+          echo "$status"
+          echo "$status" | grep -q '"status":"done"'
+          echo "$status" | grep -Eq '"imported":[1-9]'
+          for i in $(seq 1 30); do
+            [ "$(docker inspect smoke --format '{{.State.Health.Status}}')" = healthy ] && break
+            sleep 2
+          done
+          docker inspect smoke --format '{{.State.Health.Status}}' | grep -qx healthy
+      - name: Container logs
+        if: always()
+        run: docker logs smoke || true
