@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from app import migrations
 from app.repositories import database
 from app.repositories import logs as logs_repo
 from app.services import importer, stats
@@ -53,6 +54,7 @@ async def test_db_info(client, tmp_path, settings):
     assert body["tenants"] == 1
     assert body["size_bytes"] > 0
     assert body["size_mb"] == round(body["size_bytes"] / 1024 / 1024, 1)
+    assert body["schema_version"] == migrations.discover()[-1].version
 
 
 async def test_clear_deletes_logs_and_bookkeeping_but_keeps_tenants(client, tmp_path):

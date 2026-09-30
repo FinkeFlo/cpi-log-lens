@@ -180,12 +180,14 @@ async def get_db_info(db: Database, db_path: Path) -> dict:
         size_bytes = db_path.stat().st_size if db_path.exists() else 0
         entries = db.fetch_val(cur, "SELECT COUNT(*) FROM logs") or 0
         tenant_count = db.fetch_val(cur, "SELECT COUNT(*) FROM tenants") or 0
+        schema_version = db.fetch_val(cur, "SELECT max(version) FROM schema_version")
         return {
             "path": str(db_path),
             "size_bytes": size_bytes,
             "size_mb": round(size_bytes / 1024 / 1024, 1),
             "entries": entries,
             "tenants": tenant_count,
+            "schema_version": schema_version,
         }
 
     return await db.read(_run)
