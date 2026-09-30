@@ -78,3 +78,11 @@ warn_redundant_casts = true
 # No type information published for these.
 module = ["pyarrow", "pyarrow.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Pure modules without I/O frameworks are fully typed.
+module = ["app.parsing.*"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_any_generics = true
+warn_return_any = true
