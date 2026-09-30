@@ -11,7 +11,6 @@ import pytest
 from asgi_lifespan import LifespanManager
 
 from app import main, tasks, watchdog
-from app.repositories import database
 from app.services import fetch as fetch_service
 from tests.support import FAKE_TENANT, numbered_lines, wait_for_job
 
@@ -29,7 +28,7 @@ async def test_shutdown_checkpoints_and_closes_the_database(app_env, settings, c
     ):
         assert (await client.post("/api/demo")).status_code == 200
         await wait_for_job(client)
-    assert database._db_instance is None
+    assert main.app.state.db.closed
     assert tasks.background_tasks == set()
     assert "database checkpointed and closed" in caplog.text
     # Nothing is left in the WAL, and the file is no longer locked.
@@ -53,7 +52,7 @@ async def test_shutdown_cancels_a_running_fetch(app_env, fake_cpi):
     assert time.perf_counter() - t0 < 5
     assert fetch_service.active_job is not None
     assert fetch_service.active_job.status == "cancelled"
-    assert database._db_instance is None
+    assert main.app.state.db.closed
 
 
 async def test_close_waits_for_a_running_write(db):
@@ -63,9 +62,9 @@ async def test_close_waits_for_a_running_write(db):
 
     write = asyncio.create_task(db.run(slow_write))
     await asyncio.sleep(0.05)
-    await database.close_db()
+    await db.close()
     await write
-    assert database._db_instance is None
+    assert db.closed
 
 
 async def test_close_interrupts_a_write_that_takes_too_long(db, settings, caplog):
@@ -77,7 +76,6 @@ async def test_close_interrupts_a_write_that_takes_too_long(db, settings, caplog
     assert "interrupting the running write" in caplog.text
     with pytest.raises(duckdb.InterruptException):
         await write
-    database._db_instance = None
     with duckdb.connect(str(settings.db_path), read_only=True) as conn:
         assert conn.execute("SELECT count(*) FROM duckdb_tables() WHERE table_name = 'slow'").fetchall() == [(0,)]
 
@@ -87,7 +85,7 @@ async def test_close_interrupts_running_reads(db, settings, monkeypatch):
     read = asyncio.create_task(db.read(db.fetch_val, SLOW_READ))
     await asyncio.sleep(0.1)
     t0 = time.perf_counter()
-    await database.close_db()
+    await db.close()
     assert time.perf_counter() - t0 < 5
     with pytest.raises(duckdb.InterruptException):
         await read

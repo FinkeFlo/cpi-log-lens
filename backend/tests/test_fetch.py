@@ -8,9 +8,8 @@ import time
 
 import pytest
 
-from app.repositories import database
 from app.repositories import file_imports as file_imports_repo
-from tests.support import FAKE_TENANT, fetch, numbered_lines, wait_for_job
+from tests.support import FAKE_TENANT, app_db, fetch, numbered_lines, wait_for_job
 
 pytestmark = pytest.mark.anyio
 
@@ -147,7 +146,7 @@ async def test_legacy_import_without_size_is_backfilled_from_the_local_file(clie
     local = app_env / "logs" / "fake" / "a.log"
     local.parent.mkdir(parents=True)
     local.write_bytes(gzip.compress(("\n".join(lines) + "\n").encode()))
-    db = await database.get_db()
+    db = app_db()
     await db.run(db.execute, "INSERT INTO file_imports (tenant, filename, lines, size) VALUES ('fake', 'a.log', 3, 0)")
     tenant.add("a.log", lines, size=local.stat().st_size)
     status = await fetch(client, **TRACE)

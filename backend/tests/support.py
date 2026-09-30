@@ -13,6 +13,9 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
+from app import main
+from app.repositories.database import Database
+
 
 def log_line(
     ts: str = "2026-01-15 08:00:00",
@@ -150,3 +153,8 @@ async def fetch(client: httpx.AsyncClient, **body) -> dict:
     assert res.status_code == 200, res.text
     assert res.json()["ok"] is True, res.json()
     return await wait_for_job(client)
+
+
+def app_db() -> Database:
+    """The database of the started app (client fixture)."""
+    return main.app.state.db

@@ -72,6 +72,7 @@ class Database:
     def __init__(self, conn: duckdb.DuckDBPyConnection):
         """Wrap an open connection whose schema is up to date; see open()."""
         self._conn = conn
+        self._closed = False
         self._write_lock = asyncio.Lock()
         self._cursors = [conn.cursor() for _ in range(READ_POOL_SIZE)]
         self._read_pool: asyncio.Queue = asyncio.Queue()
@@ -186,10 +187,17 @@ class Database:
             cur.interrupt()
             raise
 
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
     async def close(self, write_wait_s: float = SHUTDOWN_WRITE_WAIT_S) -> None:
         """Shut down cleanly: let the running write finish (interrupt it after
         write_wait_s), stop running reads, CHECKPOINT so the WAL is folded into
         the database file, and close. The wrapper is unusable afterwards."""
+        if self._closed:
+            return
+        self._closed = True
         t0 = time.perf_counter()
         try:
             await asyncio.wait_for(self._write_lock.acquire(), write_wait_s)
@@ -214,25 +222,3 @@ class Database:
         for cur in self._cursors:
             cur.close()
         self._conn.close()
-
-
-# ── Process-wide instance (opened by the app's lifespan) ──────────────────────
-_db_instance: Database | None = None
-
-
-async def init_db(path: Path):
-    global _db_instance
-    _db_instance = Database.open(path)
-
-
-async def close_db() -> None:
-    global _db_instance
-    db, _db_instance = _db_instance, None
-    if db is not None:
-        await db.close()
-
-
-async def get_db() -> Database:
-    if _db_instance is None:
-        raise RuntimeError("Database not initialized — call init_db() first")
-    return _db_instance

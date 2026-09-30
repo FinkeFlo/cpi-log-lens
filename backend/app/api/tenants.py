@@ -1,0 +1,78 @@
+"""Tenants (CPI connections)."""
+
+from fastapi import APIRouter, HTTPException
+
+from app.api.deps import DbDep
+from app.api.schemas import TenantCreate
+from app.cpi import client as cpi_api
+from app.repositories import tenants as tenants_repo
+from app.services import tenants as tenant_service
+
+router = APIRouter(prefix="/api/tenants", tags=["tenants"])
+
+
+@router.get("")
+async def list_tenants(db: DbDep):
+    tenants = await tenants_repo.get_tenants(db)
+    # Mask secrets in response
+    for t in tenants:
+        t["client_secret"] = "••••••••" if t.get("client_secret") else ""
+    return tenants
+
+
+@router.post("", status_code=201)
+async def create_tenant(body: TenantCreate, db: DbDep):
+    if not body.client_secret:
+        raise HTTPException(422, "client_secret is required")
+    await tenants_repo.upsert_tenant(
+        db,
+        body.id,
+        body.name,
+        body.api_url,
+        body.oauth_url,
+        body.client_id,
+        body.client_secret,
+    )
+    return {"ok": True}
+
+
+@router.put("/{tenant_id}")
+async def update_tenant(tenant_id: str, body: TenantCreate, db: DbDep):
+    existing = await tenants_repo.get_tenant(db, tenant_id)
+    if not existing:
+        raise HTTPException(404, "Tenant not found")
+    # Keep existing secret if an empty or masked value is submitted —
+    # the edit form never pre-fills the stored secret.
+    secret = body.client_secret
+    if not secret or set(secret) == {"•"}:
+        secret = existing["client_secret"]
+    await tenants_repo.upsert_tenant(
+        db,
+        tenant_id,
+        body.name,
+        body.api_url,
+        body.oauth_url,
+        body.client_id,
+        secret,
+    )
+    return {"ok": True}
+
+
+@router.delete("/{tenant_id}")
+async def remove_tenant(tenant_id: str, db: DbDep):
+    await tenants_repo.delete_tenant(db, tenant_id)
+    return {"ok": True}
+
+
+@router.post("/{tenant_id}/test")
+async def test_tenant(tenant_id: str, db: DbDep):
+    try:
+        tenant = await tenants_repo.get_tenant(db, tenant_id)
+        if not tenant:
+            raise HTTPException(404, "Tenant not found")
+        if tenant_service.is_demo(tenant):
+            return {"ok": True, "demo": True}
+        token = await cpi_api.get_token(tenant["oauth_url"], tenant["client_id"], tenant["client_secret"])
+        return {"ok": bool(token), "token_preview": token[:12] + "…"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}

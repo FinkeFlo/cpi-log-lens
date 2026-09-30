@@ -9,7 +9,7 @@ import pytest
 from app.repositories import database
 from app.repositories import logs as logs_repo
 from app.services import importer, stats
-from tests.support import log_line, numbered_lines, write_log
+from tests.support import app_db, log_line, numbered_lines, write_log
 
 pytestmark = pytest.mark.anyio
 
@@ -24,7 +24,7 @@ TENANT = {
 
 
 async def import_lines(tmp_path, tenant, lines, name="a.log"):
-    db = await database.get_db()
+    db = app_db()
     path = write_log(tmp_path / f"{tenant}-{name}", lines)
     await importer.import_log_file(db, tenant, "trace", path, name, 0)
 
@@ -59,7 +59,7 @@ async def test_clear_deletes_logs_and_bookkeeping_but_keeps_tenants(client, tmp_
     await client.post("/api/tenants", json=TENANT)
     await import_lines(tmp_path, "t1", numbered_lines(3))
     assert (await client.post("/api/db/clear")).json() == {"ok": True}
-    db = await database.get_db()
+    db = app_db()
     assert await db.read(db.fetch_val, "SELECT count(*) FROM logs") == 0
     assert await db.read(db.fetch_val, "SELECT count(*) FROM file_imports") == 0
     assert len((await client.get("/api/tenants")).json()) == 1
@@ -70,7 +70,7 @@ async def test_clear_deletes_logs_and_bookkeeping_but_keeps_tenants(client, tmp_
 async def test_clear_also_deletes_unparsed_lines(client, tmp_path):
     await import_lines(tmp_path, "t1", ["garbage", *numbered_lines(1)])
     await client.post("/api/db/clear")
-    db = await database.get_db()
+    db = app_db()
     assert await db.read(db.fetch_val, "SELECT count(*) FROM unparsed_lines") == 0
 
 

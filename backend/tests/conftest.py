@@ -18,7 +18,7 @@ from asgi_lifespan import LifespanManager
 from app import main, tasks
 from app.config import Settings, get_settings
 from app.cpi import client as cpi_api
-from app.repositories import database
+from app.repositories.database import Database
 from app.services import fetch as fetch_service
 from app.services import stats
 from tests.support import FakeCpi
@@ -35,7 +35,6 @@ async def _close_app_state():
     # Normally done by the app's shutdown; tests without the app (db fixture) or
     # that stopped a loop themselves clean up here.
     await tasks.cancel_all()
-    await database.close_db()
     stats.invalidate()
     stats._locks.clear()
 
@@ -72,8 +71,9 @@ async def client(app_env):
 @pytest.fixture
 async def db(app_env):
     """Initialized database without the HTTP app."""
-    await database.init_db(get_settings().db_path)
-    return await database.get_db()
+    database = Database.open(get_settings().db_path)
+    yield database
+    await database.close()
 
 
 @pytest.fixture
