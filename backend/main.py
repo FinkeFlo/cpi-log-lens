@@ -13,7 +13,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Literal, Optional
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Query
@@ -21,7 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from logging_config import setup_logging
 
@@ -297,34 +297,58 @@ async def _load_tenants_from_json():
 
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
+# Tenant ids end up in URLs and directory names: lowercase letters, digits,
+# "-" and "_" only. "all" is reserved as the "every tenant" sentinel.
+TENANT_ID_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,31}$"
+LogType = Literal["trace", "http"]
+MAX_HOURS = 24 * 365
+
+
 class TenantCreate(BaseModel):
-    id:            str
-    name:          str
-    api_url:       str
-    oauth_url:     str
-    client_id:     str
-    client_secret: str
+    id:            str = Field(pattern=TENANT_ID_PATTERN)
+    name:          str = Field(min_length=1, max_length=100)
+    api_url:       str = Field(pattern=r"^https?://\S+$", max_length=500)
+    oauth_url:     str = Field(pattern=r"^https?://\S+$", max_length=500)
+    client_id:     str = Field(min_length=1, max_length=500)
+    client_secret: str = Field(max_length=2000)  # empty on update = keep the stored one
+
+    @field_validator("id")
+    @classmethod
+    def _not_reserved(cls, v: str) -> str:
+        if v == "all":
+            raise ValueError('"all" is reserved')
+        return v
 
 
 class FetchRequest(BaseModel):
-    tenants:   list[str] = ["all"]  # ["all"] or list of tenant ids
-    log_types: list[str] = ["trace", "http"]
-    hours:     int = 24      # 0 = no filter (all available)
+    tenants:   list[str] = Field(default=["all"], min_length=1)  # ["all"] or tenant ids
+    log_types: list[LogType] = Field(default=["trace", "http"], min_length=1)
+    hours:     int = Field(default=24, ge=0, le=MAX_HOURS)  # 0 = no filter (all available)
 
 
 class ScheduleRequest(BaseModel):
-    name:             str
-    tenants:          list[str] = ["all"]
-    log_types:        list[str] = ["trace", "http"]
-    hours:            int = 1          # time range pulled on every run
-    interval_minutes: int = 15         # how often to run
+    name:             str = Field(min_length=1, max_length=100)
+    tenants:          list[str] = Field(default=["all"], min_length=1)
+    log_types:        list[LogType] = Field(default=["trace", "http"], min_length=1)
+    hours:            int = Field(default=1, ge=0, le=MAX_HOURS)   # time range pulled on every run
+    interval_minutes: int = Field(default=15, ge=5, le=7 * 24 * 60)  # how often to run
     enabled:          bool = True
 
 
 class DefaultFetchConfig(BaseModel):
-    tenants:   list[str] = ["all"]
-    log_types: list[str] = ["trace", "http"]
-    hours:     int = 24
+    tenants:   list[str] = Field(default=["all"], min_length=1)
+    log_types: list[LogType] = Field(default=["trace", "http"], min_length=1)
+    hours:     int = Field(default=24, ge=0, le=MAX_HOURS)
+
+
+def _check_datetime(value: Optional[str], field: str) -> None:
+    """date_from/date_to must be an ISO date or datetime; anything else used to
+    reach DuckDB and fail there with a 500."""
+    if value:
+        try:
+            datetime.fromisoformat(value)
+        except ValueError:
+            raise HTTPException(422, f"{field} must be YYYY-MM-DD or YYYY-MM-DD HH:MM:SS") from None
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
@@ -361,6 +385,8 @@ async def list_tenants():
 
 @app.post("/api/tenants", status_code=201)
 async def create_tenant(body: TenantCreate):
+    if not body.client_secret:
+        raise HTTPException(422, "client_secret is required")
     conn = await database.get_db(DB_PATH)
     try:
         await database.upsert_tenant(
@@ -698,7 +724,15 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
                             async with semaphore:
                                 if job.cancel_requested:
                                     return
-                                dest        = tenant_log_dir / f["Name"]
+                                # The file name comes from the remote server; never let it
+                                # point outside this tenant's log directory.
+                                name = f["Name"]
+                                if not name or Path(name).name != name or name in (".", ".."):
+                                    counters["done"] += 1
+                                    job.done = counters["done"]
+                                    job.push({"type": "warn", "msg": f"Skipped file with unsafe name: {name!r}"})
+                                    return
+                                dest = tenant_log_dir / name
                                 remote_size = int(f.get("Size", 0))
                                 file_import = await database.get_file_import(conn, tenant["id"], f["Name"])
 
@@ -834,6 +868,8 @@ async def llm_query_schema():
 @app.post("/api/query")
 async def llm_query(req: LLMQueryRequest):
     """LLM-friendly log query endpoint. Returns matching entries plus a natural-language summary."""
+    _check_datetime(req.date_from, "date_from")
+    _check_datetime(req.date_to, "date_to")
     limit = max(1, min(req.limit, 200))
     conn = await database.get_db(DB_PATH)
     try:
@@ -892,9 +928,11 @@ async def get_logs(
     grep:      Optional[str] = None,
     date_from: Optional[str] = None,
     date_to:   Optional[str] = None,
-    page:      int = Query(1,   ge=1),
+    page:      int = Query(1,   ge=1, le=1_000_000),
     page_size: int = Query(100, ge=1, le=500),
 ):
+    _check_datetime(date_from, "date_from")
+    _check_datetime(date_to, "date_to")
     conn = await database.get_db(DB_PATH)
     try:
         return await database.query_logs(
@@ -950,14 +988,12 @@ async def db_clear():
 
 
 class CleanupRequest(BaseModel):
-    older_than_days: int   # delete entries with timestamp older than this many days
+    older_than_days: int = Field(ge=1, le=36500)  # delete entries older than this many days
     tenant: Optional[str] = None  # optional: restrict to one tenant
 
 @app.post("/api/db/cleanup")
 async def db_cleanup(req: CleanupRequest):
     """Delete log entries older than N days, optionally filtered by tenant."""
-    if req.older_than_days < 1:
-        raise HTTPException(400, "older_than_days must be >= 1")
     conn = await database.get_db(DB_PATH)
     try:
         result = await database.cleanup_old_logs(conn, req.older_than_days, req.tenant)

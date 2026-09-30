@@ -333,9 +333,10 @@ function App() {
 
     async deleteTenant(id) {
       if (!confirm(`Tenant "${id}" wirklich löschen?`)) return;
-      await fetch(`/api/tenants/${id}`, { method: 'DELETE' });
+      const res = await fetch(`/api/tenants/${id}`, { method: 'DELETE' });
       await this.loadTenants();
-      this.notify('Tenant gelöscht');
+      if (res.ok) this.notify('Tenant gelöscht');
+      else this.notify(`Could not delete tenant (HTTP ${res.status})`, 'error');
     },
 
     // ── Browse ────────────────────────────────────────────────────────────────
