@@ -23,11 +23,15 @@ with its tests; strict `xfail` markers pin known bugs and must be removed with t
 
 ## Architecture
 
-- `backend/main.py` — FastAPI app: routes, request models (validated with Pydantic), middleware
-  (trusted hosts, cross-origin write guard, request log), the fetch job (`FetchJob`,
+- `backend/config.py` — all settings (`Settings`, pydantic-settings; env var = upper-case field
+  name). Read them via `get_settings()`, never with `os.getenv`.
+- `backend/main.py` — FastAPI app: `lifespan` (open DB, seed tenants, start loops; on shutdown
+  cancel them, checkpoint and close the DB), routes, request models (validated with Pydantic),
+  middleware (trusted hosts, cross-origin write guard, request log), the fetch job (`FetchJob`,
   `_run_fetch`; one job at a time, progress via SSE on `/api/fetch/stream`), scheduler and
   retention loops, tenant seeding from `TENANTS_CONFIG`, `/healthz`, `/readyz`, event-loop watchdog.
-- `backend/db.py` — all DuckDB access. `DuckDBConnection` has one writer (`run()`, single writer
+- `backend/db.py` — all DuckDB access. `DuckDBConnection.open()` connects and migrates; the
+  wrapper has one writer (`run()`, single writer
   thread, `WRITE_LOCK_TIMEOUT_S`) and a bounded pool of read cursors (`read()`, pool and query
   timeouts, `cursor.interrupt()`; busy → `DBBusyError` → HTTP 503). Schema and ad-hoc migrations,
   the streaming parser `iter_log_batches` and `import_log_file`, queries and a short stats cache.
