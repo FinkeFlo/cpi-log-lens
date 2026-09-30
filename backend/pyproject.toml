@@ -42,7 +42,15 @@ select = [
 ignore = [
     # UI and log texts use typographic characters on purpose (…, •, ·, –).
     "RUF001", "RUF002", "RUF003",
+    # exists()/stat()/mkdir() on the local data volume are cheap; reading and
+    # writing file contents goes through threads.
+    "ASYNC240",
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# process_file() in the fetch job closes over loop variables, but it is awaited
+# (asyncio.gather) within the iteration that defines it.
+"main.py" = ["B023"]
 
 [tool.mypy]
 python_version = "3.12"

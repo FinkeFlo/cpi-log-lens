@@ -4,6 +4,7 @@ Serves the frontend and provides REST + SSE API.
 """
 
 import asyncio
+import contextlib
 import faulthandler
 import json
 import logging
@@ -29,8 +30,9 @@ from logging_config import setup_logging
 
 setup_logging()
 
+# Logging must be configured before these modules create their loggers.
 import api as cpi_api  # noqa: E402
-import db as database  # noqa: E402  (logging must be configured first)
+import db as database  # noqa: E402
 
 log = logging.getLogger("cpi")
 
@@ -91,10 +93,8 @@ class FetchJob:
         return q
 
     def detach(self, q: asyncio.Queue):
-        try:
+        with contextlib.suppress(ValueError):
             self._listeners.remove(q)
-        except ValueError:
-            pass
 
 
 # Single active job (only one fetch at a time)

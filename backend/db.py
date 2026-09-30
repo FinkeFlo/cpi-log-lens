@@ -202,7 +202,7 @@ class DuckDBConnection:
     def _fetchall_dicts(cls, cur, sql: str, params=None) -> list[dict]:
         c = cls._execute(cur, sql, params)
         cols = [d[0] for d in c.description]
-        return [dict(zip(cols, row)) for row in c.fetchall()]
+        return [dict(zip(cols, row, strict=True)) for row in c.fetchall()]
 
     @classmethod
     def _fetchone_dict(cls, cur, sql: str, params=None) -> dict | None:
@@ -215,7 +215,7 @@ class DuckDBConnection:
         # CHECKPOINT — the writer (and with it the fetch job) then hangs until
         # the cursor happens to be reused. All callers select at most one row.
         rows = c.fetchall()
-        return dict(zip(cols, rows[0])) if rows else None
+        return dict(zip(cols, rows[0], strict=True)) if rows else None
 
     @classmethod
     def _fetchone_val(cls, cur, sql: str, params=None):
@@ -324,7 +324,7 @@ def _migrate_drop_logs_unique_constraint(conn: duckdb.DuckDBPyConnection):
     conn.execute("DROP TABLE logs")
     conn.execute("ALTER TABLE logs_new RENAME TO logs")
     # Keep the sequence ahead of the max copied id so future inserts don't collide.
-    max_id = conn.execute("SELECT COALESCE(MAX(id), 0) FROM logs").fetchone()[0]
+    max_id = conn.execute("SELECT COALESCE(MAX(id), 0) FROM logs").fetchall()[0][0]
     conn.execute(f"ALTER SEQUENCE logs_id_seq RESTART WITH {max_id + 1}")
     conn.execute("CHECKPOINT")
     log.info("migrate: Done — UNIQUE constraint removed from logs.")
@@ -672,8 +672,10 @@ def _insert_rows(conn, rows: list[tuple]):
     # pyarrow path measured ~0.0015 ms/row on the same data (~800-1000x
     # faster), because DuckDB ingests the whole batch as a columnar buffer in
     # one call instead of binding each value individually.
-    columns = list(zip(*rows))
-    arrow_table = pa.table({col: pa.array(values, type=pa.string()) for col, values in zip(_INSERT_COLUMNS, columns)})
+    columns = list(zip(*rows, strict=True))
+    arrow_table = pa.table(
+        {col: pa.array(values, type=pa.string()) for col, values in zip(_INSERT_COLUMNS, columns, strict=True)}
+    )
     conn.register("_import_batch", arrow_table)
     try:
         conn.execute(
@@ -814,7 +816,7 @@ async def query_logs(
         items = db._fetchall_dicts(
             cur,
             f"SELECT {_LIST_COLUMNS} FROM logs {where} ORDER BY timestamp DESC LIMIT ? OFFSET ?",
-            (params + [page_size, offset]) or None,
+            [*params, page_size, offset],
         )
 
         return {

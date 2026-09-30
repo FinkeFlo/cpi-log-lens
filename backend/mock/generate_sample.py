@@ -61,7 +61,8 @@ ENDPOINTS = [
 LEVEL_WEIGHTS = [("INFO", 70), ("DEBUG", 10), ("WARN", 12), ("ERROR", 8)]
 
 STACKTRACE = [
-    "\tat org.apache.camel.processor.errorhandler.RedeliveryErrorHandler.handleException(RedeliveryErrorHandler.java:512)",
+    "\tat org.apache.camel.processor.errorhandler.RedeliveryErrorHandler"
+    ".handleException(RedeliveryErrorHandler.java:512)",
     "\tat org.apache.camel.processor.Pipeline.process(Pipeline.java:163)",
     "\tat com.sap.it.rt.adapter.http.common.HttpClientHelper.execute(HttpClientHelper.java:214)",
     "\tat java.base/java.lang.Thread.run(Thread.java:840)",
@@ -96,7 +97,8 @@ def _message(rng: random.Random, level: str) -> tuple[str, list[str]]:
         return f"Exchange property SAP_MessageProcessingLogID={mpl}", []
     return rng.choice(
         [
-            f"[INFO] MPL: {mpl} ; Getting cluster lock with :{uuid.UUID(int=rng.getrandbits(128))}_CRON_{rng.randint(1000, 99999)}",
+            f"[INFO] MPL: {mpl} ; Getting cluster lock with "
+            f":{uuid.UUID(int=rng.getrandbits(128))}_CRON_{rng.randint(1000, 99999)}",
             f"Message processing started for MPL {mpl}",
             f"HTTP call to {endpoint} returned 200 in {rng.randint(20, 2500)} ms",
             "Timer execution Check for isWorkerReadyForTimerExecution : true ",

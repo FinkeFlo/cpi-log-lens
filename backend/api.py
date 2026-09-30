@@ -138,18 +138,17 @@ async def download_to_file(
         received = 0
         async with client.stream("GET", url, headers={"Authorization": f"Bearer {token}"}) as resp:
             resp.raise_for_status()
-            raw = open(part, "wb")
-            gz: gzip.GzipFile | None = None
-            try:
-                async for chunk in resp.aiter_bytes(1 << 20):
-                    if received == 0 and not chunk.startswith(b"\x1f\x8b"):
-                        gz = gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=6)
-                    received += len(chunk)
-                    await asyncio.to_thread((gz or raw).write, chunk)
-            finally:
-                if gz is not None:
-                    await asyncio.to_thread(gz.close)
-                raw.close()
+            with await asyncio.to_thread(part.open, "wb") as raw:
+                gz: gzip.GzipFile | None = None
+                try:
+                    async for chunk in resp.aiter_bytes(1 << 20):
+                        if received == 0 and not chunk.startswith(b"\x1f\x8b"):
+                            gz = gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=6)
+                        received += len(chunk)
+                        await asyncio.to_thread((gz or raw).write, chunk)
+                finally:
+                    if gz is not None:
+                        await asyncio.to_thread(gz.close)
         os.replace(part, dest)
         return received
 
