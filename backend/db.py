@@ -171,6 +171,14 @@ def _duckdb_config() -> dict:
     return config
 
 
+def _consume_result(fut: asyncio.Future) -> None:
+    """Mark the outcome of a shielded DB call as retrieved. When the caller timed
+    out or was cancelled, nobody awaits the future any more, and asyncio would log
+    the (expected) InterruptException as "Future exception was never retrieved"."""
+    if not fut.cancelled():
+        fut.exception()
+
+
 class DuckDBConnection:
     """Singleton async wrapper around a synchronous DuckDB connection.
 
@@ -239,7 +247,12 @@ class DuckDBConnection:
             raise DBBusyError("database busy: another write is still running") from None
         loop = asyncio.get_running_loop()
         fut = loop.run_in_executor(_write_executor, lambda: fn(self._conn, *args, **kwargs))
-        fut.add_done_callback(lambda f: self._write_lock.release())
+
+        def release(f: asyncio.Future) -> None:
+            _consume_result(f)
+            self._write_lock.release()
+
+        fut.add_done_callback(release)
         return await asyncio.shield(fut)
 
     async def read(self, fn, *args, **kwargs):
@@ -262,7 +275,12 @@ class DuckDBConnection:
             raise DBBusyError("database busy: no free read connection") from None
         loop = asyncio.get_running_loop()
         fut = loop.run_in_executor(_read_executor, lambda: fn(cur, *args, **kwargs))
-        fut.add_done_callback(lambda f: self._read_pool.put_nowait(cur))
+
+        def give_back(f: asyncio.Future) -> None:
+            _consume_result(f)
+            self._read_pool.put_nowait(cur)
+
+        fut.add_done_callback(give_back)
         t0 = time.perf_counter()
         try:
             return await asyncio.wait_for(asyncio.shield(fut), QUERY_TIMEOUT_S)
