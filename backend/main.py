@@ -26,9 +26,11 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
+from config import get_settings
 from logging_config import setup_logging
 
-setup_logging()
+settings = get_settings()
+setup_logging(settings.log_level, settings.log_format)
 
 # Logging must be configured before these modules create their loggers.
 import api as cpi_api  # noqa: E402
@@ -36,23 +38,7 @@ import db as database  # noqa: E402
 
 log = logging.getLogger("cpi")
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
-DB_PATH = Path(os.getenv("DB_PATH", "cpi_logs.duckdb"))
-LOGS_DIR = Path(os.getenv("LOGS_DIR", "logs"))
-MOCK = os.getenv("MOCK", "false").lower() == "true"
-# Concurrent file downloads per tenant/log_type during a fetch job. CPI's
-# LogFiles $value endpoint has high per-request latency (server-side
-# decompression, ~30-90s/file observed) so parallelism is the main client-side
-# lever we have; tune via env if your tenant tolerates more/less concurrency.
-FETCH_CONCURRENCY = int(os.getenv("FETCH_CONCURRENCY", "4"))
-# Optional automatic retention: if set (>0), a background task periodically
-# deletes log entries older than this many days across all tenants, so DB
-# size doesn't grow unbounded without someone remembering to call
-# /api/db/cleanup manually. Unset/0 (default) disables it — fully opt-in.
-RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "0"))
-RETENTION_CHECK_HOURS = float(os.getenv("RETENTION_CHECK_HOURS", "24"))
 MOCK_DIR = Path(__file__).parent / "mock"
-FRONTEND = Path(os.getenv("FRONTEND_DIR", str(Path(__file__).parent.parent / "frontend")))
 
 
 # ── Global fetch-job state ────────────────────────────────────────────────────
@@ -113,10 +99,7 @@ def _spawn(coro) -> asyncio.Task:
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
-# Set at image build time (Dockerfile ARG VERSION); "dev" when run from source.
-APP_VERSION = os.getenv("APP_VERSION", "dev")
-
-app = FastAPI(title="CPI Log Lens", version=APP_VERSION)
+app = FastAPI(title="CPI Log Lens", version=settings.app_version)
 
 
 @app.exception_handler(database.DBBusyError)
@@ -131,14 +114,11 @@ async def db_busy(request, exc: database.DBBusyError):
 #   pages cannot read API responses. CORS_ORIGINS opts specific origins in.
 # - Writes coming from another origin are rejected (see below), because a
 #   page can still *send* simple cross-site requests without CORS.
-ALLOWED_HOSTS = [h.strip() for h in os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h.strip()]
-CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
-
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
-if CORS_ORIGINS:
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
+if settings.cors_origins:
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=CORS_ORIGINS,
+        allow_origins=settings.cors_origins,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -154,7 +134,7 @@ async def reject_cross_origin_writes(request, call_next):
     affected."""
     if request.method not in ("GET", "HEAD", "OPTIONS"):
         origin = request.headers.get("origin")
-        if origin and origin not in CORS_ORIGINS and urlsplit(origin).netloc != request.headers.get("host"):
+        if origin and origin not in settings.cors_origins and urlsplit(origin).netloc != request.headers.get("host"):
             return JSONResponse({"detail": "cross-origin request refused"}, status_code=403)
     return await call_next(request)
 
@@ -191,23 +171,19 @@ async def request_log_and_no_cache_js(request, call_next):
     return response
 
 
-SCHEDULE_CHECK_SECONDS = int(os.getenv("SCHEDULE_CHECK_SECONDS", "60"))
-# If the event loop does not advance for this long, the process dumps all
-# thread stacks and exits so the container restarts (0 disables the watchdog).
-WATCHDOG_STALL_SECONDS = float(os.getenv("WATCHDOG_STALL_SECONDS", "120"))
 _loop_heartbeat = time.monotonic()
 
 
 @app.on_event("startup")
 async def startup():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    LOGS_DIR.mkdir(parents=True, exist_ok=True)
-    await database.init_db(DB_PATH)
+    settings.db_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.logs_dir.mkdir(parents=True, exist_ok=True)
+    await database.init_db(settings.db_path)
     await _load_tenants_from_json()
     _spawn(_heartbeat())
-    if WATCHDOG_STALL_SECONDS > 0:
+    if settings.watchdog_stall_seconds > 0:
         threading.Thread(target=_watchdog, name="loop-watchdog", daemon=True).start()
-    if RETENTION_DAYS > 0:
+    if settings.retention_days > 0:
         _spawn(_retention_loop())
     _spawn(_schedule_loop())
 
@@ -227,7 +203,7 @@ def _watchdog():
     while True:
         time.sleep(5)
         stalled = time.monotonic() - _loop_heartbeat
-        if stalled > WATCHDOG_STALL_SECONDS:
+        if stalled > settings.watchdog_stall_seconds:
             log.critical("event loop stalled for %.0fs, dumping stacks and exiting", stalled)
             faulthandler.dump_traceback(all_threads=True)
             os._exit(70)
@@ -242,19 +218,19 @@ async def _retention_loop():
     slow down the download instead of running for free in the background."""
     while True:
         if _active_job and _active_job.status == "running":
-            await asyncio.sleep(RETENTION_CHECK_HOURS * 3600)
+            await asyncio.sleep(settings.retention_check_hours * 3600)
             continue
         try:
             conn = await database.get_db()
-            result = await database.cleanup_old_logs(conn, RETENTION_DAYS)
+            result = await database.cleanup_old_logs(conn, settings.retention_days)
             if result["deleted"]:
                 log.info(
                     f"retention: deleted {result['deleted']} log entries "
-                    f"older than {RETENTION_DAYS} days ({result['remaining']} remaining)."
+                    f"older than {settings.retention_days} days ({result['remaining']} remaining)."
                 )
         except Exception as e:
             log.exception(f"retention: cleanup failed: {e}")
-        await asyncio.sleep(RETENTION_CHECK_HOURS * 3600)
+        await asyncio.sleep(settings.retention_check_hours * 3600)
 
 
 async def _schedule_loop():
@@ -304,18 +280,12 @@ async def _schedule_loop():
                     break  # one job at a time — remaining due schedules wait for next tick
         except Exception as e:
             log.exception(f"schedule: loop error: {e}")
-        await asyncio.sleep(SCHEDULE_CHECK_SECONDS)
-
-
-# How TENANTS_CONFIG is applied on start:
-#   create (default) — add tenants that don't exist yet; edits made in the UI stay
-#   sync             — the file is the source of truth; its values overwrite the DB
-TENANTS_SEED_MODE = os.getenv("TENANTS_SEED_MODE", "create").lower()
+        await asyncio.sleep(settings.schedule_check_seconds)
 
 
 async def _load_tenants_from_json():
     """Seed tenants from the optional TENANTS_CONFIG file (JSON with comments)."""
-    config_path = Path(os.getenv("TENANTS_CONFIG", "/config/tenants.jsonc"))
+    config_path = settings.tenants_config
     if not config_path.is_file():
         if config_path.exists():
             log.warning("%s is not a file, ignoring it", config_path)
@@ -343,12 +313,14 @@ async def _load_tenants_from_json():
             if not (tid and api and cid):
                 continue
             exists = await database.get_tenant(conn, tid) is not None
-            if exists and TENANTS_SEED_MODE != "sync":
+            if exists and settings.tenants_seed_mode != "sync":
                 continue
             await database.upsert_tenant(conn, tid, name, api, oauth, cid, secret)
             updated += exists
             added += not exists
-        log.info("tenants from %s: %d added, %d updated (mode %s)", config_path, added, updated, TENANTS_SEED_MODE)
+        log.info(
+            "tenants from %s: %d added, %d updated (mode %s)", config_path, added, updated, settings.tenants_seed_mode
+        )
     finally:
         await conn.close()
 
@@ -412,7 +384,7 @@ def _check_datetime(value: str | None, field: str) -> None:
 @app.get("/healthz")
 async def healthz():
     """Liveness: answers as long as the event loop runs; no database access."""
-    return {"ok": True, "version": APP_VERSION, "loop_lag_s": round(time.monotonic() - _loop_heartbeat, 2)}
+    return {"ok": True, "version": settings.app_version, "loop_lag_s": round(time.monotonic() - _loop_heartbeat, 2)}
 
 
 @app.get("/readyz")
@@ -758,7 +730,7 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
                     job.status_msg = f"🔑 Requesting token for {tenant['name']}…"
                     job.push({"type": "status", "msg": job.status_msg})
 
-                    if MOCK or tenant["api_url"].startswith(DEMO_URL):
+                    if settings.mock or tenant["api_url"].startswith(DEMO_URL):
                         mock_files = list(MOCK_DIR.glob("*.log"))
                         job.total = len(mock_files)
                         job.status_msg = f"{tenant['name']} · {lt}: {len(mock_files)} files"
@@ -813,10 +785,10 @@ async def _run_fetch(job: FetchJob, body: FetchRequest):
                         job.status_msg = f"{tenant['name']} · {lt}: {len(files)} files"
                         job.push({"type": "files_found", "count": len(files), "tenant": tenant["name"], "log_type": lt})
 
-                        tenant_log_dir = LOGS_DIR / tenant["id"]
+                        tenant_log_dir = settings.logs_dir / tenant["id"]
                         tenant_log_dir.mkdir(parents=True, exist_ok=True)
 
-                        semaphore = asyncio.Semaphore(FETCH_CONCURRENCY)
+                        semaphore = asyncio.Semaphore(settings.fetch_concurrency)
                         counters = {"done": 0, "imported": job.imported}
 
                         async def process_file(f):
@@ -1105,7 +1077,7 @@ async def get_stats(tenant: str | None = None):
 async def db_info():
     conn = await database.get_db()
     try:
-        return await database.get_db_info(conn, DB_PATH)
+        return await database.get_db_info(conn, settings.db_path)
     finally:
         await conn.close()
 
@@ -1137,7 +1109,7 @@ async def db_cleanup(req: CleanupRequest):
 
 
 # ── Serve frontend ────────────────────────────────────────────────────────────
-if FRONTEND.exists():
-    app.mount("/", StaticFiles(directory=str(FRONTEND), html=True), name="frontend")
+if settings.frontend_dir.exists():
+    app.mount("/", StaticFiles(directory=str(settings.frontend_dir), html=True), name="frontend")
 else:
-    log.warning("frontend directory %s not found; serving the API only", FRONTEND)
+    log.warning("frontend directory %s not found; serving the API only", settings.frontend_dir)

@@ -2,7 +2,6 @@
 
 import pytest
 
-import main
 from tests.support import FAKE_TENANT
 
 pytestmark = pytest.mark.anyio
@@ -58,8 +57,8 @@ async def test_reads_from_another_origin_are_answered_without_cors_headers(clien
     assert "access-control-allow-origin" not in res.headers
 
 
-async def test_configured_cors_origin_may_write(client, monkeypatch):
-    monkeypatch.setattr(main, "CORS_ORIGINS", ["https://dashboard.example"])
+async def test_configured_cors_origin_may_write(client, monkeypatch, settings):
+    monkeypatch.setattr(settings, "cors_origins", ["https://dashboard.example"])
     res = await client.post("/api/tenants", json=FAKE_TENANT, headers={"Origin": "https://dashboard.example"})
     assert res.status_code == 201
 

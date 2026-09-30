@@ -7,7 +7,6 @@ from datetime import datetime, timedelta
 import pytest
 
 import db as database
-import main
 from tests.support import log_line, numbered_lines, write_log
 
 pytestmark = pytest.mark.anyio
@@ -32,10 +31,10 @@ def ts(delta: timedelta) -> str:
     return (datetime.now() - delta).strftime("%Y-%m-%d %H:%M:%S")
 
 
-async def test_healthz(client):
+async def test_healthz(client, settings):
     body = (await client.get("/healthz")).json()
     assert body["ok"] is True
-    assert body["version"] == main.APP_VERSION
+    assert body["version"] == settings.app_version
     assert isinstance(body["loop_lag_s"], float)
 
 
@@ -43,11 +42,11 @@ async def test_readyz(client):
     assert (await client.get("/readyz")).json() == {"ok": True, "fetch_job": "idle"}
 
 
-async def test_db_info(client, tmp_path):
+async def test_db_info(client, tmp_path, settings):
     await import_lines(tmp_path, "t1", numbered_lines(3))
     await client.post("/api/tenants", json=TENANT)
     body = (await client.get("/api/db/info")).json()
-    assert body["path"] == str(main.DB_PATH)
+    assert body["path"] == str(settings.db_path)
     assert body["entries"] == 3
     assert body["tenants"] == 1
     assert body["size_bytes"] > 0
@@ -143,8 +142,8 @@ async def test_stats_are_cached_until_data_changes(client, tmp_path, monkeypatch
 SLOW_QUERY = "SELECT count(*) FROM range(100000000000) t(i) WHERE i % 7 = 3"
 
 
-async def test_slow_read_is_interrupted_after_the_query_timeout(db, monkeypatch):
-    monkeypatch.setattr(database, "QUERY_TIMEOUT_S", 0.2)
+async def test_slow_read_is_interrupted_after_the_query_timeout(db, monkeypatch, settings):
+    monkeypatch.setattr(settings, "query_timeout_s", 0.2)
     t0 = time.perf_counter()
     with pytest.raises(database.DBBusyError, match=r"longer than 0\.2s"):
         await db.read(db._fetchone_val, SLOW_QUERY)
@@ -153,9 +152,9 @@ async def test_slow_read_is_interrupted_after_the_query_timeout(db, monkeypatch)
     assert await db.read(db._fetchone_val, "SELECT 42") == 42
 
 
-async def test_read_fails_fast_when_all_cursors_are_busy(db, monkeypatch):
-    monkeypatch.setattr(database, "QUERY_TIMEOUT_S", 1.0)
-    monkeypatch.setattr(database, "POOL_ACQUIRE_TIMEOUT_S", 0.1)
+async def test_read_fails_fast_when_all_cursors_are_busy(db, monkeypatch, settings):
+    monkeypatch.setattr(settings, "query_timeout_s", 1.0)
+    monkeypatch.setattr(settings, "pool_acquire_timeout_s", 0.1)
     slow = [asyncio.create_task(db.read(db._fetchone_val, SLOW_QUERY)) for _ in range(database.READ_POOL_SIZE)]
     await asyncio.sleep(0.05)
     with pytest.raises(database.DBBusyError, match="no free read connection"):
@@ -164,8 +163,8 @@ async def test_read_fails_fast_when_all_cursors_are_busy(db, monkeypatch):
     assert all(isinstance(r, database.DBBusyError) for r in results)
 
 
-async def test_write_gives_up_waiting_for_the_writer(db, monkeypatch):
-    monkeypatch.setattr(database, "WRITE_LOCK_TIMEOUT_S", 0.1)
+async def test_write_gives_up_waiting_for_the_writer(db, monkeypatch, settings):
+    monkeypatch.setattr(settings, "write_lock_timeout_s", 0.1)
     slow_write = asyncio.create_task(db.run(lambda conn: time.sleep(0.5)))
     await asyncio.sleep(0.05)
     with pytest.raises(database.DBBusyError, match="another write"):

@@ -19,6 +19,7 @@ from asgi_lifespan import LifespanManager
 import api as cpi_api
 import db as database
 import main
+from config import Settings, get_settings
 from tests.support import FakeCpi
 
 BASE_URL = "http://localhost"
@@ -49,10 +50,16 @@ async def _close_app_state():
 
 
 @pytest.fixture
-async def app_env(tmp_path, monkeypatch):
+def settings() -> Settings:
+    """The app's settings; change them with monkeypatch.setattr(settings, ...)."""
+    return get_settings()
+
+
+@pytest.fixture
+async def app_env(tmp_path, monkeypatch, settings):
     """Fresh database and log directory for one test; the app is not started."""
-    monkeypatch.setattr(main, "DB_PATH", tmp_path / "test.duckdb")
-    monkeypatch.setattr(main, "LOGS_DIR", tmp_path / "logs")
+    monkeypatch.setattr(settings, "db_path", tmp_path / "test.duckdb")
+    monkeypatch.setattr(settings, "logs_dir", tmp_path / "logs")
     monkeypatch.setattr(main, "_active_job", None)
     monkeypatch.setattr(cpi_api, "RETRY_BACKOFF_BASE", 0)
     database.invalidate_stats_cache()
@@ -74,7 +81,7 @@ async def client(app_env):
 @pytest.fixture
 async def db(app_env):
     """Initialized database without the HTTP app."""
-    await database.init_db(main.DB_PATH)
+    await database.init_db(get_settings().db_path)
     return await database.get_db()
 
 
