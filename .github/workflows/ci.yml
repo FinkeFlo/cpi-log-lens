@@ -1,4 +1,4 @@
-# Pull request / main gate: lint, type check, dependency audit, and an image
+# Pull request / main gate: lint, type check, dependency audit, tests, and an image
 # build with a smoke test (container starts, UI is served, MOCK import works).
 name: ci
 
@@ -46,6 +46,23 @@ jobs:
         run: |
           uv export --locked --no-dev --no-emit-project --format requirements-txt -o /tmp/requirements.txt
           uvx pip-audit --disable-pip -r /tmp/requirements.txt
+
+  tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: Install dependencies
+        run: uv sync --locked
+      - name: Tests
+        run: uv run --locked pytest --cov --cov-report=term
 
   image:
     runs-on: ubuntu-latest
