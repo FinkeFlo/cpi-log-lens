@@ -5,17 +5,13 @@ Serves the frontend and provides REST + SSE API.
 
 import asyncio
 import contextlib
-import faulthandler
 import json
 import logging
-import os
 import threading
 import time
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterator
-from dataclasses import dataclass, field
+from collections.abc import AsyncIterator
 from datetime import datetime
-from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -26,82 +22,26 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
-from app.config import BACKEND_DIR, get_settings
+from app.config import get_settings
 from app.logging_config import setup_logging
 
 settings = get_settings()
 setup_logging(settings.log_level, settings.log_format)
 
 # Logging must be configured before these modules create their loggers.
+from app import tasks, watchdog  # noqa: E402
 from app.cpi import client as cpi_api  # noqa: E402
 from app.repositories import app_settings as settings_repo  # noqa: E402
 from app.repositories import database  # noqa: E402
-from app.repositories import file_imports as file_imports_repo  # noqa: E402
 from app.repositories import logs as logs_repo  # noqa: E402
 from app.repositories import schedules as schedules_repo  # noqa: E402
 from app.repositories import tenants as tenants_repo  # noqa: E402
-from app.services import importer, stats  # noqa: E402
+from app.services import fetch as fetch_service  # noqa: E402
+from app.services import scheduler, stats  # noqa: E402
+from app.services import tenants as tenant_service  # noqa: E402
+from app.tasks import spawn  # noqa: E402
 
 log = logging.getLogger("cpi")
-
-MOCK_DIR = BACKEND_DIR / "mock"
-
-
-# ── Global fetch-job state ────────────────────────────────────────────────────
-@dataclass
-class FetchJob:
-    id: str
-    status: str = "running"  # running | done | error | cancelled
-    status_msg: str = ""
-    done: int = 0
-    total: int = 0
-    current_file: str = ""
-    current_tenant: str = ""
-    current_log_type: str = ""
-    imported: int = 0
-    error_msg: str = ""
-    cancel_requested: bool = False
-    # Listeners waiting for new events (one queue per SSE subscriber)
-    _listeners: list = field(default_factory=list)
-
-    def push(self, event: dict):
-        """Broadcast an event to all active SSE listeners."""
-        if event.get("type") in ("warn", "error", "done", "cancelled"):
-            level = logging.INFO if event["type"] in ("done", "cancelled") else logging.WARNING
-            log.log(
-                level,
-                "fetch job %s: %s %s",
-                self.id[:8],
-                event["type"],
-                event.get("msg", f"imported={event.get('imported')}"),
-                extra={"fields": {"job_id": self.id, "event": event["type"]}},
-            )
-        for q in list(self._listeners):
-            q.put_nowait(event)
-
-    def attach(self) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue()
-        self._listeners.append(q)
-        return q
-
-    def detach(self, q: asyncio.Queue):
-        with contextlib.suppress(ValueError):
-            self._listeners.remove(q)
-
-
-# Single active job (only one fetch at a time)
-_active_job: FetchJob | None = None
-
-# The event loop keeps only weak references to tasks; a task nobody else
-# references can be garbage-collected before it finishes.
-_background_tasks: set[asyncio.Task] = set()
-
-
-def _spawn(coro) -> asyncio.Task:
-    task = asyncio.create_task(coro)
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
-    return task
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
@@ -113,33 +53,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings.db_path.parent.mkdir(parents=True, exist_ok=True)
     settings.logs_dir.mkdir(parents=True, exist_ok=True)
     await database.init_db(settings.db_path)
-    await _load_tenants_from_json()
+    db = await database.get_db()
+    await tenant_service.load_tenants_from_json(db)
     watchdog_stop = threading.Event()
-    _spawn(_heartbeat())
+    spawn(watchdog.heartbeat())
     if settings.watchdog_stall_seconds > 0:
-        threading.Thread(target=_watchdog, args=(watchdog_stop,), name="loop-watchdog", daemon=True).start()
+        threading.Thread(
+            target=watchdog.watchdog,
+            args=(watchdog_stop, settings.watchdog_stall_seconds),
+            name="loop-watchdog",
+            daemon=True,
+        ).start()
     if settings.retention_days > 0:
-        _spawn(_retention_loop())
-    _spawn(_schedule_loop())
+        spawn(scheduler.retention_loop(db))
+    spawn(scheduler.schedule_loop(db))
     try:
         yield
     finally:
         log.info("shutting down")
         watchdog_stop.set()
-        await _stop_background_tasks()
+        fetch_service.mark_cancelled_for_shutdown()
+        await tasks.cancel_all()
         await database.close_db()
-
-
-async def _stop_background_tasks() -> None:
-    job = _active_job
-    if job and job.status == "running":
-        log.info("shutdown: cancelling fetch job %s", job.id[:8])
-        job.cancel_requested = True
-        job.status = "cancelled"
-        job.status_msg = "Cancelled (shutdown)"
-    for task in list(_background_tasks):
-        task.cancel()
-    await asyncio.gather(*_background_tasks, return_exceptions=True)
 
 
 app = FastAPI(title="CPI Log Lens", version=settings.app_version, lifespan=lifespan)
@@ -214,136 +149,6 @@ async def request_log_and_no_cache_js(request, call_next):
     return response
 
 
-_loop_heartbeat = time.monotonic()
-
-
-async def _heartbeat():
-    global _loop_heartbeat
-    while True:
-        _loop_heartbeat = time.monotonic()
-        await asyncio.sleep(1)
-
-
-def _watchdog(stop: threading.Event):
-    """Runs in its own thread. A blocked event loop means every request hangs
-    while the process looks alive, so no restart policy would kick in. After
-    WATCHDOG_STALL_SECONDS without a heartbeat, dump all stacks (for the
-    post-mortem) and exit hard; Docker's restart policy brings the app back.
-    Ends when `stop` is set (shutdown)."""
-    while not stop.wait(5):
-        stalled = time.monotonic() - _loop_heartbeat
-        if stalled > settings.watchdog_stall_seconds:
-            log.critical("event loop stalled for %.0fs, dumping stacks and exiting", stalled)
-            faulthandler.dump_traceback(all_threads=True)
-            os._exit(70)
-
-
-async def _retention_loop():
-    """Background task: periodically delete logs older than RETENTION_DAYS.
-    Runs once immediately at startup, then every RETENTION_CHECK_HOURS.
-    Skips a tick (retrying next interval) while a fetch job is active —
-    DuckDB allows only one writer at a time, so running this concurrently
-    with an in-progress import would just serialize behind/ahead of it and
-    slow down the download instead of running for free in the background."""
-    while True:
-        if _active_job and _active_job.status == "running":
-            await asyncio.sleep(settings.retention_check_hours * 3600)
-            continue
-        try:
-            conn = await database.get_db()
-            result = await logs_repo.cleanup_old_logs(conn, settings.retention_days)
-            stats.invalidate()
-            if result["deleted"]:
-                log.info(
-                    f"retention: deleted {result['deleted']} log entries "
-                    f"older than {settings.retention_days} days ({result['remaining']} remaining)."
-                )
-        except Exception as e:
-            log.exception(f"retention: cleanup failed: {e}")
-        await asyncio.sleep(settings.retention_check_hours * 3600)
-
-
-async def _schedule_loop():
-    """Background task: every SCHEDULE_CHECK_SECONDS, check enabled
-    fetch_schedules and kick off a fetch job for any that are due
-    (now >= last_run_at + interval_minutes, or never run before).
-    Only one fetch job can run at a time (shared with manual /api/fetch);
-    a due schedule that finds a job already running is simply retried on
-    the next tick instead of being queued."""
-    global _active_job
-    while True:
-        try:
-            if not (_active_job and _active_job.status == "running"):
-                conn = await database.get_db()
-                schedules = await schedules_repo.get_schedules(conn)
-
-                now = time.time()
-                for sched in schedules:
-                    if not sched["enabled"]:
-                        continue
-                    if sched["last_run_at"]:
-                        last_ts = datetime.fromisoformat(sched["last_run_at"]).timestamp()
-                        if now - last_ts < sched["interval_minutes"] * 60:
-                            continue
-
-                    conn2 = await database.get_db()
-                    await schedules_repo.touch_schedule_last_run(conn2, sched["id"])
-
-                    body = FetchRequest(
-                        tenants=json.loads(sched["tenants"]),
-                        log_types=json.loads(sched["log_types"]),
-                        hours=sched["hours"],
-                    )
-                    job = FetchJob(id=str(uuid.uuid4()))
-                    _active_job = job
-                    log.info(
-                        f"schedule: starting '{sched['name']}' "
-                        f"(tenants={body.tenants}, log_types={body.log_types}, hours={body.hours})"
-                    )
-                    _spawn(_run_fetch(job, body))
-                    break  # one job at a time — remaining due schedules wait for next tick
-        except Exception as e:
-            log.exception(f"schedule: loop error: {e}")
-        await asyncio.sleep(settings.schedule_check_seconds)
-
-
-async def _load_tenants_from_json():
-    """Seed tenants from the optional TENANTS_CONFIG file (JSON with comments)."""
-    config_path = settings.tenants_config
-    if not config_path.is_file():
-        if config_path.exists():
-            log.warning("%s is not a file, ignoring it", config_path)
-        return
-
-    try:
-        import json5
-
-        data = json5.loads(config_path.read_text())
-        tenant_list = data.get("tenants", [])
-    except Exception as e:
-        log.warning(f"could not parse {config_path}: {e}")
-        return
-
-    conn = await database.get_db()
-    added = updated = 0
-    for t in tenant_list:
-        tid = t.get("id", "").strip().lower()
-        name = t.get("name", tid.upper())
-        api = t.get("api_url", "")
-        oauth = t.get("oauth_url", "")
-        cid = t.get("client_id", "")
-        secret = t.get("client_secret", "")
-        if not (tid and api and cid):
-            continue
-        exists = await tenants_repo.get_tenant(conn, tid) is not None
-        if exists and settings.tenants_seed_mode != "sync":
-            continue
-        await tenants_repo.upsert_tenant(conn, tid, name, api, oauth, cid, secret)
-        updated += exists
-        added += not exists
-    log.info("tenants from %s: %d added, %d updated (mode %s)", config_path, added, updated, settings.tenants_seed_mode)
-
-
 # ── Pydantic models ───────────────────────────────────────────────────────────
 # Tenant ids end up in URLs and directory names: lowercase letters, digits,
 # "-" and "_" only. "all" is reserved as the "every tenant" sentinel.
@@ -403,7 +208,7 @@ def _check_datetime(value: str | None, field: str) -> None:
 @app.get("/healthz")
 async def healthz():
     """Liveness: answers as long as the event loop runs; no database access."""
-    return {"ok": True, "version": settings.app_version, "loop_lag_s": round(time.monotonic() - _loop_heartbeat, 2)}
+    return {"ok": True, "version": settings.app_version, "loop_lag_s": round(watchdog.loop_lag(), 2)}
 
 
 @app.get("/readyz")
@@ -414,7 +219,8 @@ async def readyz():
         await asyncio.wait_for(conn.read(conn.fetch_val, "SELECT 1"), 2)
     except Exception as e:
         return JSONResponse({"ok": False, "error": type(e).__name__}, status_code=503)
-    return {"ok": True, "fetch_job": _active_job.status if _active_job else "idle"}
+    job = fetch_service.active_job
+    return {"ok": True, "fetch_job": job.status if job else "idle"}
 
 
 # ── Tenant endpoints ──────────────────────────────────────────────────────────
@@ -482,7 +288,7 @@ async def test_tenant(tenant_id: str):
         tenant = await tenants_repo.get_tenant(conn, tenant_id)
         if not tenant:
             raise HTTPException(404, "Tenant not found")
-        if tenant["api_url"].startswith(DEMO_URL):
+        if tenant_service.is_demo(tenant):
             return {"ok": True, "demo": True}
         token = await cpi_api.get_token(tenant["oauth_url"], tenant["client_id"], tenant["client_secret"])
         return {"ok": bool(token), "token_preview": token[:12] + "…"}
@@ -490,68 +296,44 @@ async def test_tenant(tenant_id: str):
         return {"ok": False, "error": str(e)}
 
 
-# ── Demo data ─────────────────────────────────────────────────────────────────
-# A tenant whose URLs use this scheme imports the bundled sample logs instead
-# of calling SAP CPI, so new users can try the app without credentials.
-DEMO_URL = "demo://"
-DEMO_TENANT_ID = "demo"
-
-
 @app.post("/api/demo")
 async def start_demo():
     """Create the demo tenant (if needed) and import the bundled sample logs."""
-    conn = await database.get_db()
-    await tenants_repo.upsert_tenant(
-        conn, DEMO_TENANT_ID, "Demo", f"{DEMO_URL}sample", f"{DEMO_URL}sample", "demo", "demo"
-    )
-    return await fetch_logs(FetchRequest(tenants=[DEMO_TENANT_ID], log_types=["trace"], hours=0))
+    await tenant_service.ensure_demo_tenant(await database.get_db())
+    return await fetch_logs(FetchRequest(tenants=[tenant_service.DEMO_TENANT_ID], log_types=["trace"], hours=0))
 
 
 # ── Fetch: start background job ───────────────────────────────────────────────
 @app.post("/api/fetch")
 async def fetch_logs(body: FetchRequest):
     """Start a background fetch job. Returns job id immediately."""
-    global _active_job
-    if _active_job and _active_job.status == "running":
-        return {"ok": False, "error": "A fetch is already running.", "job_id": _active_job.id}
-
-    job = FetchJob(id=str(uuid.uuid4()))
-    _active_job = job
-
-    _spawn(_run_fetch(job, body))
+    job = fetch_service.start(await database.get_db(), fetch_service.FetchParams(**body.model_dump()))
+    if job is None:
+        running = fetch_service.active_job
+        assert running is not None
+        return {"ok": False, "error": "A fetch is already running.", "job_id": running.id}
     return {"ok": True, "job_id": job.id}
 
 
 @app.get("/api/fetch/status")
 async def fetch_status():
     """Return current snapshot of the active job (for polling or initial state)."""
-    if not _active_job:
+    job = fetch_service.active_job
+    if not job:
         return {"status": "idle"}
-    return {
-        "job_id": _active_job.id,
-        "status": _active_job.status,
-        "status_msg": _active_job.status_msg,
-        "done": _active_job.done,
-        "total": _active_job.total,
-        "current_file": _active_job.current_file,
-        "current_tenant": _active_job.current_tenant,
-        "current_log_type": _active_job.current_log_type,
-        "imported": _active_job.imported,
-        "error_msg": _active_job.error_msg,
-    }
+    return job.snapshot()
 
 
 @app.post("/api/fetch/cancel")
 async def fetch_cancel():
-    """Request cancellation of the active job. _run_fetch() checks
+    """Request cancellation of the active job. run_fetch() checks
     `cancel_requested` at each file boundary and stops cleanly (finishes the
     file currently in flight rather than being killed mid-write, so the DB
     stays consistent) instead of requiring a full container restart."""
-    if not _active_job or _active_job.status != "running":
+    job = fetch_service.request_cancel()
+    if job is None:
         return {"ok": False, "error": "No fetch is running."}
-    _active_job.cancel_requested = True
-    _active_job.push({"type": "status", "msg": "Cancelling…"})
-    return {"ok": True, "job_id": _active_job.id}
+    return {"ok": True, "job_id": job.id}
 
 
 # ── Fetch: default form config ────────────────────────────────────────────────
@@ -631,267 +413,11 @@ async def remove_schedule(schedule_id: str):
 @app.get("/api/fetch/stream")
 async def fetch_stream():
     """SSE stream — attach to the active job from any page/tab."""
-    global _active_job
-
-    async def event_stream() -> AsyncGenerator[str, None]:
-        def sse(data: dict) -> str:
-            return f"data: {json.dumps(data)}\n\n"
-
-        job = _active_job
-        if not job:
-            yield sse({"type": "idle"})
-            return
-
-        # Send current snapshot immediately so late subscribers are up-to-date
-        yield sse(
-            {
-                "type": "snapshot",
-                "job_id": job.id,
-                "status": job.status,
-                "status_msg": job.status_msg,
-                "done": job.done,
-                "total": job.total,
-                "current_file": job.current_file,
-                "current_tenant": job.current_tenant,
-                "current_log_type": job.current_log_type,
-                "imported": job.imported,
-                "error_msg": job.error_msg,
-            }
-        )
-
-        if job.status != "running":
-            return
-
-        q = job.attach()
-        try:
-            while True:
-                try:
-                    event = await asyncio.wait_for(q.get(), timeout=25)
-                    yield sse(event)
-                    if event.get("type") in ("done", "error"):
-                        break
-                except TimeoutError:
-                    yield ": keepalive\n\n"
-        finally:
-            job.detach(q)
-
     return StreamingResponse(
-        event_stream(),
+        fetch_service.event_stream(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
-
-
-async def _run_fetch(job: FetchJob, body: FetchRequest):
-    """Background coroutine that does the actual downloading + importing."""
-    conn = await database.get_db()
-    try:
-        # Resolve tenants
-        if "all" in body.tenants:
-            tenants = await tenants_repo.get_tenants(conn)
-        else:
-            tenants = [t for tid in body.tenants if (t := await tenants_repo.get_tenant(conn, tid.lower())) is not None]
-
-        if not tenants:
-            job.status = "error"
-            job.error_msg = "No tenants configured."
-            job.push({"type": "error", "msg": job.error_msg})
-            return
-
-        log_types = body.log_types or ["trace", "http"]
-        cutoff_ms = 0
-        if body.hours > 0:
-            cutoff_ms = int((time.time() - body.hours * 3600) * 1000)
-
-        for tenant in tenants:
-            if job.cancel_requested:
-                break
-            # One shared httpx client per tenant, reused for the token call,
-            # file listing and every file download across all log_types —
-            # avoids a fresh TCP/TLS handshake per request.
-            client = cpi_api.make_client()
-            try:
-                for lt in log_types:
-                    if job.cancel_requested:
-                        break
-                    job.current_tenant = tenant["name"]
-                    job.current_log_type = lt
-                    job.status_msg = f"🔑 Requesting token for {tenant['name']}…"
-                    job.push({"type": "status", "msg": job.status_msg})
-
-                    if settings.mock or tenant["api_url"].startswith(DEMO_URL):
-                        mock_files = list(MOCK_DIR.glob("*.log"))
-                        job.total = len(mock_files)
-                        job.status_msg = f"{tenant['name']} · {lt}: {len(mock_files)} files"
-                        job.push(
-                            {"type": "files_found", "count": len(mock_files), "tenant": tenant["name"], "log_type": lt}
-                        )
-                        for i, mf in enumerate(mock_files, 1):
-                            if job.cancel_requested:
-                                break
-                            already = (await file_imports_repo.get_file_import(conn, tenant["id"], mf.name))["lines"]
-                            try:
-                                newly_imported = await importer.import_log_file(
-                                    conn, tenant["id"], lt, mf, mf.name, already
-                                )
-                            except Exception as e:
-                                job.push({"type": "warn", "msg": f"Import failed: {mf.name}: {e}"})
-                                newly_imported = 0
-                            job.imported += newly_imported
-                            job.done = i
-                            job.current_file = mf.name
-                            job.status_msg = f"{tenant['name']} · {lt}: {mf.name} ({i}/{len(mock_files)})"
-                            job.push(
-                                {
-                                    "type": "progress",
-                                    "done": i,
-                                    "total": len(mock_files),
-                                    "file": mf.name,
-                                    "new_rows": newly_imported,
-                                    "imported": job.imported,
-                                }
-                            )
-                            await asyncio.sleep(0.05)
-                    else:
-                        try:
-                            token = await cpi_api.get_token(
-                                tenant["oauth_url"], tenant["client_id"], tenant["client_secret"], client
-                            )
-                        except Exception as e:
-                            job.push({"type": "error", "msg": f"Couldn't get an OAuth token for {tenant['name']}: {e}"})
-                            continue
-
-                        try:
-                            files = await cpi_api.list_remote_files(tenant["api_url"], token, lt, client)
-                        except Exception as e:
-                            job.push({"type": "error", "msg": f"Couldn't list log files for {tenant['name']}: {e}"})
-                            continue
-
-                        if cutoff_ms > 0:
-                            files = [f for f in files if cpi_api.epoch_ms(f.get("LastModified", "")) > cutoff_ms]
-
-                        job.total = len(files)
-                        job.status_msg = f"{tenant['name']} · {lt}: {len(files)} files"
-                        job.push({"type": "files_found", "count": len(files), "tenant": tenant["name"], "log_type": lt})
-
-                        tenant_log_dir = settings.logs_dir / tenant["id"]
-                        tenant_log_dir.mkdir(parents=True, exist_ok=True)
-
-                        semaphore = asyncio.Semaphore(settings.fetch_concurrency)
-                        counters = {"done": 0, "imported": job.imported}
-
-                        async def process_file(f):
-                            async with semaphore:
-                                if job.cancel_requested:
-                                    return
-                                # The file name comes from the remote server; never let it
-                                # point outside this tenant's log directory.
-                                name = f["Name"]
-                                if not name or Path(name).name != name or name in (".", ".."):
-                                    counters["done"] += 1
-                                    job.done = counters["done"]
-                                    job.push({"type": "warn", "msg": f"Skipped file with unsafe name: {name!r}"})
-                                    return
-                                dest = tenant_log_dir / name
-                                remote_size = int(f.get("Size", 0))
-                                file_import = await file_imports_repo.get_file_import(conn, tenant["id"], f["Name"])
-
-                                # Backfill size from local file if missing (legacy imports)
-                                if file_import["lines"] > 0 and file_import["size"] == 0 and dest.exists():
-                                    local_size = dest.stat().st_size
-                                    await file_imports_repo.update_file_import_size(
-                                        conn, tenant["id"], f["Name"], local_size
-                                    )
-                                    file_import["size"] = local_size
-
-                                counters["done"] += 1
-                                i = counters["done"]
-                                job.done = i
-                                job.current_file = f["Name"]
-                                job.status_msg = f"{tenant['name']} · {lt}: {f['Name']} ({i}/{len(files)})"
-
-                                # Skip if already fully imported
-                                if file_import["size"] == remote_size and file_import["lines"] > 0:
-                                    job.push(
-                                        {
-                                            "type": "progress",
-                                            "done": i,
-                                            "total": len(files),
-                                            "file": f["Name"],
-                                            "new_rows": 0,
-                                            "imported": counters["imported"],
-                                        }
-                                    )
-                                    return
-
-                                # Download if new or grown
-                                if not dest.exists() or dest.stat().st_size != remote_size:
-                                    try:
-                                        # Streamed to disk as gzip with constant memory; the
-                                        # parser auto-detects gzip via magic bytes.
-                                        await cpi_api.download_to_file(
-                                            tenant["api_url"],
-                                            token,
-                                            f["Name"],
-                                            f["Application"],
-                                            client,
-                                            dest,
-                                        )
-                                    except Exception as e:
-                                        job.push({"type": "warn", "msg": f"Download failed for {f['Name']}: {e}"})
-                                        job.push(
-                                            {
-                                                "type": "progress",
-                                                "done": i,
-                                                "total": len(files),
-                                                "file": f["Name"],
-                                                "new_rows": 0,
-                                                "imported": counters["imported"],
-                                            }
-                                        )
-                                        return
-
-                                # A file that can't be read completely (e.g. truncated
-                                # gzip) keeps the rows committed so far, is not marked
-                                # as fully imported and is retried on the next fetch.
-                                try:
-                                    newly_imported = await importer.import_log_file(
-                                        conn, tenant["id"], lt, dest, f["Name"], file_import["lines"], remote_size
-                                    )
-                                except Exception as e:
-                                    job.push({"type": "warn", "msg": f"Import failed: {f['Name']}: {e}"})
-                                    newly_imported = 0
-                                counters["imported"] += newly_imported
-                                job.imported = counters["imported"]
-
-                                job.push(
-                                    {
-                                        "type": "progress",
-                                        "done": i,
-                                        "total": len(files),
-                                        "file": f["Name"],
-                                        "new_rows": newly_imported,
-                                        "imported": counters["imported"],
-                                    }
-                                )
-
-                        await asyncio.gather(*[process_file(f) for f in files])
-            finally:
-                await client.aclose()
-
-        if job.cancel_requested:
-            job.status = "cancelled"
-            job.status_msg = "Cancelled"
-            job.push({"type": "cancelled", "imported": job.imported})
-        else:
-            job.status = "done"
-            job.status_msg = "Completed"
-            job.push({"type": "done", "imported": job.imported})
-
-    except Exception as e:
-        job.status = "error"
-        job.error_msg = str(e)
-        job.push({"type": "error", "msg": str(e)})
 
 
 # ── LLM query API ─────────────────────────────────────────────────────────────

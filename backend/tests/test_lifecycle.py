@@ -10,8 +10,9 @@ import httpx
 import pytest
 from asgi_lifespan import LifespanManager
 
-from app import main
+from app import main, tasks, watchdog
 from app.repositories import database
+from app.services import fetch as fetch_service
 from tests.support import FAKE_TENANT, numbered_lines, wait_for_job
 
 pytestmark = pytest.mark.anyio
@@ -29,7 +30,7 @@ async def test_shutdown_checkpoints_and_closes_the_database(app_env, settings, c
         assert (await client.post("/api/demo")).status_code == 200
         await wait_for_job(client)
     assert database._db_instance is None
-    assert main._background_tasks == set()
+    assert tasks.background_tasks == set()
     assert "database checkpointed and closed" in caplog.text
     # Nothing is left in the WAL, and the file is no longer locked.
     assert not settings.db_path.with_name(settings.db_path.name + ".wal").exists()
@@ -50,8 +51,8 @@ async def test_shutdown_cancels_a_running_fetch(app_env, fake_cpi):
         assert (await client.get("/api/fetch/status")).json()["status"] == "running"
         t0 = time.perf_counter()
     assert time.perf_counter() - t0 < 5
-    assert main._active_job is not None
-    assert main._active_job.status == "cancelled"
+    assert fetch_service.active_job is not None
+    assert fetch_service.active_job.status == "cancelled"
     assert database._db_instance is None
 
 
@@ -94,7 +95,7 @@ async def test_close_interrupts_running_reads(db, settings, monkeypatch):
 
 def test_watchdog_thread_ends_when_stopped():
     stop = threading.Event()
-    thread = threading.Thread(target=main._watchdog, args=(stop,), daemon=True)
+    thread = threading.Thread(target=watchdog.watchdog, args=(stop, 120), daemon=True)
     thread.start()
     stop.set()
     thread.join(timeout=2)

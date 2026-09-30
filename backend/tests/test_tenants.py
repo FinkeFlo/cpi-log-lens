@@ -2,10 +2,10 @@
 
 import pytest
 
-from app import main
 from app.config import get_settings
 from app.repositories import database
 from app.repositories import tenants as tenants_repo
+from app.services import tenants as tenant_service
 from tests.support import FAKE_TENANT, fetch, numbered_lines
 
 pytestmark = pytest.mark.anyio
@@ -135,8 +135,9 @@ async def seed(monkeypatch, tmp_path, text, mode="create"):
     settings = get_settings()
     monkeypatch.setattr(settings, "tenants_config", path)
     monkeypatch.setattr(settings, "tenants_seed_mode", mode)
-    await main._load_tenants_from_json()
-    return await tenants_repo.get_tenants(await database.get_db())
+    db = await database.get_db()
+    await tenant_service.load_tenants_from_json(db)
+    return await tenants_repo.get_tenants(db)
 
 
 async def test_seed_adds_tenants_and_normalizes_ids(db, monkeypatch, tmp_path):
@@ -165,7 +166,7 @@ async def test_invalid_seed_file_is_ignored(db, monkeypatch, tmp_path):
 
 async def test_missing_or_directory_seed_path_is_ignored(db, monkeypatch, tmp_path, settings):
     monkeypatch.setattr(settings, "tenants_config", tmp_path)
-    await main._load_tenants_from_json()
+    await tenant_service.load_tenants_from_json(db)
     monkeypatch.setattr(settings, "tenants_config", tmp_path / "missing.jsonc")
-    await main._load_tenants_from_json()
+    await tenant_service.load_tenants_from_json(db)
     assert await tenants_repo.get_tenants(db) == []
