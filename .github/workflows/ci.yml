@@ -36,7 +36,7 @@ jobs:
       - name: Type check
         run: uv run --locked mypy .
       - name: App imports
-        run: DB_PATH=/tmp/ci.duckdb TENANTS_CONFIG=/nonexistent uv run --locked python -c "import main"
+        run: DB_PATH=/tmp/ci.duckdb TENANTS_CONFIG=/nonexistent uv run --locked python -c "import app.main"
       - uses: actions/setup-node@v7
         with:
           node-version: 24

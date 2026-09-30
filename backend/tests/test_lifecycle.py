@@ -10,8 +10,8 @@ import httpx
 import pytest
 from asgi_lifespan import LifespanManager
 
-import db as database
-import main
+from app import db as database
+from app import main
 from tests.support import FAKE_TENANT, numbered_lines, wait_for_job
 
 pytestmark = pytest.mark.anyio

@@ -5,7 +5,7 @@ import gzip
 
 import pytest
 
-from db import _extract_iflow, iter_log_batches
+from app.db import _extract_iflow, iter_log_batches
 from tests.support import log_line, numbered_lines, write_log
 
 

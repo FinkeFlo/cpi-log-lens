@@ -2,9 +2,9 @@
 
 import pytest
 
-import db as database
-import main
-from config import get_settings
+from app import db as database
+from app import main
+from app.config import get_settings
 from tests.support import FAKE_TENANT, fetch, numbered_lines
 
 pytestmark = pytest.mark.anyio

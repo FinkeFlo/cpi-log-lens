@@ -26,19 +26,19 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
-from config import get_settings
-from logging_config import setup_logging
+from app.config import BACKEND_DIR, get_settings
+from app.logging_config import setup_logging
 
 settings = get_settings()
 setup_logging(settings.log_level, settings.log_format)
 
 # Logging must be configured before these modules create their loggers.
-import api as cpi_api  # noqa: E402
-import db as database  # noqa: E402
+from app import db as database  # noqa: E402
+from app.cpi import client as cpi_api  # noqa: E402
 
 log = logging.getLogger("cpi")
 
-MOCK_DIR = Path(__file__).parent / "mock"
+MOCK_DIR = BACKEND_DIR / "mock"
 
 
 # ── Global fetch-job state ────────────────────────────────────────────────────

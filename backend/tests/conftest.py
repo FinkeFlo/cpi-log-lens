@@ -16,10 +16,10 @@ import httpx
 import pytest
 from asgi_lifespan import LifespanManager
 
-import api as cpi_api
-import db as database
-import main
-from config import Settings, get_settings
+from app import db as database
+from app import main
+from app.config import Settings, get_settings
+from app.cpi import client as cpi_api
 from tests.support import FakeCpi
 
 BASE_URL = "http://localhost"

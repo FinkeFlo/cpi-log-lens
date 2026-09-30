@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-import db as database
+from app import db as database
 from tests.support import FAKE_TENANT, fetch, numbered_lines, wait_for_job
 
 pytestmark = pytest.mark.anyio

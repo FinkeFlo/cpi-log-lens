@@ -12,7 +12,7 @@ from pathlib import Path
 import duckdb
 import pyarrow as pa
 
-from config import get_settings
+from app.config import get_settings
 
 log = logging.getLogger("cpi.db")
 

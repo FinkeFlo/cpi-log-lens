@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from config import BACKEND_DIR, Settings
+from app.config import BACKEND_DIR, Settings
 
 ALL_VARS = [
     "DB_PATH",

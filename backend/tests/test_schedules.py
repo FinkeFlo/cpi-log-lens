@@ -5,8 +5,8 @@ from datetime import datetime
 
 import pytest
 
-import db as database
-import main
+from app import db as database
+from app import main
 
 pytestmark = pytest.mark.anyio
 

@@ -5,7 +5,7 @@ import gzip
 
 import pytest
 
-import db as database
+from app import db as database
 from tests.support import log_line, numbered_lines, write_log
 
 pytestmark = pytest.mark.anyio

@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 
-import db as database
-import main
+from app import db as database
+from app import main
 from tests.support import log_line, numbered_lines, write_log
 
 pytestmark = pytest.mark.anyio
