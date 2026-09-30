@@ -116,8 +116,11 @@ docker compose start
 Don't copy the file while the app is running: recent changes may only be in the WAL.
 
 **Upgrading.** Pull the new image (`docker compose pull && docker compose up -d`, or rebuild from
-source). Back up the database before upgrading across releases whose changelog mentions a storage
-change.
+source). On start the app applies pending schema migrations (logged as `migration NNNN …`); the
+current version is shown in `GET /api/db/info` (`schema_version`). Back up the database before
+upgrading across releases whose changelog mentions a storage change. Going back to an older app
+version after a schema migration is not supported: the older app refuses to start with a message
+("written by a newer app version"); restore the backup taken before the upgrade instead.
 
 **Resources.** Plan for 2 CPU cores and 2–4 GB RAM for a database of about 10 GB. Deleting old
 entries (Settings or `RETENTION_DAYS`) keeps the database from growing without limit. The file does

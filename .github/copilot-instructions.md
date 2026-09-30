@@ -40,8 +40,10 @@ database; `repositories` know nothing about FastAPI or HTTP.
   `tenants` (seeding from `TENANTS_CONFIG`, demo tenant), `stats` (cached statistics), `query`.
 - `app/repositories/` — `database.py` (`Database`: one writer via `run()` in a single writer thread,
   a bounded pool of read cursors via `read()` with pool and query timeouts and
-  `cursor.interrupt()`; busy → `DBBusyError` → HTTP 503; clean `close()`), `schema.py` (schema and
-  ad-hoc migrations), one module per table group with SQL only.
+  `cursor.interrupt()`; busy → `DBBusyError` → HTTP 503; clean `close()`), one module per table
+  group with SQL only.
+- `app/migrations/` — numbered schema migrations (`vNNNN_name.sql|py`), applied by
+  `Database.open()` and recorded in `schema_version`; a newer database stops the start.
 - `app/parsing/cpi_log.py` — streaming parser `iter_log_batches` (pure, fully typed).
 - `app/cpi/client.py` — CPI client: OAuth token, file list, streaming download to gzip on disk,
   retry with backoff.
@@ -54,6 +56,7 @@ database; `repositories` know nothing about FastAPI or HTTP.
 ## Conventions
 
 - Tenant IDs: lowercase letters, digits, `-`, `_`; `"all"` is reserved as "every tenant".
+- Schema changes only as a new migration file; never edit a released one.
 - Duplicate protection comes from `file_imports.lines` only (no UNIQUE constraint, see ADR 2);
   keep rows and offset in the same transaction.
 - Never do CPU-heavy or blocking work on the event loop; use the DB threads or `asyncio.to_thread`.
