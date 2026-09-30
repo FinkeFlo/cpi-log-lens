@@ -44,6 +44,8 @@ database; `repositories` know nothing about FastAPI or HTTP.
   group with SQL only.
 - `app/migrations/` — numbered schema migrations (`vNNNN_name.sql|py`), applied by
   `Database.open()` and recorded in `schema_version`; a newer database stops the start.
+- `app/storage.py` — storage version checks, the opt-in conversion to ZSTD-compressed log texts
+  (`DB_STORAGE_UPGRADE`, `python -m app.storage`) and `backup_to()` for `POST /api/db/backup`.
 - `app/parsing/cpi_log.py` — streaming parser `iter_log_batches` (pure, fully typed).
 - `app/cpi/client.py` — CPI client: OAuth token, file list, streaming download to gzip on disk,
   retry with backoff.

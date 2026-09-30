@@ -1,14 +1,18 @@
-"""Database backups."""
+"""Storage format: compressed log texts in new files, the opt-in upgrade of existing
+files, and database backups."""
 
 import asyncio
+import logging
 import os
 import shutil
 from collections import namedtuple
 
 import duckdb
 import pytest
+from asgi_lifespan import LifespanManager
 
-from app import migrations, storage
+from app import logging_config, main, migrations, storage
+from app.repositories.database import Database
 from app.services import importer
 from tests.support import FAKE_TENANT, app_db, log_line, numbered_lines, wait_for_job, write_log
 
@@ -78,6 +82,134 @@ def make_old_format_db(path, rows=3000) -> None:
         conn.execute("CHECKPOINT")
 
 
+def upgrade(path):
+    return storage.upgrade_file(path, memory_limit="1GB", threads=2)
+
+
+# ── New files ────────────────────────────────────────────────────────────────
+
+
+async def test_new_database_uses_compressed_log_texts(db, settings, tmp_path):
+    path = write_log(tmp_path / "a.log", numbered_lines(2000))
+    await importer.import_log_file(db, "t1", "trace", path, "a.log", 0)
+    await db.run(lambda conn: conn.execute("CHECKPOINT"))
+    await db.close()
+    with duckdb.connect(str(settings.db_path), read_only=True) as conn:
+        assert storage.storage_version(conn) == "v1.5.0+"
+        assert text_compression(conn) <= {"ZSTD", "Constant"}
+        assert "ZSTD" in text_compression(conn)
+    assert not storage.needs_upgrade(settings.db_path)
+
+
+# ── Upgrade of existing files ─────────────────────────────────────────────────
+
+
+def test_upgrade_copies_everything_and_compresses(tmp_path):
+    path = tmp_path / "old.duckdb"
+    make_old_format_db(path)
+    with duckdb.connect(str(path), read_only=True) as conn:
+        before = counts(conn)
+        old_rows = conn.execute("SELECT * FROM logs ORDER BY id").fetchall()
+        assert storage.storage_version(conn) == "v1.0.0+"
+    assert storage.needs_upgrade(path)
+
+    backup = upgrade(path)
+
+    assert backup.exists() and backup.name.startswith("old.duckdb.bak-")
+    assert not path.with_name("old.duckdb.upgrade").exists()
+    with duckdb.connect(str(path)) as conn:
+        assert storage.storage_version(conn) == "v1.5.0+"
+        assert counts(conn) == before
+        assert sorted(counts(conn)) == ALL_TABLES
+        assert conn.execute("SELECT * FROM logs ORDER BY id").fetchall() == old_rows
+        assert text_compression(conn) == {"ZSTD"}
+        # Rows are stored in time order.
+        stored = [r[0] for r in conn.execute("SELECT timestamp FROM logs").fetchall()]
+        assert stored == sorted(stored)
+        # New rows continue after the highest id, even though the old sequence was behind.
+        conn.execute("INSERT INTO logs (tenant, log_type, filename, timestamp) VALUES ('dev', 'trace', 'y', now())")
+        assert conn.execute("SELECT max(id) FROM logs").fetchall() == [(50001,)]
+        conn.execute("INSERT INTO unparsed_lines (tenant, log_type, filename, line_no) VALUES ('d', 't', 'f', 2)")
+    # The kept file is the untouched old one.
+    with duckdb.connect(str(backup), read_only=True) as conn:
+        assert storage.storage_version(conn) == "v1.0.0+"
+        assert counts(conn) == before
+    assert not storage.needs_upgrade(path)
+
+
+def test_upgrade_needs_free_disk_space(tmp_path, monkeypatch):
+    path = tmp_path / "old.duckdb"
+    make_old_format_db(path, rows=10)
+    mtime = path.stat().st_mtime_ns
+    Usage = namedtuple("Usage", "total used free")
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: Usage(10**9, 10**9, 1000))
+    with pytest.raises(storage.StorageUpgradeError, match="not enough free disk space"):
+        upgrade(path)
+    assert path.stat().st_mtime_ns == mtime
+    assert [p.name for p in tmp_path.iterdir()] == ["old.duckdb"]
+
+
+def test_failed_upgrade_leaves_the_file_unchanged(tmp_path, monkeypatch):
+    path = tmp_path / "old.duckdb"
+    make_old_format_db(path, rows=10)
+
+    def broken(sql):
+        raise storage.StorageUpgradeError("simulated")
+
+    monkeypatch.setattr(storage, "with_compressed_texts", broken)
+    with pytest.raises(storage.StorageUpgradeError, match="simulated"):
+        upgrade(path)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["old.duckdb"]
+    with duckdb.connect(str(path), read_only=True) as conn:
+        assert storage.storage_version(conn) == "v1.0.0+"
+
+
+def test_with_compressed_texts():
+    sql = "CREATE TABLE logs(id BIGINT, message VARCHAR, raw_line VARCHAR, imported_at VARCHAR);"
+    assert storage.with_compressed_texts(sql) == (
+        "CREATE TABLE logs(id BIGINT, message VARCHAR USING COMPRESSION zstd, "
+        "raw_line VARCHAR USING COMPRESSION zstd, imported_at VARCHAR);"
+    )
+    with pytest.raises(storage.StorageUpgradeError):
+        storage.with_compressed_texts("CREATE TABLE logs(id BIGINT, message TEXT);")
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_upgrade_at_start_is_opt_in(app_env, settings, monkeypatch, enabled):
+    make_old_format_db(settings.db_path, rows=100)
+    monkeypatch.setattr(settings, "db_storage_upgrade", enabled)
+    async with LifespanManager(main.app):
+        pass
+    with duckdb.connect(str(settings.db_path), read_only=True) as conn:
+        assert storage.storage_version(conn) == ("v1.5.0+" if enabled else "v1.0.0+")
+        assert counts(conn)["logs"] == 101
+    backups = [p for p in settings.db_path.parent.iterdir() if ".bak-" in p.name]
+    assert len(backups) == (1 if enabled else 0)
+
+
+async def test_old_format_file_keeps_its_layout_without_the_upgrade(app_env, settings):
+    make_old_format_db(settings.db_path, rows=100)
+    db = Database.open(settings.db_path)
+    await db.close()
+    with duckdb.connect(str(settings.db_path), read_only=True) as conn:
+        assert migrations.current_version(conn) == migrations.discover()[-1].version
+        assert "ZSTD" not in text_compression(conn)
+    assert storage.needs_upgrade(settings.db_path)
+
+
+def test_command_line_upgrade(tmp_path, settings, monkeypatch, caplog):
+    monkeypatch.setattr(logging_config, "setup_logging", lambda *args: None)
+    caplog.set_level(logging.INFO)
+    monkeypatch.setattr(settings, "db_path", tmp_path / "old.duckdb")
+    make_old_format_db(settings.db_path, rows=10)
+    assert storage.main() == 0
+    assert not storage.needs_upgrade(settings.db_path)
+    assert storage.main() == 0
+    assert "already uses the compressed storage format" in caplog.text
+    monkeypatch.setattr(settings, "db_path", tmp_path / "missing.duckdb")
+    assert storage.main() == 1
+
+
 # ── Backups ──────────────────────────────────────────────────────────────────
 
 
@@ -94,6 +226,7 @@ async def test_backup_copies_the_database(client, settings, tmp_path):
     with duckdb.connect(str(dest), read_only=True) as conn:
         assert conn.execute("SELECT message FROM logs").fetchall() == [("kept in the backup",)]
         assert conn.execute("SELECT id FROM tenants").fetchall() == [("fake",)]
+        assert storage.storage_version(conn) == "v1.5.0+"
         assert migrations.current_version(conn) == migrations.discover()[-1].version
     listed = (await client.get("/api/db/backups")).json()
     assert [b["name"] for b in listed] == [dest.name]

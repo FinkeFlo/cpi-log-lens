@@ -9,7 +9,7 @@ from pathlib import Path
 
 import duckdb
 
-from app import migrations
+from app import migrations, storage
 from app.config import get_settings
 
 log = logging.getLogger("cpi.db")
@@ -41,6 +41,8 @@ def _duckdb_config() -> dict:
         "memory_limit": settings.duckdb_memory_limit,
         "threads": settings.duckdb_threads,
         "checkpoint_threshold": settings.duckdb_checkpoint_threshold,
+        # Applies to newly created files only; existing files keep their version.
+        "storage_compatibility_version": storage.TARGET_STORAGE_VERSION,
     }
     if settings.duckdb_temp_dir:
         config["temp_directory"] = settings.duckdb_temp_dir

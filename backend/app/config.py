@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     logs_dir: Path = Path("logs")
     # Where POST /api/db/backup writes backups (default: "backups" next to the database).
     backup_dir: Path | None = None
+    # On start, convert an existing database file to the compressed storage format
+    # (see app/storage.py); the old file is kept as <name>.bak-<time>.
+    db_storage_upgrade: bool = False
 
     # ── Tenants ──
     tenants_config: Path = Path("/config/tenants.jsonc")

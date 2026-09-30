@@ -76,6 +76,7 @@ unset; an invalid value stops the app at start with a message naming the variabl
 | `DB_PATH` | `/data/cpi_logs.duckdb` | DuckDB database file. |
 | `LOGS_DIR` | `/data/logs` | Downloaded log files (gzip). |
 | `BACKUP_DIR` | `backups` next to the database | Where `POST /api/db/backup` writes backups. |
+| `DB_STORAGE_UPGRADE` | `false` | On start, convert an existing database to the compressed storage format (see *Storage format*). |
 | `FRONTEND_DIR` | `/app/frontend` | Directory of the web UI; the API is served alone if it is missing. |
 | `DUCKDB_MEMORY_LIMIT` | `1.5GB` | Memory DuckDB may use. Keep well below the container limit. |
 | `DUCKDB_THREADS` | `4` | Threads DuckDB may use. |
@@ -128,6 +129,24 @@ current version is shown in `GET /api/db/info` (`schema_version`). Back up the d
 upgrading across releases whose changelog mentions a storage change. Going back to an older app
 version after a schema migration is not supported: the older app refuses to start with a message
 ("written by a newer app version"); restore the backup taken before the upgrade instead.
+
+**Storage format.** New databases store the log texts ZSTD-compressed (DuckDB storage version
+v1.5.0), which makes them about 2.5–4 times smaller than the previous format; text searches over
+all entries take up to about a third longer. Databases created by earlier versions keep their
+format until you convert them, once, with the app stopped:
+
+```bash
+docker compose stop
+docker compose run --rm app python -m app.storage   # or start once with DB_STORAGE_UPGRADE=true
+docker compose start
+```
+
+The conversion copies every table into a new file (needs free disk space of about the current
+file size, and one to a few minutes for millions of entries), checks the copy, and swaps the files;
+the old file is kept as `cpi_logs.duckdb.bak-<UTC time>`. Delete it once the app works with the new
+file. **The conversion is one-way:** the new file can only be opened with DuckDB 1.5 or newer (all
+releases of this app use DuckDB 1.5), not with older DuckDB tools. To go back, stop the app and
+restore the `.bak` file.
 
 **Resources.** Plan for 2 CPU cores and 2–4 GB RAM for a database of about 10 GB. Deleting old
 entries (Settings or `RETENTION_DAYS`) keeps the database from growing without limit. The file does
