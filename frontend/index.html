@@ -632,7 +632,7 @@
         <div class="form-control">
           <label class="label py-0 pb-1"><span class="label-text text-sm" x-text="label"></span></label>
           <input :type="type" class="input input-bordered input-sm"
-                 :placeholder="ph"
+                 :placeholder="field==='client_secret' && tenantModal.editing ? 'Leave empty to keep the current secret' : ph"
                  :disabled="field==='id' && tenantModal.editing"
                  x-model="tenantModal.form[field]" />
         </div>

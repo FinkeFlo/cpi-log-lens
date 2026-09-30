@@ -277,9 +277,10 @@ async def update_tenant(tenant_id: str, body: TenantCreate):
         existing = await database.get_tenant(conn, tenant_id)
         if not existing:
             raise HTTPException(404, "Tenant not found")
-        # Keep existing secret if masked value submitted
+        # Keep existing secret if an empty or masked value is submitted —
+        # the edit form never pre-fills the stored secret.
         secret = body.client_secret
-        if set(secret) == {"•"}:
+        if not secret or set(secret) == {"•"}:
             secret = existing["client_secret"]
         await database.upsert_tenant(
             conn, tenant_id, body.name, body.api_url,
