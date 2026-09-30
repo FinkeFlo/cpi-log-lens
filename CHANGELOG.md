@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/FinkeFlo/cpi-log-lens/compare/v0.1.0...v0.1.1) (2026-09-30)
+
+
+### Bug Fixes
+
+* **docker:** apply debian security updates and scan images in ci ([#24](https://github.com/FinkeFlo/cpi-log-lens/issues/24)) ([f0568d1](https://github.com/FinkeFlo/cpi-log-lens/commit/f0568d13b6c8ec8e23baf0cc38ed1c36f94d1fe4))
+
 ## 0.1.0 (2026-09-30)
 
 
