@@ -1005,4 +1005,6 @@ async def db_cleanup(req: CleanupRequest):
 # ── Serve frontend ────────────────────────────────────────────────────────────
 if FRONTEND.exists():
     app.mount("/", StaticFiles(directory=str(FRONTEND), html=True), name="frontend")
+else:
+    log.warning("frontend directory %s not found; serving the API only", FRONTEND)
 

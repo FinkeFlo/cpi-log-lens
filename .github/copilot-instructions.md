@@ -23,10 +23,10 @@ DB_PATH=../data/cpi_logs.duckdb LOGS_DIR=../data/logs \
   uvicorn main:app --reload --port 8080
 ```
 
-`docker-compose.yml` runs the backend code baked into the image (no `--reload`;
-rebuild with `docker compose up --build` after backend changes) and bind-mounts
-`./frontend`, so static frontend edits apply on browser reload. For live backend
-reload during development use the override:
+`docker-compose.yml` runs the image built from the root `Dockerfile`, with the
+backend and frontend baked in (no `--reload`, non-root user); rebuild with
+`docker compose up --build` after changes. For development use the override,
+which bind-mounts `./backend` and `./frontend` and enables live reload:
 `docker compose -f docker-compose.yml -f compose.dev.yaml up --build`.
 
 Frontend has no bundler: `frontend/index.html` loads Tailwind, DaisyUI, Alpine.js

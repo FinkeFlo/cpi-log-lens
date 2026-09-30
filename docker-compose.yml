@@ -1,13 +1,12 @@
 services:
   app:
-    build: ./backend
+    build: .
     ports:
       # Only reachable from this machine by default. To expose it on the network
       # set BIND_ADDRESS=0.0.0.0 — and put authentication in front of it.
       - "${BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8080}:8080"
     volumes:
       - ./data:/data                          # DuckDB database + raw log files
-      - ./frontend:/frontend                  # serve frontend static files
       - ./tenants.jsonc:/config/tenants.jsonc:ro  # tenant credentials (read-only)
     env_file:
       - .env
@@ -15,7 +14,6 @@ services:
       - DB_PATH=/data/cpi_logs.duckdb
       - LOGS_DIR=/data/logs
       - TENANTS_CONFIG=/config/tenants.jsonc
-      - FRONTEND_DIR=/frontend
     # Hard ceiling for the whole container; DUCKDB_MEMORY_LIMIT must stay well
     # below it (default 1.5GB) because Python and non-buffer allocations add up.
     mem_limit: ${APP_MEM_LIMIT:-4g}

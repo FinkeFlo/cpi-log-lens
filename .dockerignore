@@ -1,0 +1,8 @@
+# Allow-list: only what the image needs is sent to the Docker build.
+*
+!backend/*.py
+!backend/requirements.txt
+!backend/mock/
+!frontend/
+**/__pycache__/
+**/*.pyc
