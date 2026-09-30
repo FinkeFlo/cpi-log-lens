@@ -34,7 +34,14 @@ Before pushing, run the checks CI runs (in `backend/`):
 uv run ruff check .      # lint (add --fix for automatic fixes)
 uv run ruff format .     # formatting
 uv run mypy .            # type check
+uv run pytest            # tests
 ```
+
+Tests live in `backend/tests/`. Each test gets a fresh DuckDB file and a started app, called through
+httpx without a server; CPI requests go to an in-process fake (`tests/support.py`), so no tenant is
+needed. Use synthetic log lines only (`log_line()` / `numbered_lines()`). A known bug can be pinned
+with `@pytest.mark.xfail(reason="<finding or issue>: …")`; xfail is strict, so remove the marker in the
+change that fixes it.
 
 The frontend has no build step. Its libraries are vendored in `frontend/vendor/`. After using new
 Tailwind classes, or to bump a library version, run `scripts/vendor-frontend.sh` (downloads are
@@ -50,7 +57,7 @@ checksum-verified; no Node.js needed).
   `docker`, `ci`, `docs`. The body explains *why*. Release notes and versions are generated from
   these messages.
 - Keep refactoring and behavior changes in separate commits.
-- CI must pass (lint, formatting, type check, dependency audit, image build and smoke test). Describe how you
+- CI must pass (lint, formatting, type check, tests, dependency audit, image build and smoke test). Describe how you
   tested the change in the pull request.
 - Update the README configuration table when you add or change an environment variable.
 
