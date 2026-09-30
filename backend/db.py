@@ -1,5 +1,6 @@
 """Database layer — DuckDB."""
 import re
+import os
 import gzip
 import asyncio
 import duckdb
@@ -124,6 +125,21 @@ CREATE TABLE IF NOT EXISTS unparsed_lines (
 
 READ_POOL_SIZE = 4
 
+# DuckDB defaults to 80% of the RAM it can see — inside Docker that is the
+# whole VM, not the container limit — and to one thread per CPU. Together with
+# the Python heap this pushed the process past the VM memory and got it
+# OOM-killed. Keep the engine inside an explicit budget instead.
+DUCKDB_MEMORY_LIMIT = os.getenv("DUCKDB_MEMORY_LIMIT", "1.5GB")
+DUCKDB_THREADS      = int(os.getenv("DUCKDB_THREADS", "4"))
+DUCKDB_TEMP_DIR     = os.getenv("DUCKDB_TEMP_DIR", "")  # "" = DuckDB default (<db file>.tmp)
+
+
+def _duckdb_config() -> dict:
+    config = {"memory_limit": DUCKDB_MEMORY_LIMIT, "threads": DUCKDB_THREADS}
+    if DUCKDB_TEMP_DIR:
+        config["temp_directory"] = DUCKDB_TEMP_DIR
+    return config
+
 
 class DuckDBConnection:
     """Singleton async wrapper around a synchronous DuckDB connection.
@@ -140,7 +156,7 @@ class DuckDBConnection:
     """
 
     def __init__(self, path: Path):
-        self._conn = duckdb.connect(str(path))
+        self._conn = duckdb.connect(str(path), config=_duckdb_config())
         self._write_lock = asyncio.Lock()
         self._read_pool: asyncio.Queue = asyncio.Queue()
         for _ in range(READ_POOL_SIZE):
@@ -305,7 +321,11 @@ def _migrate_add_raw_line_column(conn: duckdb.DuckDBPyConnection):
 
 async def init_db(path: Path = DB_PATH):
     global _db_instance
-    conn = duckdb.connect(str(path))
+    conn = duckdb.connect(str(path), config=_duckdb_config())
+    memory_limit, threads = conn.execute(
+        "SELECT current_setting('memory_limit'), current_setting('threads')"
+    ).fetchall()[0]
+    print(f"[db] duckdb {duckdb.__version__}: memory_limit={memory_limit}, threads={threads}")
     for stmt in SCHEMA.split(";"):
         stmt = stmt.strip()
         if stmt:

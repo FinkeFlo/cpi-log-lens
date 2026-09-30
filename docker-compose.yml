@@ -14,6 +14,9 @@ services:
       - LOGS_DIR=/data/logs
       - TENANTS_CONFIG=/config/tenants.jsonc
       - FRONTEND_DIR=/frontend
+    # Hard ceiling for the whole container; DUCKDB_MEMORY_LIMIT must stay well
+    # below it (default 1.5GB) because Python and non-buffer allocations add up.
+    mem_limit: ${APP_MEM_LIMIT:-4g}
     restart: unless-stopped
     # Give a running import time to finish its current write and checkpoint.
     stop_grace_period: 60s
