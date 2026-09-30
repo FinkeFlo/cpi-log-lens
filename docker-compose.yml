@@ -2,7 +2,9 @@ services:
   app:
     build: ./backend
     ports:
-      - "${APP_PORT:-8080}:8080"
+      # Only reachable from this machine by default. To expose it on the network
+      # set BIND_ADDRESS=0.0.0.0 — and put authentication in front of it.
+      - "${BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8080}:8080"
     volumes:
       - ./data:/data                          # DuckDB database + raw log files
       - ./frontend:/frontend                  # serve frontend static files

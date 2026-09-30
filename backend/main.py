@@ -14,9 +14,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import AsyncGenerator, Optional
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -99,12 +101,39 @@ async def db_busy(request, exc: database.DBBusyError):
     return JSONResponse({"detail": str(exc)}, status_code=503, headers={"Retry-After": "5"})
 
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Safe defaults for an app that runs on the user's machine without login:
+# - Only requests addressed to an allowed host name are served. This blocks
+#   DNS rebinding, where a web page re-points its own domain at 127.0.0.1.
+# - No CORS by default: the UI is served from the same origin, so other web
+#   pages cannot read API responses. CORS_ORIGINS opts specific origins in.
+# - Writes coming from another origin are rejected (see below), because a
+#   page can still *send* simple cross-site requests without CORS.
+ALLOWED_HOSTS = [h.strip() for h in os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h.strip()]
+CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
+
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
+if CORS_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=CORS_ORIGINS,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+
+@app.middleware("http")
+async def reject_cross_origin_writes(request, call_next):
+    """Browsers attach an Origin header to cross-site POST/PUT/DELETE requests,
+    including plain form posts that need no CORS preflight. Such a request
+    from any page other than this app's own origin is refused, so a web page
+    open in the same browser cannot create tenants, start fetches or clear
+    the database. Requests without Origin (curl, scripts, LLM tools) are not
+    affected."""
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        origin = request.headers.get("origin")
+        if origin and origin not in CORS_ORIGINS and urlsplit(origin).netloc != request.headers.get("host"):
+            return JSONResponse({"detail": "cross-origin request refused"}, status_code=403)
+    return await call_next(request)
 
 
 @app.middleware("http")
