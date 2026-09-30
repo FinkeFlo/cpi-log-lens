@@ -1,6 +1,7 @@
 """CPI API client — OAuth2 + Log file fetching."""
 import asyncio
 import gzip
+import logging
 import os
 import re
 from pathlib import Path
@@ -8,6 +9,8 @@ from typing import Optional
 from urllib.parse import quote
 
 import httpx
+
+log = logging.getLogger("cpi.client")
 
 # Per-download-request timeouts and retry-with-backoff for the CPI LogFiles
 # API: individual file downloads have been observed taking 30-90s (the server
@@ -55,7 +58,10 @@ async def _retry(fn, *, what: str):
             else:
                 raise
         if attempt < MAX_RETRIES:
-            await asyncio.sleep(RETRY_BACKOFF_BASE * (2 ** (attempt - 1)))
+            delay = RETRY_BACKOFF_BASE * (2 ** (attempt - 1))
+            log.warning("%s failed (%s), retrying in %.0fs (attempt %d of %d)",
+                        what, type(last_exc).__name__, delay, attempt + 1, MAX_RETRIES)
+            await asyncio.sleep(delay)
     raise last_exc
 
 
