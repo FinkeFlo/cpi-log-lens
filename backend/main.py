@@ -15,7 +15,7 @@ from typing import AsyncGenerator, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -80,6 +80,11 @@ _active_job: Optional[FetchJob] = None
 
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(title="CPI Log Explorer", version="1.0.0")
+
+@app.exception_handler(database.DBBusyError)
+async def db_busy(request, exc: database.DBBusyError):
+    return JSONResponse({"detail": str(exc)}, status_code=503, headers={"Retry-After": "5"})
+
 
 app.add_middleware(
     CORSMiddleware,

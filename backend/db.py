@@ -124,6 +124,12 @@ CREATE TABLE IF NOT EXISTS unparsed_lines (
 
 
 READ_POOL_SIZE = 4
+# How long a write waits for the single writer before giving up (HTTP 503).
+WRITE_LOCK_TIMEOUT_S = float(os.getenv("WRITE_LOCK_TIMEOUT_S", "120"))
+
+
+class DBBusyError(Exception):
+    """The database could not serve the request in time (mapped to HTTP 503)."""
 
 # DuckDB defaults to 80% of the RAM it can see — inside Docker that is the
 # whole VM, not the container limit — and to one thread per CPU. Together with
@@ -180,14 +186,18 @@ class DuckDBConnection:
         if c.description is None:
             return None
         cols = [d[0] for d in c.description]
-        row = c.fetchone()
-        return dict(zip(cols, row)) if row else None
+        # fetchall(), not fetchone(): a partially consumed result keeps the
+        # cursor's query open, and in DuckDB < 1.5 that blocks every automatic
+        # CHECKPOINT — the writer (and with it the fetch job) then hangs until
+        # the cursor happens to be reused. All callers select at most one row.
+        rows = c.fetchall()
+        return dict(zip(cols, rows[0])) if rows else None
 
     @classmethod
     def _fetchone_val(cls, cur, sql: str, params=None):
         c = cls._execute(cur, sql, params)
-        row = c.fetchone()
-        return row[0] if row else None
+        rows = c.fetchall()  # see _fetchone_dict
+        return rows[0][0] if rows else None
 
     async def run(self, fn, *args, **kwargs):
         """Write path: run a synchronous DB function against the main connection,
@@ -198,7 +208,11 @@ class DuckDBConnection:
         (via a done-callback), even if the awaiting request is cancelled early —
         otherwise a new writer could start against the same connection while the
         abandoned one is still running, corrupting/blocking future calls."""
-        await self._write_lock.acquire()
+        try:
+            await asyncio.wait_for(self._write_lock.acquire(), WRITE_LOCK_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            print(f"[db] gave up waiting {WRITE_LOCK_TIMEOUT_S:.0f}s for the write lock")
+            raise DBBusyError("database busy: another write is still running") from None
         loop = asyncio.get_running_loop()
         fut = loop.run_in_executor(None, lambda: fn(self._conn, *args, **kwargs))
         fut.add_done_callback(lambda f: self._write_lock.release())
