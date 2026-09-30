@@ -12,7 +12,7 @@ import os
 import threading
 import time
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -99,7 +99,44 @@ def _spawn(coro) -> asyncio.Task:
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
-app = FastAPI(title="CPI Log Lens", version=settings.app_version)
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Start: open (and migrate) the database, seed tenants, start the background
+    loops. Stop: cancel them and any running fetch, then checkpoint and close the
+    database so no work is left in the WAL."""
+    settings.db_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.logs_dir.mkdir(parents=True, exist_ok=True)
+    await database.init_db(settings.db_path)
+    await _load_tenants_from_json()
+    watchdog_stop = threading.Event()
+    _spawn(_heartbeat())
+    if settings.watchdog_stall_seconds > 0:
+        threading.Thread(target=_watchdog, args=(watchdog_stop,), name="loop-watchdog", daemon=True).start()
+    if settings.retention_days > 0:
+        _spawn(_retention_loop())
+    _spawn(_schedule_loop())
+    try:
+        yield
+    finally:
+        log.info("shutting down")
+        watchdog_stop.set()
+        await _stop_background_tasks()
+        await database.close_db()
+
+
+async def _stop_background_tasks() -> None:
+    job = _active_job
+    if job and job.status == "running":
+        log.info("shutdown: cancelling fetch job %s", job.id[:8])
+        job.cancel_requested = True
+        job.status = "cancelled"
+        job.status_msg = "Cancelled (shutdown)"
+    for task in list(_background_tasks):
+        task.cancel()
+    await asyncio.gather(*_background_tasks, return_exceptions=True)
+
+
+app = FastAPI(title="CPI Log Lens", version=settings.app_version, lifespan=lifespan)
 
 
 @app.exception_handler(database.DBBusyError)
@@ -174,20 +211,6 @@ async def request_log_and_no_cache_js(request, call_next):
 _loop_heartbeat = time.monotonic()
 
 
-@app.on_event("startup")
-async def startup():
-    settings.db_path.parent.mkdir(parents=True, exist_ok=True)
-    settings.logs_dir.mkdir(parents=True, exist_ok=True)
-    await database.init_db(settings.db_path)
-    await _load_tenants_from_json()
-    _spawn(_heartbeat())
-    if settings.watchdog_stall_seconds > 0:
-        threading.Thread(target=_watchdog, name="loop-watchdog", daemon=True).start()
-    if settings.retention_days > 0:
-        _spawn(_retention_loop())
-    _spawn(_schedule_loop())
-
-
 async def _heartbeat():
     global _loop_heartbeat
     while True:
@@ -195,13 +218,13 @@ async def _heartbeat():
         await asyncio.sleep(1)
 
 
-def _watchdog():
+def _watchdog(stop: threading.Event):
     """Runs in its own thread. A blocked event loop means every request hangs
     while the process looks alive, so no restart policy would kick in. After
     WATCHDOG_STALL_SECONDS without a heartbeat, dump all stacks (for the
-    post-mortem) and exit hard; Docker's restart policy brings the app back."""
-    while True:
-        time.sleep(5)
+    post-mortem) and exit hard; Docker's restart policy brings the app back.
+    Ends when `stop` is set (shutdown)."""
+    while not stop.wait(5):
         stalled = time.monotonic() - _loop_heartbeat
         if stalled > settings.watchdog_stall_seconds:
             log.critical("event loop stalled for %.0fs, dumping stacks and exiting", stalled)

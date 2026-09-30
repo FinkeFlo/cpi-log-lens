@@ -130,6 +130,10 @@ CREATE TABLE IF NOT EXISTS unparsed_lines (
 
 
 READ_POOL_SIZE = 4
+# On shutdown, a running write (an import batch) gets this long to finish
+# before it is interrupted. Interrupting is safe: rows and file offset are
+# committed together, so an interrupted batch is simply imported again.
+SHUTDOWN_WRITE_WAIT_S = 5.0
 
 # Dedicated, bounded threads for DB work instead of asyncio's shared default
 # executor: reads can never occupy more threads than there are cursors, and
@@ -184,9 +188,10 @@ class DuckDBConnection:
         """Wrap an open connection whose schema is up to date; see open()."""
         self._conn = conn
         self._write_lock = asyncio.Lock()
+        self._cursors = [conn.cursor() for _ in range(READ_POOL_SIZE)]
         self._read_pool: asyncio.Queue = asyncio.Queue()
-        for _ in range(READ_POOL_SIZE):
-            self._read_pool.put_nowait(self._conn.cursor())
+        for cur in self._cursors:
+            self._read_pool.put_nowait(cur)
 
     @classmethod
     def open(cls, path: Path) -> "DuckDBConnection":
@@ -296,6 +301,35 @@ class DuckDBConnection:
             cur.interrupt()
             raise
 
+    async def close(self, write_wait_s: float = SHUTDOWN_WRITE_WAIT_S) -> None:
+        """Shut down cleanly: let the running write finish (interrupt it after
+        write_wait_s), stop running reads, CHECKPOINT so the WAL is folded into
+        the database file, and close. The wrapper is unusable afterwards."""
+        t0 = time.perf_counter()
+        try:
+            await asyncio.wait_for(self._write_lock.acquire(), write_wait_s)
+        except TimeoutError:
+            log.warning("shutdown: interrupting the running write after %.0fs", write_wait_s)
+            self._conn.interrupt()
+            await self._write_lock.acquire()
+        if self._read_pool.qsize() < READ_POOL_SIZE:
+            for cur in self._cursors:
+                cur.interrupt()
+            for _ in range(READ_POOL_SIZE):
+                await self._read_pool.get()
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(_write_executor, self._checkpoint_and_close)
+        log.info("database checkpointed and closed in %.1fs", time.perf_counter() - t0)
+
+    def _checkpoint_and_close(self) -> None:
+        try:
+            self._conn.execute("CHECKPOINT")
+        except duckdb.Error as e:
+            log.warning("shutdown: checkpoint failed (%s); the WAL is replayed on the next start", e)
+        for cur in self._cursors:
+            cur.close()
+        self._conn.close()
+
 
 # ── Singleton connection ──────────────────────────────────────────────────────
 _db_instance: DuckDBConnection | None = None
@@ -404,6 +438,13 @@ def _create_schema(conn: duckdb.DuckDBPyConnection) -> None:
 async def init_db(path: Path):
     global _db_instance
     _db_instance = DuckDBConnection.open(path)
+
+
+async def close_db() -> None:
+    global _db_instance
+    db, _db_instance = _db_instance, None
+    if db is not None:
+        await db.close()
 
 
 async def get_db() -> DuckDBConnection:

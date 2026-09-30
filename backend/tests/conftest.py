@@ -31,20 +31,13 @@ def anyio_backend():
 
 
 async def _close_app_state():
+    # Normally done by the app's shutdown; tests without the app (db fixture) or
+    # that stopped a loop themselves clean up here.
     for task in list(main._background_tasks):
         task.cancel()
     await asyncio.gather(*main._background_tasks, return_exceptions=True)
     main._background_tasks.clear()
-    db = database._db_instance
-    if db is not None:
-        # Queries of cancelled requests finish (interrupted) in their threads;
-        # wait until every cursor is back before closing the connection.
-        for _ in range(500):
-            if db._read_pool.qsize() == database.READ_POOL_SIZE and not db._write_lock.locked():
-                break
-            await asyncio.sleep(0.01)
-        db._conn.close()
-        database._db_instance = None
+    await database.close_db()
     database.invalidate_stats_cache()
     database._stats_locks.clear()
 
