@@ -50,8 +50,6 @@ RETENTION_CHECK_HOURS  = float(os.getenv("RETENTION_CHECK_HOURS", "24"))
 MOCK_DIR  = Path(__file__).parent / "mock"
 FRONTEND  = Path(os.getenv("FRONTEND_DIR", str(Path(__file__).parent.parent / "frontend")))
 
-database.DB_PATH = DB_PATH
-
 # ── Global fetch-job state ────────────────────────────────────────────────────
 @dataclass
 class FetchJob:
@@ -212,7 +210,7 @@ async def _retention_loop():
             await asyncio.sleep(RETENTION_CHECK_HOURS * 3600)
             continue
         try:
-            conn = await database.get_db(DB_PATH)
+            conn = await database.get_db()
             result = await database.cleanup_old_logs(conn, RETENTION_DAYS)
             if result["deleted"]:
                 log.info(f"retention: deleted {result['deleted']} log entries "
@@ -233,7 +231,7 @@ async def _schedule_loop():
     while True:
         try:
             if not (_active_job and _active_job.status == "running"):
-                conn = await database.get_db(DB_PATH)
+                conn = await database.get_db()
                 try:
                     schedules = await database.get_schedules(conn)
                 finally:
@@ -248,7 +246,7 @@ async def _schedule_loop():
                         if now - last_ts < sched["interval_minutes"] * 60:
                             continue
 
-                    conn2 = await database.get_db(DB_PATH)
+                    conn2 = await database.get_db()
                     try:
                         await database.touch_schedule_last_run(conn2, sched["id"])
                     finally:
@@ -292,7 +290,7 @@ async def _load_tenants_from_json():
         log.warning(f"could not parse {config_path}: {e}")
         return
 
-    conn = await database.get_db(DB_PATH)
+    conn = await database.get_db()
     try:
         added = updated = 0
         for t in tenant_list:
@@ -381,7 +379,7 @@ async def healthz():
 @app.get("/readyz")
 async def readyz():
     """Readiness: the database answers a trivial query within 2 s."""
-    conn = await database.get_db(DB_PATH)
+    conn = await database.get_db()
     try:
         await asyncio.wait_for(conn.read(conn._fetchone_val, "SELECT 1"), 2)
     except Exception as e:
@@ -392,7 +390,7 @@ async def readyz():
 # ── Tenant endpoints ──────────────────────────────────────────────────────────
 @app.get("/api/tenants")
 async def list_tenants():
-    conn = await database.get_db(DB_PATH)
+    conn = await database.get_db()
     try:
         tenants = await database.get_tenants(conn)
         # Mask secrets in response
@@ -407,7 +405,7 @@ async def list_tenants():
 async def create_tenant(body: TenantCreate):
     if not body.client_secret:
         raise HTTPException(422, "client_secret is required")
-    conn = await database.get_db(DB_PATH)
+    conn = await database.get_db()
     try:
         await database.upsert_tenant(
             conn, body.id, body.name, body.api_url,
@@ -420,7 +418,7 @@ async def create_tenant(body: TenantCreate):
 
 @app.put("/api/tenants/{tenant_id}")
 async def update_tenant(tenant_id: str, body: TenantCreate):
-    conn = await database.get_db(DB_PATH)
+    conn = await database.get_db()
     try:
         existing = await database.get_tenant(conn, tenant_id)
         if not existing:
@@ -441,7 +439,7 @@ async def update_tenant(tenant_id: str, body: TenantCreate):
 
 @app.delete("/api/tenants/{tenant_id}")
 async def remove_tenant(tenant_id: str):
-    conn = await database.get_db(DB_PATH)
+    conn = await database.get_db()
     try:
         await database.delete_tenant(conn, tenant_id)
         return {"ok": True}
@@ -451,7 +449,7 @@ async def remove_tenant(tenant_id: str):
 
 @app.post("/api/tenants/{tenant_id}/test")
 async def test_tenant(tenant_id: str):
-    conn = await database.get_db(DB_PATH)
+    conn = await database.get_db()
     try:
         tenant = await database.get_tenant(conn, tenant_id)
         if not tenant:
@@ -478,7 +476,7 @@ DEMO_TENANT_ID = "demo"
 @app.post("/api/demo")
 async def start_demo():
     """Create the demo tenant (if needed) and import the bundled sample logs."""
-    conn = await database.get_db(DB_PATH)
+    conn = await database.get_db()
     await database.upsert_tenant(conn, DEMO_TENANT_ID, "Demo", f"{DEMO_URL}sample",
                                  f"{DEMO_URL}sample", "demo", "demo")
     return await fetch_logs(FetchRequest(tenants=[DEMO_TENANT_ID], log_types=["trace"], hours=0))
@@ -537,7 +535,7 @@ async def get_default_fetch_config():
     """Return the saved default fetch form config (tenants/log_types/hours),
     or null if none has been saved yet — the frontend falls back to
     'all tenants + all log types' in that case."""
-    conn = await database.get_db(DB_PATH)
+    conn = await database.get_db()
     try:
         raw = await database.get_setting(conn, "default_fetch_config")
         return json.loads(raw) if raw else None
@@ -549,7 +547,7 @@ async def get_default_fetch_config():
 async def set_default_fetch_config(body: DefaultFetchConfig):
     """Persist the current fetch form selection as the default shown on
     next page load, instead of always defaulting to all tenants/log types."""
-    conn = await database.get_db(DB_PATH)
+    conn = await database.get_db()
     try:
         await database.set_setting(conn, "default_fetch_config", body.model_dump_json())
         return {"ok": True}
@@ -560,7 +558,7 @@ async def set_default_fetch_config(body: DefaultFetchConfig):
 # ── Fetch schedules (recurring pulls) ─────────────────────────────────────────
 @app.get("/api/schedules")
 async def list_schedules():
-    conn = await database.get_db(DB_PATH)
+    conn = await database.get_db()
     try:
         schedules = await database.get_schedules(conn)
         for s in schedules:
@@ -573,7 +571,7 @@ async def list_schedules():
 
 @app.post("/api/schedules", status_code=201)
 async def create_schedule(body: ScheduleRequest):
-    conn = await database.get_db(DB_PATH)
+    conn = await database.get_db()
     try:
         schedule_id = str(uuid.uuid4())
         await database.create_schedule(
@@ -588,7 +586,7 @@ async def create_schedule(body: ScheduleRequest):
 
 @app.put("/api/schedules/{schedule_id}")
 async def update_schedule(schedule_id: str, body: ScheduleRequest):
-    conn = await database.get_db(DB_PATH)
+    conn = await database.get_db()
     try:
         existing = await database.get_schedule(conn, schedule_id)
         if not existing:
@@ -605,7 +603,7 @@ async def update_schedule(schedule_id: str, body: ScheduleRequest):
 
 @app.delete("/api/schedules/{schedule_id}")
 async def remove_schedule(schedule_id: str):
-    conn = await database.get_db(DB_PATH)
+    conn = await database.get_db()
     try:
         await database.delete_schedule(conn, schedule_id)
         return {"ok": True}
@@ -667,7 +665,7 @@ async def fetch_stream():
 
 async def _run_fetch(job: FetchJob, body: FetchRequest):
     """Background coroutine that does the actual downloading + importing."""
-    conn = await database.get_db(DB_PATH)
+    conn = await database.get_db()
     try:
         # Resolve tenants
         if "all" in body.tenants:
@@ -859,7 +857,7 @@ class LLMQueryRequest(BaseModel):
 @app.get("/api/query/schema")
 async def llm_query_schema():
     """Describes the query API for LLM tool-use / function-calling."""
-    conn = await database.get_db(DB_PATH)
+    conn = await database.get_db()
     try:
         tenants = await database.get_tenants(conn)
     finally:
@@ -909,7 +907,7 @@ async def llm_query(req: LLMQueryRequest):
     _check_datetime(req.date_from, "date_from")
     _check_datetime(req.date_to, "date_to")
     limit = max(1, min(req.limit, 200))
-    conn = await database.get_db(DB_PATH)
+    conn = await database.get_db()
     try:
         result = await database.query_logs(
             conn,
@@ -971,7 +969,7 @@ async def get_logs(
 ):
     _check_datetime(date_from, "date_from")
     _check_datetime(date_to, "date_to")
-    conn = await database.get_db(DB_PATH)
+    conn = await database.get_db()
     try:
         return await database.query_logs(
             conn,
@@ -985,7 +983,7 @@ async def get_logs(
 
 @app.get("/api/logs/{entry_id}")
 async def get_log_entry(entry_id: int):
-    conn = await database.get_db(DB_PATH)
+    conn = await database.get_db()
     try:
         entry = await database.get_log_entry(conn, entry_id)
         if not entry:
@@ -998,7 +996,7 @@ async def get_log_entry(entry_id: int):
 # ── Stats ─────────────────────────────────────────────────────────────────────
 @app.get("/api/stats")
 async def get_stats(tenant: Optional[str] = None):
-    conn = await database.get_db(DB_PATH)
+    conn = await database.get_db()
     try:
         return await database.get_stats(conn, tenant)
     finally:
@@ -1008,7 +1006,7 @@ async def get_stats(tenant: Optional[str] = None):
 # ── DB info ───────────────────────────────────────────────────────────────────
 @app.get("/api/db/info")
 async def db_info():
-    conn = await database.get_db(DB_PATH)
+    conn = await database.get_db()
     try:
         return await database.get_db_info(conn, DB_PATH)
     finally:
@@ -1017,7 +1015,7 @@ async def db_info():
 
 @app.post("/api/db/clear")
 async def db_clear():
-    conn = await database.get_db(DB_PATH)
+    conn = await database.get_db()
     try:
         await database.clear_db(conn)
         return {"ok": True}
@@ -1032,7 +1030,7 @@ class CleanupRequest(BaseModel):
 @app.post("/api/db/cleanup")
 async def db_cleanup(req: CleanupRequest):
     """Delete log entries older than N days, optionally filtered by tenant."""
-    conn = await database.get_db(DB_PATH)
+    conn = await database.get_db()
     try:
         result = await database.cleanup_old_logs(conn, req.older_than_days, req.tenant)
         return {"ok": True, **result}

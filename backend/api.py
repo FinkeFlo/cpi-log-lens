@@ -10,8 +10,8 @@ from urllib.parse import quote
 import httpx
 
 # Per-download-request timeouts and retry-with-backoff for the CPI LogFiles
-# API: individual file downloads have been observed taking 30-90s (server-side
-# decompression/streaming, see plan.md Phase 1), so timeouts must be generous
+# API: individual file downloads have been observed taking 30-90s (the server
+# decompresses the file before streaming it), so timeouts must be generous
 # and transient errors (timeouts, 5xx, connection resets) should be retried
 # instead of failing the whole fetch job over a single flaky request.
 DOWNLOAD_TIMEOUT = httpx.Timeout(180.0, connect=15.0)

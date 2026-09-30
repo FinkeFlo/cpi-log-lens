@@ -12,7 +12,6 @@ import pyarrow as pa
 from pathlib import Path
 from typing import Iterator, Optional
 
-DB_PATH: Path = Path("/data/cpi_logs.db")
 log = logging.getLogger("cpi.db")
 
 SCHEMA = """
@@ -373,7 +372,7 @@ def _migrate_add_raw_line_column(conn: duckdb.DuckDBPyConnection):
     log.info("migrate: Done — logs.raw_line added (NULL for pre-existing rows).")
 
 
-async def init_db(path: Path = DB_PATH):
+async def init_db(path: Path):
     global _db_instance
     conn = duckdb.connect(str(path), config=_duckdb_config())
     memory_limit, threads = conn.execute(
@@ -395,7 +394,7 @@ async def init_db(path: Path = DB_PATH):
         _db_instance._read_pool.put_nowait(conn.cursor())
 
 
-async def get_db(path: Path = DB_PATH) -> DuckDBConnection:
+async def get_db() -> DuckDBConnection:
     if _db_instance is None:
         raise RuntimeError("Database not initialized — call init_db() first")
     return _db_instance
@@ -890,14 +889,3 @@ async def cleanup_old_logs(db: DuckDBConnection, older_than_days: int, tenant: O
     result = await db.run(_run)
     invalidate_stats_cache()
     return result
-
-# NOTE: a dedupe-by-content function (matching on tenant/log_type/filename/
-# timestamp/level/logger/message) was considered and deliberately rejected —
-# see the comment on import_log_file() above: CPI logs legitimately contain
-# repeated messages with identical timestamp/level/logger/message text
-# (e.g. heartbeats, generic per-second status lines) that are NOT
-# duplicates. There is no reliable content-based uniqueness key available;
-# the only correct duplicate protection is file_imports.lines (line-offset
-# tracking per source file), which is already in place.
-
-
