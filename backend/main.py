@@ -267,10 +267,18 @@ async def _schedule_loop():
         await asyncio.sleep(SCHEDULE_CHECK_SECONDS)
 
 
+# How TENANTS_CONFIG is applied on start:
+#   create (default) — add tenants that don't exist yet; edits made in the UI stay
+#   sync             — the file is the source of truth; its values overwrite the DB
+TENANTS_SEED_MODE = os.getenv("TENANTS_SEED_MODE", "create").lower()
+
+
 async def _load_tenants_from_json():
-    """Load tenants from TENANTS_CONFIG JSON file (default: /config/tenants.json)."""
+    """Seed tenants from the optional TENANTS_CONFIG file (JSON with comments)."""
     config_path = Path(os.getenv("TENANTS_CONFIG", "/config/tenants.jsonc"))
-    if not config_path.exists():
+    if not config_path.is_file():
+        if config_path.exists():
+            log.warning("%s is not a file, ignoring it", config_path)
         return
 
     try:
@@ -283,6 +291,7 @@ async def _load_tenants_from_json():
 
     conn = await database.get_db(DB_PATH)
     try:
+        added = updated = 0
         for t in tenant_list:
             tid    = t.get("id", "").strip().lower()
             name   = t.get("name", tid.upper())
@@ -290,8 +299,16 @@ async def _load_tenants_from_json():
             oauth  = t.get("oauth_url", "")
             cid    = t.get("client_id", "")
             secret = t.get("client_secret", "")
-            if tid and api and cid:
-                await database.upsert_tenant(conn, tid, name, api, oauth, cid, secret)
+            if not (tid and api and cid):
+                continue
+            exists = await database.get_tenant(conn, tid) is not None
+            if exists and TENANTS_SEED_MODE != "sync":
+                continue
+            await database.upsert_tenant(conn, tid, name, api, oauth, cid, secret)
+            updated += exists
+            added += not exists
+        log.info("tenants from %s: %d added, %d updated (mode %s)",
+                 config_path, added, updated, TENANTS_SEED_MODE)
     finally:
         await conn.close()
 

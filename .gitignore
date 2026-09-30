@@ -1,6 +1,7 @@
 # ── Credentials & secrets ─────────────────────────────────────────────────────
 .env
 tenants.jsonc
+config/tenants.jsonc
 
 # ── Runtime data (logs + database) ────────────────────────────────────────────
 data/

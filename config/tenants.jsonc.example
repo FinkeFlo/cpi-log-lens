@@ -1,6 +1,9 @@
 {
   // CPI Log Lens — Tenant Configuration
-  // Copy this file to tenants.jsonc and fill in your credentials.
+  // Copy this file to config/tenants.jsonc and fill in your credentials.
+  // Optional: tenants can also be added in the UI (Settings). By default the
+  // file only adds tenants that do not exist yet (TENANTS_SEED_MODE=create);
+  // set TENANTS_SEED_MODE=sync to make this file the source of truth.
   // You can add as many tenants as you like.
   //
   // Where to find credentials:

@@ -19,7 +19,7 @@ MOCK=true docker compose up --build
 cd backend
 pip install -r requirements.txt
 DB_PATH=../data/cpi_logs.duckdb LOGS_DIR=../data/logs \
-  TENANTS_CONFIG=../tenants.jsonc FRONTEND_DIR=../frontend \
+  TENANTS_CONFIG=../config/tenants.jsonc FRONTEND_DIR=../frontend \
   uvicorn main:app --reload --port 8080
 ```
 
@@ -47,7 +47,7 @@ directly and reload the browser.
   and the schema (`logs`, `tenants`, `file_imports`, `fetch_runs` tables).
 - **`backend/api.py`** — thin CPI REST client (OAuth2 client-credentials token,
   list/download log files via the CPI `LogFiles` OData endpoint).
-- **Tenant credentials** live in `tenants.jsonc` (JSONC, gitignored) and are
+- **Tenant credentials** can be seeded from `config/tenants.jsonc` (JSONC, gitignored) and are
   loaded into the `tenants` table at startup by `_load_tenants_from_json()` in
   `main.py`. They can also be added/edited at runtime via `/api/tenants*`
   endpoints from the Settings page — the JSON file is only read once at startup.
@@ -77,5 +77,5 @@ directly and reload the browser.
   `CREATE INDEX IF NOT EXISTS` so they apply cleanly to existing `data/*.duckdb`
   files without a migration step (see `migrate_sqlite_to_duckdb.py` for the
   one-off SQLite→DuckDB migration path, not used in normal operation).
-- `data/` and `tenants.jsonc` are gitignored — never commit real tenant
+- `data/` and `config/tenants.jsonc` are gitignored — never commit real tenant
   credentials or database files.

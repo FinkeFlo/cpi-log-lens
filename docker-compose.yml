@@ -7,10 +7,15 @@ services:
       - "${BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8080}:8080"
     volumes:
       - ./data:/data                          # DuckDB database + raw log files
-      - ./tenants.jsonc:/config/tenants.jsonc:ro  # tenant credentials (read-only)
+      # Optional: config/tenants.jsonc seeds tenants on start (see
+      # config/tenants.jsonc.example). Tenants can also be added in the UI.
+      - ./config:/config:ro
     env_file:
-      - .env
+      - path: .env        # optional, see .env.example
+        required: false
     environment:
+      # Honour MOCK=true from the shell as well as from .env.
+      - MOCK=${MOCK:-false}
       - DB_PATH=/data/cpi_logs.duckdb
       - LOGS_DIR=/data/logs
       - TENANTS_CONFIG=/config/tenants.jsonc

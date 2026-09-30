@@ -9,7 +9,7 @@ A self-hosted web application for downloading, storing, and analyzing SAP Cloud 
 - 📥 **Fetch** — download HTTP and trace logs from any number of CPI tenants via OAuth2
 - 🔍 **Browse** — search and filter log entries by level, IFlow, message content and date range
 - 📊 **Stats** — error distribution per IFlow, level breakdown, hourly timeline
-- ⚙️ **Settings** — manage tenant credentials via UI or `tenants.jsonc`
+- ⚙️ **Settings** — manage tenant credentials via UI or `config/tenants.jsonc`
 - 🐳 **Docker** — runs anywhere with `docker compose up`
 - 🧪 **Mock mode** — works without a real CPI connection for local development
 
@@ -20,12 +20,12 @@ A self-hosted web application for downloading, storing, and analyzing SAP Cloud 
 git clone https://github.com/FinkeFlo/cpi-log-lens
 cd cpi-log-lens
 
-# 2. Configure tenants
-cp tenants.jsonc.example tenants.jsonc
-# Edit tenants.jsonc — add your CPI tenant credentials
+# 2. Start (no configuration needed)
+docker compose up -d
 
-# 3. Start
-docker compose up
+# 3. Add a tenant in Settings, or seed tenants from a file:
+#    cp config/tenants.jsonc.example config/tenants.jsonc   (then restart)
+#    Try it without a CPI tenant: MOCK=true docker compose up -d
 
 # 4. Open
 open http://localhost:8080
@@ -33,7 +33,7 @@ open http://localhost:8080
 
 ## Tenant Configuration
 
-Credentials are stored in **`tenants.jsonc`** (JSON with comments, gitignored by default).
+Add tenants in the **Settings** page, or seed them from **`config/tenants.jsonc`** (JSON with comments, gitignored). By default the file only adds tenants that don't exist yet; set `TENANTS_SEED_MODE=sync` to make the file the source of truth.
 
 ```jsonc
 {
@@ -54,7 +54,6 @@ Credentials are stored in **`tenants.jsonc`** (JSON with comments, gitignored by
 }
 ```
 
-You can also add and manage tenants directly in the **Settings** page of the web UI.
 
 ## Mock Mode
 
@@ -133,9 +132,9 @@ All fields are optional. Response:
 |---|---|
 | `data/cpi_logs.duckdb` | DuckDB database (all imported log entries) |
 | `data/logs/<tenant>/` | Raw downloaded log files (gzip) |
-| `tenants.jsonc` | Tenant credentials — **do not commit** |
+| `config/tenants.jsonc` | Optional tenant seed file — **do not commit** |
 
-Both `data/` and `tenants.jsonc` are excluded from git.
+Both `data/` and `config/tenants.jsonc` are excluded from git.
 
 ## Stack
 
