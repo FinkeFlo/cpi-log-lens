@@ -3,7 +3,7 @@
 from fastapi import APIRouter
 
 from app.api.deps import DbDep
-from app.api.schemas import LLMQueryRequest, check_datetime
+from app.api.schemas import LLMQueryRequest
 from app.repositories import logs as logs_repo
 from app.repositories import tenants as tenants_repo
 from app.services.query import MAX_LIMIT, summarize
@@ -27,10 +27,18 @@ async def llm_query_schema(db: DbDep):
                 "body": {
                     "tenant": "string | null — tenant id to filter; null means all tenants",
                     "level": "string | null — log level: ERROR, WARN, INFO, DEBUG",
-                    "iflow": "string | null — partial iflow name (case-insensitive LIKE match)",
-                    "grep": "string | null — full-text search in message and logger fields",
-                    "date_from": "string | null — start datetime 'YYYY-MM-DD HH:MM:SS'",
-                    "date_to": "string | null — end datetime 'YYYY-MM-DD HH:MM:SS'",
+                    "iflow": "string | null — partial IFlow name (case-insensitive LIKE match)",
+                    "grep": (
+                        "string | null — case-insensitive text search in message and logger; "
+                        "when no range is supplied, searches the last 24 hours"
+                    ),
+                    "date_from": (
+                        "string | null — inclusive ISO date/datetime lower bound; timezone-less values "
+                        "are interpreted as UTC and offset-aware values are normalized to UTC"
+                    ),
+                    "date_to": (
+                        "string | null — inclusive ISO date/datetime upper bound; a bare date includes the full day"
+                    ),
                     "limit": "integer 1–200 — max entries to return (default 50)",
                 },
                 "response": {
@@ -57,17 +65,16 @@ async def llm_query_schema(db: DbDep):
 @router.post("")
 async def llm_query(req: LLMQueryRequest, db: DbDep):
     """LLM-friendly log query endpoint. Returns matching entries plus a natural-language summary."""
-    check_datetime(req.date_from, "date_from")
-    check_datetime(req.date_to, "date_to")
     limit = max(1, min(req.limit, MAX_LIMIT))
+    date_from, date_to = logs_repo.effective_date_bounds(grep=req.grep, date_from=req.date_from, date_to=req.date_to)
     result = await logs_repo.query_logs(
         db,
         tenant=req.tenant,
         level=req.level,
         iflow=req.iflow,
         grep=req.grep,
-        date_from=req.date_from,
-        date_to=req.date_to,
+        date_from=date_from,
+        date_to=date_to,
         page=1,
         page_size=limit,
     )
@@ -78,8 +85,8 @@ async def llm_query(req: LLMQueryRequest, db: DbDep):
         level=req.level,
         iflow=req.iflow,
         grep=req.grep,
-        date_from=req.date_from,
-        date_to=req.date_to,
+        date_from=date_from,
+        date_to=date_to,
         total=total,
         returned=len(items),
         limit=limit,

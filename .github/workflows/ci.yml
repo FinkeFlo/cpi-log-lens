@@ -53,6 +53,9 @@ jobs:
           for f in $(find ../frontend/js -name '*.js'); do
             node --input-type=module --check < "$f" || { echo "::error::$f does not parse"; exit 1; }
           done
+      - name: Browse URL state
+        working-directory: .
+        run: node scripts/test-browse-url.mjs
       - name: Dependency vulnerabilities
         run: |
           uv export --locked --no-dev --no-emit-project --format requirements-txt -o /tmp/requirements.txt
