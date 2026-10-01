@@ -36,6 +36,7 @@ export default {
   _source: null, // active EventSource
   _reconnectTimer: null,
   _reconnectAttempt: 0,
+  _resyncing: false,
 
   /** Start a fetch; body: { tenants, log_types, hours }. */
   async start(body) {
@@ -164,14 +165,29 @@ export default {
     if (this.problems.length > MAX_PROBLEMS) this.problems.splice(0, this.problems.length - MAX_PROBLEMS);
   },
 
+  /** Part updates that don't fit the known parts mean an announcement was missed. */
+  async resyncParts() {
+    if (this._resyncing) return;
+    this._resyncing = true;
+    try {
+      const data = await api.fetch.status();
+      if (data.job_id === this.jobId) this.parts = data.parts || [];
+    } catch {
+      // The stream itself reports a lost connection.
+    } finally {
+      this._resyncing = false;
+    }
+  },
+
   handle(ev) {
-    if (ev.part && ev.part.index < this.parts.length) this.parts[ev.part.index] = ev.part;
+    if (ev.part) {
+      if (ev.part.index < this.parts.length) this.parts[ev.part.index] = ev.part;
+      else this.resyncParts();
+    }
+    if (ev.parts && ev.type !== 'snapshot') this.parts = ev.parts; // the announcement and the final events
     switch (ev.type) {
       case 'snapshot':
         this.applySnapshot(ev);
-        break;
-      case 'parts':
-        this.parts = ev.parts;
         break;
       case 'status':
         this.setStatus(ev.msg);
@@ -259,9 +275,14 @@ export default {
     return this.imported ? 'success' : 'up-to-date';
   },
 
+  /** A part's status for display: a part of a job that ended is never waiting or running. */
+  partStatus(p) {
+    return this.status !== 'running' && (p.status === 'pending' || p.status === 'running') ? 'stopped' : p.status;
+  },
+
   /** One line about a part, e.g. "12 of 40 files" or "Failed: …". */
   partText(p) {
-    switch (p.status) {
+    switch (this.partStatus(p)) {
       case 'pending':
         return 'Waiting';
       case 'running':
@@ -274,13 +295,16 @@ export default {
         return p.error;
       case 'cancelled':
         return p.files_total ? `Cancelled after ${count(p.files_done)} of ${files(p.files_total)}` : 'Cancelled';
+      case 'stopped':
+        return 'Not finished';
       default:
         return p.status;
     }
   },
 
   partIcon(p) {
-    return { pending: 'circle-dashed', done: 'circle-check', failed: 'circle-x', cancelled: 'square' }[p.status] || '';
+    const icons = { pending: 'circle-dashed', done: 'circle-check', failed: 'circle-x', cancelled: 'square', stopped: 'square' };
+    return icons[this.partStatus(p)] || '';
   },
 
   problemSource(problem) {

@@ -560,17 +560,17 @@
         <ul x-show="job.parts.length" class="list bg-base-200 rounded-box" aria-label="Progress per tenant and log type">
           <template x-for="part in job.parts" :key="part.index">
             <li class="list-row items-start gap-3 py-2 px-3">
-              <span class="pt-0.5" :class="{ 'text-success': part.status === 'done', 'text-error': part.status === 'failed', 'text-muted': part.status === 'pending' || part.status === 'cancelled' }">
-                <span x-show="part.status === 'running'" class="loading loading-spinner loading-xs text-primary" aria-hidden="true"></span>
-                <svg x-show="part.status !== 'running'" class="w-4 h-4" aria-hidden="true" focusable="false"><use :href="`/icons.svg#${job.partIcon(part)}`"></use></svg>
+              <span class="pt-0.5" :class="{ 'text-success': part.status === 'done', 'text-error': part.status === 'failed', 'text-muted': ['pending', 'cancelled', 'stopped'].includes(job.partStatus(part)) }">
+                <span x-show="job.partStatus(part) === 'running'" class="loading loading-spinner loading-xs text-primary" aria-hidden="true"></span>
+                <svg x-show="job.partStatus(part) !== 'running'" class="w-4 h-4" aria-hidden="true" focusable="false"><use :href="`/icons.svg#${job.partIcon(part)}`"></use></svg>
               </span>
               <div class="min-w-0">
                 <p class="text-sm font-medium">
                   <span x-text="part.tenant_name"></span> · <span x-text="part.log_type"></span>
-                  <span class="sr-only" x-text="`: ${part.status}`"></span>
+                  <span class="sr-only" x-text="`: ${job.partStatus(part)}`"></span>
                 </p>
                 <p class="text-xs break-words" :class="part.status === 'failed' ? 'text-error' : 'text-muted'" x-text="job.partText(part)"></p>
-                <progress x-show="part.status === 'running' && part.files_total > 0" class="progress progress-primary w-full h-1 mt-1"
+                <progress x-show="job.partStatus(part) === 'running' && part.files_total > 0" class="progress progress-primary w-full h-1 mt-1"
                           :aria-label="`${part.tenant_name} ${part.log_type} progress`"
                           :value="part.files_done" :max="part.files_total || 1"></progress>
               </div>
