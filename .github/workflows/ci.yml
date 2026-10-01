@@ -40,8 +40,12 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-      - name: Frontend script parses
-        run: node --check ../frontend/app.js
+      - name: Frontend modules parse
+        # node --check skips files with import statements unless told they are modules
+        run: |
+          for f in $(find ../frontend/js -name '*.js'); do
+            node --input-type=module --check < "$f" || { echo "::error::$f does not parse"; exit 1; }
+          done
       - name: Dependency vulnerabilities
         run: |
           uv export --locked --no-dev --no-emit-project --format requirements-txt -o /tmp/requirements.txt

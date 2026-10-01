@@ -48,7 +48,9 @@ tenant is needed. Use synthetic log lines only (`log_line()` / `numbered_lines()
 with `@pytest.mark.xfail(reason="<finding or issue>: …")`; xfail is strict, so remove the marker in the
 change that fixes it.
 
-The frontend has no build step. Its libraries are vendored in `frontend/vendor/`. After using new
+The frontend has no build step: `frontend/js/` holds native ES modules (`api.js` for all API calls,
+Alpine stores in `stores/`, one component per page in `pages/`, see
+[ADR 7](docs/adr/0007-frontend-es-modules.md)). Its libraries are vendored in `frontend/vendor/`. After using new
 Tailwind classes, or to bump a library version, run `scripts/vendor-frontend.sh` (downloads are
 checksum-verified; no Node.js needed).
 
