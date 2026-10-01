@@ -48,6 +48,8 @@ export default () => ({
   copyStatus: '', // announced to screen readers
   _detailRequest: 0,
   _copyTimer: null,
+  _hashBeforeEntry: null, // the URL before showEntry() added the entry to the history
+
   _requestId: 0,
   _filterRevision: 0,
   _iflowCache: new Map(),
@@ -96,9 +98,10 @@ export default () => ({
     this.$store.toast.notify(this.urlError, 'error');
   },
 
+  // Returns whether a new history entry was added.
   writeUrl(page = this.currentPage, entry = this.detailOpen ? this.detail?.id ?? null : null, replace = false) {
-    if (this.$store.route.page !== 'browse') return;
-    this.$store.route.writeHash(browseHash({ filters: this.q, page, entry }), replace);
+    if (this.$store.route.page !== 'browse') return false;
+    return this.$store.route.writeHash(browseHash({ filters: this.q, page, entry }), replace) !== false && !replace;
   },
 
   ensureSearchWindow() {
@@ -267,6 +270,7 @@ export default () => ({
   // The URL changed (navigation, back/forward): show its filters, page and entry. When
   // only the entry differs, the list is not loaded again.
   onPageShown(page) {
+    this._hashBeforeEntry = null;
     if (page !== 'browse') {
       this.detailOpen = false;
       return;
@@ -299,8 +303,9 @@ export default () => ({
 
   // A row was activated: open the drawer (a new history entry, so Back closes it).
   async showEntry(row) {
+    const before = window.location.hash;
     this.detailOpen = true;
-    this.writeUrl(this.currentPage, row.id);
+    if (this.writeUrl(this.currentPage, row.id)) this._hashBeforeEntry = before;
     await this.openEntry(row);
   },
 
@@ -329,11 +334,20 @@ export default () => ({
     }
   },
 
+  // Close the drawer. If it added the history entry and the list is still the one it was
+  // opened from, go back, so Back afterwards doesn't reopen it; otherwise drop the entry
+  // from the URL in place.
   closeDetail() {
     if (!this.detailOpen) return;
     this.detailOpen = false;
     this._detailRequest++;
-    this.writeUrl(this.currentPage, null);
+    const before = this._hashBeforeEntry;
+    this._hashBeforeEntry = null;
+    if (before !== null && before === browseHash({ filters: this.q, page: this.currentPage })) {
+      this.$store.route.back();
+    } else {
+      this.writeUrl(this.currentPage, null, true);
+    }
   },
 
   // Position of the open entry in the loaded list (-1: not on this page).

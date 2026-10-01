@@ -86,13 +86,24 @@ const pageSource = (await readFile(new URL('../frontend/js/pages/browse.js', imp
 const { default: browsePage } = await import(moduleUrl(pageSource));
 function newPage(hash) {
   location.hash = hash;
+  const stack = [hash];
   const page = browsePage();
   page.$store = {
     route: {
       page: 'browse',
       writeHash(value, replace = false) {
+        if (location.hash === value) return false; // like stores/route.js
         historyWrites.push({ value, replace });
+        if (replace) stack[stack.length - 1] = value;
+        else stack.push(value);
         location.hash = value;
+      },
+      // history.back() of this page's own history, then the page-shown event
+      back() {
+        historyWrites.push({ back: true });
+        stack.pop();
+        location.hash = stack.at(-1);
+        page.onPageShown('browse');
       },
     },
     toast: { notify: message => notifications.push(message) },
@@ -260,6 +271,28 @@ for (const refreshFirst of [false, true]) {
   assert.equal(racing.logs.page, 2);
 }
 globalThis.__browseSearch = query => ({ total: 9, page: query.page, page_size: 3, pages: 3, items: rows(query.page) });
+
+// Closing the drawer undoes its own history entry, so Back afterwards does not reopen it.
+const closing = newPage('#browse?page=2');
+closing.init();
+await settle();
+const before = location.hash;
+await closing.showEntry(closing.logs.items[0]);
+assert.ok(location.hash.includes('entry='));
+const writes = historyWrites.length;
+closing.closeDetail();
+await settle();
+assert.deepEqual(historyWrites.slice(writes), [{ back: true }], 'closing goes back instead of adding an entry');
+assert.equal(location.hash, before);
+assert.equal(closing.detailOpen, false);
+// After Next moved the list to another page, going back would change the list: replace instead.
+await closing.showEntry(closing.logs.items[2]);
+await closing.stepEntry(1);
+assert.equal(closing.currentPage, 3);
+const writesAfterStep = historyWrites.length;
+closing.closeDetail();
+assert.deepEqual(historyWrites.slice(writesAfterStep), [{ value: '#browse?page=3', replace: true }]);
+assert.equal(closing.detailOpen, false);
 
 globalThis.__browseGet = () => { throw { status: 404, kind: 'failed', message: 'Entry not found' }; };
 await drawer.openEntry(42);

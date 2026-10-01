@@ -57,6 +57,10 @@ export default {
     return true;
   },
 
+  back() {
+    history.back();
+  },
+
   navigate(page) {
     this.writeHash('#' + page);
     this.show(page);
