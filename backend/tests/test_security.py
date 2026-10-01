@@ -63,9 +63,12 @@ async def test_configured_cors_origin_may_write(client, monkeypatch, settings):
     assert res.status_code == 201
 
 
-async def test_scripts_are_served_with_no_cache(client):
-    res = await client.get("/app.js")
+@pytest.mark.parametrize("path", ["/js/main.js", "/js/pages/browse.js", "/vendor/alpine.esm.min.js"])
+async def test_scripts_are_served_as_uncached_modules(client, path):
+    res = await client.get(path)
     assert res.status_code == 200
+    # Browsers refuse to run a module script without a JavaScript content type.
+    assert res.headers["content-type"].split(";")[0] in ("text/javascript", "application/javascript")
     assert res.headers["cache-control"] == "no-cache, no-store, must-revalidate"
 
 

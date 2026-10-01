@@ -55,7 +55,9 @@ database; `repositories` know nothing about FastAPI or HTTP.
   used for the demo tenant, MOCK mode and tests), `client_for(tenant)` picks real or fake.
 - `app/tasks.py` (background tasks kept referenced), `app/watchdog.py` (heartbeat and the thread
   that exits a hung process), `app/errors.py`, `app/logging_config.py` (`LOG_FORMAT=text|json`).
-- `frontend/index.html` + `frontend/app.js` — single Alpine component `App()`, hash routing;
+- `frontend/index.html` + `frontend/js/` — native ES modules, no build step: `main.js` registers the
+  Alpine stores (`stores/`: route, tenants, fetch job, toast) and one component per page (`pages/`);
+  `api.js` is the only place that calls the API; pages talk through window events (`events.js`);
   libraries vendored in `frontend/vendor/` (`scripts/vendor-frontend.sh`).
 - `Dockerfile` (repo root) — multi-stage, non-root, `HEALTHCHECK`, no `--reload`.
 

@@ -8,16 +8,16 @@
   <!-- Pinned local copies (scripts/vendor-frontend.sh): the UI works offline. -->
   <link href="/vendor/daisyui.full.min.css" rel="stylesheet" />
   <link href="/vendor/tailwind.min.css" rel="stylesheet" />
-  <script src="/vendor/alpine.min.js" defer></script>
   <script src="/vendor/chart.umd.min.js"></script>
-  <script src="/app.js"></script>
+  <!-- Native ES modules, no build step: js/main.js starts Alpine. -->
+  <script type="module" src="/js/main.js"></script>
   <style>
     [x-cloak]          { display: none !important; }
     .log-row           { cursor: pointer; }
     .font-mono-xs      { font-family: ui-monospace, monospace; font-size: 0.72rem; }
   </style>
 </head>
-<body class="bg-base-200 min-h-screen" x-data="App()" x-cloak @keydown.escape.window="selected=null">
+<body class="bg-base-200 min-h-screen" x-data x-cloak>
 
 <!-- ── Navbar ── -->
 <div class="navbar bg-base-100 shadow-md sticky top-0 z-50 px-4 gap-2">
@@ -29,22 +29,22 @@
   </div>
   <div class="flex-none">
     <ul class="menu menu-horizontal px-1 gap-1 text-sm">
-      <li><a :class="page==='browse'   && 'active'" @click="navigate('browse')">Browse</a></li>
+      <li><a :class="$store.route.page==='browse'   && 'active'" @click="$store.route.navigate('browse')">Browse</a></li>
       <li>
-        <a :class="page==='fetch' && 'active'" @click="navigate('fetch')" class="relative">
+        <a :class="$store.route.page==='fetch' && 'active'" @click="$store.route.navigate('fetch')" class="relative">
           📥 Fetch
-          <span x-show="fetch.status === 'running'"
+          <span x-show="$store.fetchJob.status === 'running'"
                 class="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-primary animate-pulse"></span>
         </a>
       </li>
-      <li><a :class="page==='stats'    && 'active'" @click="navigate('stats')">📊 Stats</a></li>
-      <li><a :class="page==='settings' && 'active'" @click="navigate('settings')">⚙ Settings</a></li>
+      <li><a :class="$store.route.page==='stats'    && 'active'" @click="$store.route.navigate('stats')">📊 Stats</a></li>
+      <li><a :class="$store.route.page==='settings' && 'active'" @click="$store.route.navigate('settings')">⚙ Settings</a></li>
     </ul>
   </div>
 </div>
 
 <!-- ── Global download progress banner ── -->
-<div x-show="fetch.status === 'running'"
+<div x-show="$store.fetchJob.status === 'running'"
      x-transition:enter="transition ease-out duration-200"
      x-transition:enter-start="opacity-0 -translate-y-2"
      x-transition:enter-end="opacity-100 translate-y-0"
@@ -53,27 +53,31 @@
     <span class="loading loading-spinner loading-xs text-primary flex-shrink-0"></span>
     <div class="flex-1 min-w-0">
       <div class="flex items-center justify-between gap-2 mb-1">
-        <span class="text-xs text-base-content/70 truncate" x-text="fetch.statusMsg || 'Fetching logs…'"></span>
-        <span class="text-xs text-base-content/50 flex-shrink-0" x-show="fetch.total > 0"
-              x-text="`${fetch.done} / ${fetch.total}`"></span>
+        <span class="text-xs text-base-content/70 truncate" x-text="$store.fetchJob.statusMsg || 'Fetching logs…'"></span>
+        <span class="text-xs text-base-content/50 flex-shrink-0" x-show="$store.fetchJob.total > 0"
+              x-text="`${$store.fetchJob.done} / ${$store.fetchJob.total}`"></span>
       </div>
       <progress class="progress progress-primary w-full h-1.5"
-                :value="fetch.done" :max="fetch.total || 1"></progress>
+                :value="$store.fetchJob.done" :max="$store.fetchJob.total || 1"></progress>
     </div>
-    <span x-show="fetch.imported > 0"
+    <span x-show="$store.fetchJob.imported > 0"
           class="badge badge-primary badge-sm flex-shrink-0"
-          x-text="`+${fetch.imported.toLocaleString('en-US')}`"></span>
-    <button class="btn btn-ghost btn-xs text-error flex-shrink-0" @click="cancelFetch()"
+          x-text="`+${$store.fetchJob.imported.toLocaleString('en-US')}`"></span>
+    <button class="btn btn-ghost btn-xs text-error flex-shrink-0" @click="$store.fetchJob.cancel()"
             title="Cancel fetch">✕ Cancel</button>
-    <button class="btn btn-ghost btn-xs flex-shrink-0" @click="page='fetch'">View progress →</button>
+    <button class="btn btn-ghost btn-xs flex-shrink-0" @click="$store.route.show('fetch')">View progress →</button>
   </div>
 </div>
 
 <!-- ═══════════════════════════════ BROWSE ═══════════════════════════════════ -->
-<div x-show="page==='browse'" class="p-4 w-full">
+<div x-data="browsePage" x-show="$store.route.page==='browse'" class="p-4 w-full"
+     @keydown.escape.window="selected=null"
+     @logs-changed.window="onLogsChanged($event.detail)"
+     @browse-iflow.window="showIflow($event.detail)"
+     @page-shown.window="onPageShown($event.detail)">
 
   <!-- First run: no tenants yet -->
-  <div x-show="tenantsLoaded && tenants.length===0" class="card bg-base-100 shadow mb-4">
+  <div x-show="$store.tenants.loaded && tenants.length===0" class="card bg-base-100 shadow mb-4">
     <div class="card-body">
       <h2 class="card-title">Welcome to CPI Log Lens</h2>
       <p class="text-sm text-base-content/70">
@@ -81,7 +85,7 @@
         or try the app first with bundled demo data.
       </p>
       <div class="card-actions mt-2">
-        <button class="btn btn-primary btn-sm" @click="navigate('settings'); openTenantModal()">Connect a CPI tenant</button>
+        <button class="btn btn-primary btn-sm" @click="connectTenant()">Connect a CPI tenant</button>
         <button class="btn btn-ghost btn-sm" :disabled="demoStarting" @click="startDemo()">
           <span x-show="demoStarting" class="loading loading-spinner loading-xs"></span>
           Try demo data
@@ -222,7 +226,8 @@
 </div>
 
 <!-- ═══════════════════════════════ FETCH ════════════════════════════════════ -->
-<div x-show="page==='fetch'" class="container mx-auto p-4 max-w-4xl">
+<div x-data="fetchPage" @schedules-changed.window="loadSchedules()">
+<div x-show="$store.route.page==='fetch'" class="container mx-auto p-4 max-w-4xl">
   <div class="card bg-base-100 shadow">
     <div class="card-body">
       <h2 class="card-title mb-4">📥 Fetch logs</h2>
@@ -234,8 +239,8 @@
             <template x-for="t in tenants" :key="t.id">
               <label class="flex items-center gap-2 cursor-pointer">
                 <input type="checkbox" class="checkbox checkbox-sm checkbox-primary"
-                  :value="t.id" :checked="fetch.tenants.includes(t.id)"
-                  @change="fetch.tenants.includes(t.id) ? fetch.tenants = fetch.tenants.filter(x => x !== t.id) : fetch.tenants.push(t.id)" />
+                  :value="t.id" :checked="form.tenants.includes(t.id)"
+                  @change="form.tenants.includes(t.id) ? form.tenants = form.tenants.filter(x => x !== t.id) : form.tenants.push(t.id)" />
                 <span class="text-sm" x-text="t.name"></span>
               </label>
             </template>
@@ -247,8 +252,8 @@
             <template x-for="[val,label] in [['trace','trace'],['http','http']]" :key="val">
               <label class="flex items-center gap-2 cursor-pointer">
                 <input type="checkbox" class="checkbox checkbox-sm checkbox-primary"
-                  :checked="fetch.log_types.includes(val)"
-                  @change="fetch.log_types.includes(val) ? fetch.log_types = fetch.log_types.filter(x => x !== val) : fetch.log_types.push(val)" />
+                  :checked="form.log_types.includes(val)"
+                  @change="form.log_types.includes(val) ? form.log_types = form.log_types.filter(x => x !== val) : form.log_types.push(val)" />
                 <span class="text-sm" x-text="label"></span>
               </label>
             </template>
@@ -259,7 +264,7 @@
           <div class="flex flex-col gap-2">
             <template x-for="[h,label] in [[1,'Last hour'],[6,'Last 6 hours'],[24,'Last 24 hours'],[72,'Last 3 days'],[168,'Last 7 days'],[0,'All available']]" :key="h">
               <label class="flex items-center gap-2 cursor-pointer">
-                <input type="radio" class="radio radio-sm radio-primary" :value="h" x-model="fetch.hours" />
+                <input type="radio" class="radio radio-sm radio-primary" :value="h" x-model="form.hours" />
                 <span class="text-sm" x-text="label"></span>
               </label>
             </template>
@@ -268,56 +273,56 @@
       </div>
 
       <!-- Progress -->
-      <div x-show="fetch.status !== 'idle'" class="mb-4 space-y-2">
+      <div x-show="job.status !== 'idle'" class="mb-4 space-y-2">
         <div class="flex justify-between text-sm">
-          <span x-text="fetch.statusMsg"></span>
-          <span x-show="fetch.total > 0" x-text="`${fetch.done} / ${fetch.total} files`"></span>
+          <span x-text="job.statusMsg"></span>
+          <span x-show="job.total > 0" x-text="`${job.done} / ${job.total} files`"></span>
         </div>
         <progress class="progress progress-primary w-full"
-                  :value="fetch.done" :max="fetch.total || 1"></progress>
-        <p x-show="fetch.currentFile" class="text-xs text-base-content/50 font-mono">
-          <span x-show="fetch.currentTenant" class="badge badge-ghost badge-xs mr-1" x-text="fetch.currentTenant"></span>
-          <span x-text="fetch.currentFile"></span>
+                  :value="job.done" :max="job.total || 1"></progress>
+        <p x-show="job.currentFile" class="text-xs text-base-content/50 font-mono">
+          <span x-show="job.currentTenant" class="badge badge-ghost badge-xs mr-1" x-text="job.currentTenant"></span>
+          <span x-text="job.currentFile"></span>
         </p>
 
         <!-- Live import counter while running -->
-        <div x-show="fetch.status === 'running'" class="flex items-center gap-2 text-sm text-base-content/60">
+        <div x-show="job.status === 'running'" class="flex items-center gap-2 text-sm text-base-content/60">
           <span class="loading loading-dots loading-xs"></span>
           <span>Runs in the background. You can leave this page.</span>
-          <span x-show="fetch.imported > 0" class="ml-auto badge badge-primary"
-                x-text="`+${fetch.imported.toLocaleString('en-US')} entries`"></span>
+          <span x-show="job.imported > 0" class="ml-auto badge badge-primary"
+                x-text="`+${job.imported.toLocaleString('en-US')} entries`"></span>
         </div>
 
-        <div x-show="fetch.status==='done'" class="alert alert-success">
-          <span>✓ Imported <strong x-text="fetch.imported.toLocaleString('en-US')"></strong> new entries</span>
-          <button class="btn btn-sm btn-ghost ml-auto" @click="page='browse'; search()">Browse →</button>
+        <div x-show="job.status==='done'" class="alert alert-success">
+          <span>✓ Imported <strong x-text="job.imported.toLocaleString('en-US')"></strong> new entries</span>
+          <button class="btn btn-sm btn-ghost ml-auto" @click="showLogs()">Browse →</button>
         </div>
-        <div x-show="fetch.status==='cancelled'" class="alert alert-warning">
-          <span>⏹ Cancelled. <strong x-text="fetch.imported.toLocaleString('en-US')"></strong> entries were imported before cancelling.</span>
-          <button class="btn btn-sm btn-ghost ml-auto" @click="page='browse'; search()">Browse →</button>
+        <div x-show="job.status==='cancelled'" class="alert alert-warning">
+          <span>⏹ Cancelled. <strong x-text="job.imported.toLocaleString('en-US')"></strong> entries were imported before cancelling.</span>
+          <button class="btn btn-sm btn-ghost ml-auto" @click="showLogs()">Browse →</button>
         </div>
-        <div x-show="fetch.status==='error'" class="alert alert-error">
-          <span x-text="fetch.errorMsg"></span>
+        <div x-show="job.status==='error'" class="alert alert-error">
+          <span x-text="job.errorMsg"></span>
         </div>
       </div>
 
       <div class="flex gap-2 items-center">
-        <button class="btn btn-primary" :disabled="fetch.status==='running' || fetch.log_types.length===0 || fetch.tenants.length===0"
+        <button class="btn btn-primary" :disabled="job.status==='running' || form.log_types.length===0 || form.tenants.length===0"
                 @click="startFetch()">
-          <span x-show="fetch.status!=='running'">▶ Start fetch</span>
-          <span x-show="fetch.status==='running'" class="flex items-center gap-2">
+          <span x-show="job.status!=='running'">▶ Start fetch</span>
+          <span x-show="job.status==='running'" class="flex items-center gap-2">
             <span class="loading loading-spinner loading-sm"></span> Fetching…
           </span>
         </button>
-        <button x-show="fetch.status === 'running'"
+        <button x-show="job.status === 'running'"
                 class="btn btn-error btn-outline"
-                @click="cancelFetch()">✕ Cancel</button>
-        <button x-show="fetch.status === 'done' || fetch.status === 'error' || fetch.status === 'cancelled'"
+                @click="job.cancel()">✕ Cancel</button>
+        <button x-show="job.status === 'done' || job.status === 'error' || job.status === 'cancelled'"
                 class="btn btn-ghost btn-sm"
-                @click="fetch.status = 'idle'">Reset</button>
+                @click="job.status = 'idle'">Reset</button>
         <button class="btn btn-ghost btn-sm"
-                :disabled="fetch.log_types.length===0 || fetch.tenants.length===0"
-                @click="saveDefaultFetchConfig()" title="Use this selection as the default next time">
+                :disabled="form.log_types.length===0 || form.tenants.length===0"
+                @click="saveDefaultConfig()" title="Use this selection as the default next time">
           💾 Save as default
         </button>
         <div x-show="tenants.length===0" class="alert alert-warning py-1 px-3 text-sm">
@@ -447,9 +452,11 @@
   </div>
   <form method="dialog" class="modal-backdrop" @click="confirmDeleteScheduleId=null"><button>close</button></form>
 </dialog>
+</div>
 
 <!-- ═══════════════════════════════ STATS ════════════════════════════════════ -->
-<div x-show="page==='stats'" class="container mx-auto p-4 max-w-screen-xl">
+<div x-data="statsPage" x-show="$store.route.page==='stats'" class="container mx-auto p-4 max-w-screen-xl"
+     @page-shown.window="onPageShown($event.detail)">
 
   <div class="flex gap-2 mb-4 items-center">
     <select class="select select-bordered select-sm w-28" x-model="statsFilter" @change="loadStats()">
@@ -524,7 +531,7 @@
           <tbody>
             <template x-for="row in iflowStats" :key="row.iflow">
               <tr class="cursor-pointer hover"
-                  @click="q.iflow=row.iflow; page='browse'; search()">
+                  @click="showIflow(row.iflow)">
                 <td class="font-mono text-xs" x-text="shortIflow(row.iflow)"></td>
                 <td class="text-right font-mono text-xs text-error"   x-text="(row.error||0).toLocaleString('en-US')"></td>
                 <td class="text-right font-mono text-xs text-warning" x-text="(row.warn||0).toLocaleString('en-US')"></td>
@@ -540,7 +547,8 @@
 </div>
 
 <!-- ═══════════════════════════════ SETTINGS ═════════════════════════════════ -->
-<div x-show="page==='settings'" class="container mx-auto p-4 max-w-2xl">
+<div x-data="settingsPage" @open-tenant-modal.window="openTenantModal()" @page-shown.window="onPageShown($event.detail)">
+<div x-show="$store.route.page==='settings'" class="container mx-auto p-4 max-w-2xl">
 
   <!-- Tenants -->
   <div class="card bg-base-100 shadow mb-4">
@@ -705,11 +713,12 @@
   </div>
   <form method="dialog" class="modal-backdrop" @click="!cleanup.busy && (confirmCleanupOpen=false)"><button>close</button></form>
 </dialog>
+</div>
 
 <!-- ── Toast ── -->
-<div class="toast toast-end" x-show="toast.show" x-transition>
-  <div :class="`alert ${toast.type==='error'?'alert-error':toast.type==='success'?'alert-success':'alert-info'}`">
-    <span x-text="toast.msg"></span>
+<div class="toast toast-end" x-show="$store.toast.show" x-transition>
+  <div :class="`alert ${$store.toast.type==='error'?'alert-error':$store.toast.type==='success'?'alert-success':'alert-info'}`">
+    <span x-text="$store.toast.msg"></span>
   </div>
 </div>
 

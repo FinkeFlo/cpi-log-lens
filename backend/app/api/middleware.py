@@ -54,7 +54,7 @@ async def reject_cross_origin_writes(request: Request, call_next):
 
 async def request_log_and_no_cache_js(request: Request, call_next):
     """Log every request with its duration (replaces uvicorn's access log) and
-    prevent browser caching of app.js."""
+    prevent browser caching of the frontend scripts."""
     t0 = time.perf_counter()
     response = await call_next(request)
     dur_ms = (time.perf_counter() - t0) * 1000

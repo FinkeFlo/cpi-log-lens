@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Download the pinned frontend libraries into frontend/vendor/ (verified by
 # SHA-256) and rebuild the Tailwind utility CSS from the class names used in
-# frontend/index.html and frontend/app.js. Everything the UI needs is then
+# frontend/index.html and frontend/js/. Everything the UI needs is then
 # served by the app itself — no CDN, works offline.
 #
 # Run after changing classes in the frontend or bumping a version below:
@@ -22,8 +22,9 @@ fetch() {  # url target sha256
   mv "$2.tmp" "$2"
 }
 
-fetch "https://cdn.jsdelivr.net/npm/alpinejs@${ALPINE_VERSION}/dist/cdn.min.js" \
-  "$VENDOR/alpine.min.js" 232519394c6c8fdba6f362b1d9da16106db513cdbf899011f00daab4051df31c
+# ES module build: frontend/js/main.js imports it and starts Alpine.
+fetch "https://cdn.jsdelivr.net/npm/alpinejs@${ALPINE_VERSION}/dist/module.esm.min.js" \
+  "$VENDOR/alpine.esm.min.js" b8f2b2c60e9409c9b37b70843fd91a45abf5e48beb9a79bef5757b9fcb3bf41b
 fetch "https://cdn.jsdelivr.net/npm/chart.js@${CHARTJS_VERSION}/dist/chart.umd.min.js" \
   "$VENDOR/chart.umd.min.js" 0e2326c6868072bec1592760c6729043caeea2960a2b46cee6a2192aac6abff0
 fetch "https://cdn.jsdelivr.net/npm/daisyui@${DAISYUI_VERSION}/dist/full.min.css" \
@@ -45,6 +46,6 @@ if [ ! -x "$TAILWIND" ]; then
   chmod +x "$TAILWIND"
 fi
 "$TAILWIND" -i scripts/tailwind.input.css -o "$VENDOR/tailwind.min.css" \
-  --content "frontend/index.html,frontend/app.js" --minify
+  --content "frontend/index.html,frontend/js/**/*.js" --minify
 
 echo "vendored: alpine ${ALPINE_VERSION}, chart.js ${CHARTJS_VERSION}, daisyUI ${DAISYUI_VERSION}, tailwind ${TAILWIND_VERSION}"
