@@ -83,8 +83,13 @@ export default {
   async reconnect() {
     try {
       const data = await api.fetch.status();
-      this._reconnectAttempt = 0;
-      this.connectionLost = false;
+      if (data.status !== 'running') {
+        // Nothing left to listen to. While the job runs, the retry count is reset only
+        // once the new stream delivers (see openStream), so a stream that keeps failing
+        // backs off instead of retrying every second.
+        this._reconnectAttempt = 0;
+        this.connectionLost = false;
+      }
       if (data.status === 'idle') {
         if (this.status === 'running') {
           // The server restarted while the job ran (the job is recorded as interrupted).
@@ -139,7 +144,11 @@ export default {
     this.closeStream();
     const es = api.fetch.stream();
     this._source = es;
-    es.onmessage = e => this.handle(JSON.parse(e.data));
+    es.onmessage = e => {
+      this._reconnectAttempt = 0;
+      this.connectionLost = false;
+      this.handle(JSON.parse(e.data));
+    };
     // Closed by the server after the last event, or a network problem: if the job was
     // still running, read its status again (with growing waits while unreachable).
     es.onerror = () => {

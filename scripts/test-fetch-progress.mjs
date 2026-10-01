@@ -91,6 +91,32 @@ const snapshot = changes => ({
 });
 const unreachable = Object.assign(new Error("Can't reach the server"), { kind: 'unreachable' });
 
+// The stream breaks, the server is unreachable for a while: quiet at first, then a notice.
+const r = fresh();
+r.openStream();
+__streams.at(-1).onerror();
+assert.equal(r.connectionLost, false, 'the first retry is quiet');
+__status.push(unreachable, snapshot());
+assert.equal(await runTimer(), 1000);
+assert.equal(r.connectionLost, true, 'a failed retry shows the notice');
+assert.equal(await runTimer(), 2000, 'the next retry waits longer');
+assert.equal(r.connectionLost, true, 'the notice stays until the stream delivers again');
+__streams.at(-1).onmessage({ data: JSON.stringify({ type: 'snapshot', ...snapshot() }) });
+assert.equal(r.connectionLost, false, 'the first event of the new stream clears the notice');
+assert.equal(r._reconnectAttempt, 0);
+
+// The status answers but every new stream fails at once: back off instead of a 1 s loop.
+const looping = fresh();
+looping.openStream();
+const delays = [];
+for (let i = 0; i < 5; i++) {
+  __streams.at(-1).onerror();
+  __status.push(snapshot());
+  delays.push(await runTimer());
+}
+assert.deepEqual(delays, [1000, 2000, 5000, 10000, 10000]);
+assert.equal(looping.connectionLost, true);
+
 // The job ended while the stream was down.
 const ended = fresh();
 ended.openStream();
@@ -133,4 +159,4 @@ assert.equal(failed.partText(failed.parts[0]), 'Not finished');
 assert.equal(failed.partIcon(failed.parts[1]), 'square');
 assert.equal(fresh({ parts: [part(0, 'dev', 'trace', { status: 'running' })] }).partStatus(part(0, 'dev', 'trace', { status: 'running' })), 'running');
 
-console.log('Fetch progress per tenant and log type, partial failures, part resync and reconnect passed');
+console.log('Fetch progress per tenant and log type, partial failures, part resync and stream reconnect backoff passed');
