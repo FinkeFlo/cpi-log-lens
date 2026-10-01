@@ -5,19 +5,13 @@ import logging
 import json5
 
 from app.config import get_settings
+from app.cpi import DEMO_URL
 from app.repositories import tenants as tenants_repo
 from app.repositories.database import Database
 
 log = logging.getLogger("cpi")
 
-# A tenant whose URLs use this scheme imports the bundled sample logs instead
-# of calling SAP CPI, so new users can try the app without credentials.
-DEMO_URL = "demo://"
 DEMO_TENANT_ID = "demo"
-
-
-def is_demo(tenant: dict) -> bool:
-    return tenant["api_url"].startswith(DEMO_URL)
 
 
 async def ensure_demo_tenant(db: Database) -> None:

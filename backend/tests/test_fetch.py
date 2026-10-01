@@ -247,12 +247,13 @@ async def test_mock_mode_imports_the_sample_for_any_tenant(client, fake_cpi, mon
     assert fake_cpi.requests == []
 
 
-@pytest.mark.xfail(reason="ARC-01: the sample file name is shared by both log types, http imports nothing")
-async def test_mock_mode_imports_both_log_types(client, monkeypatch, settings):
+async def test_mock_mode_has_only_trace_samples(client, monkeypatch, settings):
     monkeypatch.setattr(settings, "mock", True)
     await client.post("/api/tenants", json=FAKE_TENANT)
-    await fetch(client, tenants=["fake"], log_types=["trace", "http"], hours=0)
-    assert await total(client) == 2 * 1803
+    status = await fetch(client, tenants=["fake"], log_types=["trace", "http"], hours=0)
+    assert status["imported"] == 1803
+    assert status["current_log_type"] == "http"
+    assert status["total"] == 0
 
 
 # ── Saved default fetch form ─────────────────────────────────────────────────

@@ -51,11 +51,6 @@ ignore = [
     "ASYNC240",
 ]
 
-[tool.ruff.lint.per-file-ignores]
-# process_file() in the fetch job closes over loop variables, but it is awaited
-# (asyncio.gather) within the iteration that defines it.
-"app/services/fetch.py" = ["B023"]
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

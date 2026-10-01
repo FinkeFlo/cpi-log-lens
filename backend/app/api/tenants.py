@@ -2,11 +2,10 @@
 
 from fastapi import APIRouter, HTTPException
 
+from app import cpi
 from app.api.deps import DbDep
 from app.api.schemas import TenantCreate
-from app.cpi import client as cpi_api
 from app.repositories import tenants as tenants_repo
-from app.services import tenants as tenant_service
 
 router = APIRouter(prefix="/api/tenants", tags=["tenants"])
 
@@ -70,9 +69,10 @@ async def test_tenant(tenant_id: str, db: DbDep):
         tenant = await tenants_repo.get_tenant(db, tenant_id)
         if not tenant:
             raise HTTPException(404, "Tenant not found")
-        if tenant_service.is_demo(tenant):
+        if cpi.is_demo(tenant):
             return {"ok": True, "demo": True}
-        token = await cpi_api.get_token(tenant["oauth_url"], tenant["client_id"], tenant["client_secret"])
+        async with cpi.client_for(tenant, timeout=30) as client:
+            token = await client.get_token(follow_redirects=False)
         return {"ok": bool(token), "token_preview": token[:12] + "…"}
     except Exception as e:
         return {"ok": False, "error": str(e)}

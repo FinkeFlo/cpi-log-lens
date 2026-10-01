@@ -15,13 +15,14 @@ import httpx
 import pytest
 from asgi_lifespan import LifespanManager
 
-from app import main, tasks
+from app import cpi, main, tasks
 from app.config import Settings, get_settings
 from app.cpi import client as cpi_api
+from app.cpi.client import CpiClient
+from app.cpi.fake import FakeCpi
 from app.repositories.database import Database
 from app.services import fetch as fetch_service
 from app.services import stats
-from tests.support import FakeCpi
 
 BASE_URL = "http://localhost"
 
@@ -78,13 +79,23 @@ async def db(app_env):
 
 @pytest.fixture
 def fake_cpi(monkeypatch):
-    """Fake CPI API; every HTTP client the CPI module creates talks to it."""
+    """Fake CPI API; CPI requests for regular tenants go to it (the demo tenant and
+    MOCK mode keep using the app's own fake with the sample logs)."""
     fake = FakeCpi()
-    real_client = httpx.AsyncClient
+    real_client_for = cpi.client_for
 
-    def client_with_fake_transport(*args, **kwargs):
-        kwargs.setdefault("transport", httpx.ASGITransport(app=fake.app))
-        return real_client(*args, **kwargs)
+    def client_for(tenant, *, timeout=None):
+        if get_settings().mock or cpi.is_demo(tenant):
+            return real_client_for(tenant, timeout=timeout)
+        transport = httpx.ASGITransport(app=fake.app)
+        return CpiClient(
+            tenant["api_url"],
+            tenant["oauth_url"],
+            tenant["client_id"],
+            tenant["client_secret"],
+            transport=transport,
+            retry_backoff=0,
+        )
 
-    monkeypatch.setattr(cpi_api.httpx, "AsyncClient", client_with_fake_transport)
+    monkeypatch.setattr(cpi, "client_for", client_for)
     return fake
