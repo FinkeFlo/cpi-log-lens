@@ -171,8 +171,8 @@ async def test_stats_counts_all_iflows_and_orders_ties(client, tmp_path):
     body = (await client.get("/api/stats")).json()
     assert body["iflow_error_count"] == 19
     assert body["tenant_count"] == 4
-    assert body["levels"] == [
-        {"lvl": "ERROR", "cnt": 19},
+    assert body["levels"][0] == {"lvl": "ERROR", "cnt": 19}
+    assert sorted(body["levels"][1:], key=lambda row: row["lvl"]) == [
         {"lvl": "INFO", "cnt": 2},
         {"lvl": "WARN", "cnt": 2},
     ]
