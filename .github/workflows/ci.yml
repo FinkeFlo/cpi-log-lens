@@ -60,6 +60,9 @@ jobs:
       - name: Accessible frontend behavior
         working-directory: .
         run: node scripts/test-accessibility.mjs
+      - name: Fetch progress state
+        working-directory: .
+        run: node scripts/test-fetch-progress.mjs
       - name: Dependency vulnerabilities
         run: |
           uv export --locked --no-dev --no-emit-project --format requirements-txt -o /tmp/requirements.txt
