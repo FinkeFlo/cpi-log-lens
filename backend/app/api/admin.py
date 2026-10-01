@@ -2,12 +2,11 @@
 
 from fastapi import APIRouter, HTTPException
 
-from app.api.deps import DbDep
+from app.api.deps import DbDep, FetchDep
 from app.api.schemas import CleanupRequest
 from app.config import get_settings
 from app.repositories import logs as logs_repo
 from app.services import backup, stats
-from app.services import fetch as fetch_service
 
 router = APIRouter(prefix="/api/db", tags=["admin"])
 
@@ -33,9 +32,9 @@ async def db_cleanup(req: CleanupRequest, db: DbDep):
 
 
 @router.post("/backup", status_code=201)
-async def db_backup(db: DbDep):
+async def db_backup(db: DbDep, fetch: FetchDep):
     """Write a copy of the database into the backup directory (see README, Backup)."""
-    if fetch_service.is_running():
+    if fetch.is_running():
         raise HTTPException(409, "A fetch is running; start the backup when it has finished.")
     return await backup.create_backup(db)
 

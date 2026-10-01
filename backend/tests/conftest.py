@@ -21,7 +21,6 @@ from app.cpi import client as cpi_api
 from app.cpi.client import CpiClient
 from app.cpi.fake import FakeCpi
 from app.repositories.database import Database
-from app.services import fetch as fetch_service
 from app.services import stats
 
 BASE_URL = "http://localhost"
@@ -51,7 +50,6 @@ async def app_env(tmp_path, monkeypatch, settings):
     """Fresh database and log directory for one test; the app is not started."""
     monkeypatch.setattr(settings, "db_path", tmp_path / "test.duckdb")
     monkeypatch.setattr(settings, "logs_dir", tmp_path / "logs")
-    monkeypatch.setattr(fetch_service, "active_job", None)
     monkeypatch.setattr(cpi_api, "RETRY_BACKOFF_BASE", 0)
     stats.invalidate()
     stats._locks.clear()
