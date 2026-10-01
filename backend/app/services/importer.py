@@ -25,7 +25,7 @@ async def import_log_file(
     by one batch instead of the whole file.
 
     Duplicate protection: there is no UNIQUE constraint / ON CONFLICT /
-    dedupe on `logs` (see repositories/schema.py). Protection across fetch runs comes
+    dedupe on `logs` (ADR 0002). Protection across fetch runs comes
     entirely from file_imports.lines — only rows past the last-imported row
     of a file are inserted. Legitimate repeated log lines (e.g. heartbeats
     with identical timestamp/level/logger/message) are distinct entries and
@@ -36,8 +36,9 @@ async def import_log_file(
     the import stops midway, the next fetch continues where it stopped
     instead of duplicating rows. file_imports.size (which lets the next
     fetch skip an unchanged file) is only written once the whole file was
-    parsed. Unparsable lines before the first row are stored only on the
-    first import of a file, not again on every re-fetch."""
+    parsed, also when it has no parsable rows. Unparsable lines can only
+    precede the first row; they are stored when a file is read from its
+    start and replace those stored before for the same file."""
 
     def _run(conn):
         total = inserted = 0
@@ -51,17 +52,16 @@ async def import_log_file(
             try:
                 if new:
                     logs_repo.insert_rows(conn, new)
-                    file_imports_repo.save_lines(conn, tenant, filename, total)
+                    file_imports_repo.save_lines(conn, tenant, log_type, filename, total)
                 if unparsed and already == 0:
-                    logs_repo.insert_unparsed(conn, tenant, log_type, filename, unparsed)
+                    logs_repo.replace_unparsed(conn, tenant, log_type, filename, unparsed)
                 conn.commit()
             except BaseException:
                 conn.rollback()
                 raise
             inserted += len(new)
             stats.invalidate()
-        if total:
-            file_imports_repo.save_complete(conn, tenant, filename, max(total, already), size)
+        file_imports_repo.save_complete(conn, tenant, log_type, filename, max(total, already), size)
         return inserted
 
     return await db.run(_run)

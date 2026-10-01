@@ -16,8 +16,8 @@ async def count(db, sql, params=None):
     return await db.read(db.fetch_val, sql, params)
 
 
-async def file_import(db, filename="a.log"):
-    return await file_imports_repo.get_file_import(db, "t1", filename)
+async def file_import(db, filename="a.log", log_type="trace"):
+    return await file_imports_repo.get_file_import(db, "t1", log_type, filename)
 
 
 async def test_new_file_imports_all_rows_and_records_lines_and_size(db, tmp_path):
@@ -81,22 +81,24 @@ async def test_unparsed_lines_are_stored_on_the_first_import_only(db, tmp_path):
     assert rows == [{"tenant": "t1", "log_type": "trace", "filename": "a.log", "line_no": 1, "raw_text": "garbage"}]
 
 
-@pytest.mark.xfail(reason="ARC-01: a file without parsable rows gets no offset, its unparsed lines repeat")
 async def test_unparsed_lines_of_a_file_without_rows_are_not_duplicated(db, tmp_path):
     path = write_log(tmp_path / "a.log", ["garbage 1", "garbage 2"])
     for _ in range(2):
         already = (await file_import(db))["lines"]
-        await importer.import_log_file(db, "t1", "trace", path, "a.log", already)
+        await importer.import_log_file(db, "t1", "trace", path, "a.log", already, 77)
     assert await count(db, "SELECT count(*) FROM unparsed_lines") == 2
+    # Read to the end: the size is recorded, so the next fetch skips the file.
+    assert await file_import(db) == {"lines": 0, "size": 77}
 
 
-@pytest.mark.xfail(reason="ARC-01: file_imports is keyed by (tenant, filename) without the log type")
 async def test_same_file_name_for_two_log_types_is_imported_for_both(db, tmp_path):
     path = write_log(tmp_path / "a.log", numbered_lines(3))
     for log_type in ("trace", "http"):
-        already = (await file_import(db))["lines"]
+        already = (await file_import(db, log_type=log_type))["lines"]
         await importer.import_log_file(db, "t1", log_type, path, "a.log", already)
     assert await count(db, "SELECT count(*) FROM logs WHERE log_type = 'http'") == 3
+    assert await count(db, "SELECT count(*) FROM logs WHERE log_type = 'trace'") == 3
+    assert await file_import(db, log_type="http") == {"lines": 3, "size": 0}
 
 
 async def test_imports_invalidate_the_stats_cache(db, tmp_path):

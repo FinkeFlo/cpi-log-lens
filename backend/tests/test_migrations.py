@@ -117,7 +117,7 @@ def test_legacy_database_is_brought_to_the_baseline(tmp_path):
         # Data is kept, including ids and the import bookkeeping.
         rows = conn.execute("SELECT id, timestamp::VARCHAR, message, raw_line FROM logs ORDER BY id").fetchall()
         assert rows == [(500, "2026-01-15 08:00:00", "first", None), (900, "2026-01-15 08:00:01", "second", None)]
-        assert conn.execute("SELECT * FROM file_imports").fetchall() == [("dev", "a.log", 2, 1234)]
+        assert conn.execute("SELECT * FROM file_imports").fetchall() == [("dev", "trace", "a.log", 2, 1234)]
         assert conn.execute("SELECT id FROM tenants").fetchall() == [("dev",)]
         # New rows get ids past the imported ones.
         conn.execute("INSERT INTO logs (tenant, log_type, filename, timestamp) VALUES ('dev', 'trace', 'b', now())")
@@ -184,3 +184,31 @@ def test_app_start_refuses_a_newer_database(tmp_path, settings, monkeypatch):
         Database.open(settings.db_path)
     # The file is not left locked.
     duckdb.connect(str(settings.db_path)).close()
+
+
+def test_file_imports_get_the_log_type_of_their_rows(tmp_path):
+    path = str(tmp_path / "db.duckdb")
+    known = migrations.discover()
+    with duckdb.connect(path) as conn:
+        migrations.migrate(conn, migrations=[m for m in known if m.version < 4])
+        conn.execute("""
+            INSERT INTO logs (tenant, log_type, filename, timestamp)
+            VALUES ('t', 'http', 'a.log', now()), ('u', 'trace', 'a.log', now())
+        """)
+        conn.execute("""
+            INSERT INTO file_imports VALUES
+                ('t', 'a.log', 1, 10),             -- rows say http
+                ('u', 'a.log', 1, 10),             -- rows say trace
+                ('t', 'http_2026-01-01.log', 5, 50), -- rows deleted: from the name
+                ('t', 'trace_2026-01-01.log', 5, 50),
+                ('t', 'other.log', 2, 20)          -- unknown: trace
+        """)
+        migrations.migrate(conn)
+        rows = conn.execute("SELECT tenant, log_type, filename, lines, size FROM file_imports ORDER BY ALL").fetchall()
+    assert rows == [
+        ("t", "http", "a.log", 1, 10),
+        ("t", "http", "http_2026-01-01.log", 5, 50),
+        ("t", "trace", "other.log", 2, 20),
+        ("t", "trace", "trace_2026-01-01.log", 5, 50),
+        ("u", "trace", "a.log", 1, 10),
+    ]

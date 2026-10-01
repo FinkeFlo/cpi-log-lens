@@ -6,6 +6,7 @@ from app import cpi
 from app.api.deps import DbDep
 from app.api.schemas import TenantCreate
 from app.repositories import tenants as tenants_repo
+from app.services import tenants as tenant_service
 
 router = APIRouter(prefix="/api/tenants", tags=["tenants"])
 
@@ -58,9 +59,11 @@ async def update_tenant(tenant_id: str, body: TenantCreate, db: DbDep):
 
 
 @router.delete("/{tenant_id}")
-async def remove_tenant(tenant_id: str, db: DbDep):
-    await tenants_repo.delete_tenant(db, tenant_id)
-    return {"ok": True}
+async def remove_tenant(tenant_id: str, db: DbDep, purge: bool = False):
+    """Delete a tenant; schedules no longer include it. Its log entries, import
+    bookkeeping and downloaded files are kept unless `purge=true`."""
+    result = await tenant_service.delete_tenant(db, tenant_id, purge=purge)
+    return {"ok": True, **result}
 
 
 @router.post("/{tenant_id}/test")

@@ -147,12 +147,16 @@ async def test_legacy_import_without_size_is_backfilled_from_the_local_file(clie
     local.parent.mkdir(parents=True)
     local.write_bytes(gzip.compress(("\n".join(lines) + "\n").encode()))
     db = app_db()
-    await db.run(db.execute, "INSERT INTO file_imports (tenant, filename, lines, size) VALUES ('fake', 'a.log', 3, 0)")
+    await db.run(
+        db.execute,
+        "INSERT INTO file_imports (tenant, log_type, filename, lines, size) VALUES ('fake', 'trace', 'a.log', 3, 0)",
+    )
     tenant.add("a.log", lines, size=local.stat().st_size)
     status = await fetch(client, **TRACE)
     assert status["imported"] == 0
     assert downloads(tenant) == []
-    assert await file_imports_repo.get_file_import(db, "fake", "a.log") == {"lines": 3, "size": local.stat().st_size}
+    expected = {"lines": 3, "size": local.stat().st_size}
+    assert await file_imports_repo.get_file_import(db, "fake", "trace", "a.log") == expected
 
 
 async def test_a_second_start_while_running_is_refused(client, tenant):

@@ -70,7 +70,7 @@ def make_old_format_db(path, rows=3000) -> None:
         conn.execute(
             "INSERT INTO logs (id, tenant, log_type, filename, timestamp) VALUES (50000, 'dev', 'trace', 'x', now())"
         )
-        conn.execute("INSERT INTO file_imports VALUES ('dev', 'f1.log', 10, 1234)")
+        conn.execute("INSERT INTO file_imports VALUES ('dev', 'trace', 'f1.log', 10, 1234)")
         conn.execute(
             "INSERT INTO unparsed_lines (tenant, log_type, filename, line_no, raw_text) "
             "VALUES ('dev', 'trace', 'f1.log', 1, 'x')"

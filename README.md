@@ -48,6 +48,10 @@ In **Settings → Add tenant**, paste the service key JSON: API URL, OAuth URL, 
 are filled in automatically. Give the tenant a short ID (lowercase, e.g. `prd`) and a display name,
 save, and use **Test connection**.
 
+Deleting a tenant removes it from scheduled fetches. Its imported entries and downloaded files are
+kept unless you choose to delete them too (`DELETE /api/tenants/<id>?purge=true`); kept data stays
+consistent, so a tenant added again with the same ID continues where it stopped.
+
 Alternatively, seed tenants from `config/tenants.jsonc` (see
 [`config/tenants.jsonc.example`](config/tenants.jsonc.example)). By default the file only adds
 tenants that don't exist yet, so changes made in the UI stay; set `TENANTS_SEED_MODE=sync` to make

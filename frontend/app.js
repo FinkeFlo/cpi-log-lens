@@ -376,11 +376,26 @@ function App() {
     },
 
     async deleteTenant(id) {
-      if (!confirm(`Delete tenant "${id}"? Imported logs are kept.`)) return;
-      const res = await fetch(`/api/tenants/${id}`, { method: 'DELETE' });
+      if (!confirm(`Delete tenant "${id}"? Scheduled fetches no longer include it.`)) return;
+      const purge = confirm(
+        `Also delete the imported log entries and downloaded files of "${id}"?\n\n` +
+        'OK: delete them. Cancel: keep them (a tenant added again with this ID continues where it stopped).'
+      );
+      const res = await fetch(`/api/tenants/${encodeURIComponent(id)}?purge=${purge}`, { method: 'DELETE' });
       await this.loadTenants();
-      if (res.ok) this.notify('Tenant deleted');
-      else this.notify(`Could not delete tenant (HTTP ${res.status})`, 'error');
+      await this.loadSchedules();
+      if (!res.ok) {
+        this.notify(`Could not delete tenant (HTTP ${res.status})`, 'error');
+        return;
+      }
+      const data = await res.json();
+      if (purge) {
+        await this.loadDbInfo();
+        await this.search();
+        this.notify(`Tenant deleted with ${data.deleted_entries.toLocaleString('en-US')} entries`);
+      } else {
+        this.notify('Tenant deleted, its log entries are kept');
+      }
     },
 
     // ── Browse ────────────────────────────────────────────────────────────────

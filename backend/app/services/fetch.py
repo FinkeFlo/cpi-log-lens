@@ -272,12 +272,12 @@ async def _fetch_file(ctx: _TenantFetch, f: RemoteLogFile, tenant_log_dir: Path)
         job.push({"type": "warn", "msg": f"Skipped file with unsafe name: {f.name!r}"})
         return
     dest = tenant_log_dir / f.name
-    file_import = await file_imports_repo.get_file_import(ctx.db, ctx.tenant_id, f.name)
+    file_import = await file_imports_repo.get_file_import(ctx.db, ctx.tenant_id, ctx.log_type, f.name)
 
     # Backfill size from local file if missing (legacy imports)
     if file_import["lines"] > 0 and file_import["size"] == 0 and dest.exists():
         local_size = dest.stat().st_size
-        await file_imports_repo.update_file_import_size(ctx.db, ctx.tenant_id, f.name, local_size)
+        await file_imports_repo.update_file_import_size(ctx.db, ctx.tenant_id, ctx.log_type, f.name, local_size)
         file_import["size"] = local_size
 
     ctx.files_done += 1
@@ -285,8 +285,8 @@ async def _fetch_file(ctx: _TenantFetch, f: RemoteLogFile, tenant_log_dir: Path)
     job.current_file = f.name
     job.status_msg = f"{ctx.tenant['name']} · {ctx.log_type}: {f.name} ({ctx.files_done}/{ctx.files_total})"
 
-    # Skip if already fully imported
-    if file_import["size"] == f.size and file_import["lines"] > 0:
+    # Skip if already fully imported (the size is recorded once a file was read to the end)
+    if f.size > 0 and file_import["size"] == f.size:
         ctx.progress(f.name, 0)
         return
 
