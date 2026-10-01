@@ -68,7 +68,6 @@ async def test_clear_deletes_logs_and_bookkeeping_but_keeps_tenants(client, tmp_
     assert (await client.get("/api/stats")).json()["total"] == 0
 
 
-@pytest.mark.xfail(reason="ARC-19: clearing the database keeps the unparsed lines")
 async def test_clear_also_deletes_unparsed_lines(client, tmp_path):
     await import_lines(tmp_path, "t1", ["garbage", *numbered_lines(1)])
     await client.post("/api/db/clear")

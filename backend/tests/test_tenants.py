@@ -71,15 +71,68 @@ async def test_update_of_an_unknown_tenant_is_404(client):
     assert res.json() == {"detail": "Tenant not found"}
 
 
-async def test_delete_removes_the_tenant_and_keeps_its_logs(client, fake_cpi):
+async def test_delete_removes_the_tenant_and_keeps_its_logs(client, fake_cpi, settings):
     await client.post("/api/tenants", json=FAKE_TENANT)
     fake_cpi.add("a.log", numbered_lines(3))
     await fetch(client, tenants=["fake"], log_types=["trace"], hours=0)
     res = await client.delete("/api/tenants/fake")
     assert res.status_code == 200
-    assert res.json() == {"ok": True}
+    assert res.json() == {"ok": True, "deleted_entries": 0, "schedules_changed": 0, "schedules_deleted": 0}
     assert (await client.get("/api/tenants")).json() == []
     assert (await client.get("/api/logs")).json()["total"] == 3
+    assert (settings.logs_dir / "fake" / "a.log").exists()
+    # Created again, the tenant continues where it stopped: nothing is imported twice.
+    await client.post("/api/tenants", json=FAKE_TENANT)
+    fake_cpi.add("a.log", numbered_lines(4))
+    assert (await fetch(client, tenants=["fake"], log_types=["trace"], hours=0))["imported"] == 1
+    assert (await client.get("/api/logs")).json()["total"] == 4
+
+
+async def test_delete_with_purge_removes_all_data_of_the_tenant(client, fake_cpi, settings):
+    await client.post("/api/tenants", json=FAKE_TENANT)
+    await client.post("/api/tenants", json={**FAKE_TENANT, "id": "other"})
+    fake_cpi.add("a.log", ["not a log line", *numbered_lines(3)])
+    await fetch(client, tenants=["all"], log_types=["trace"], hours=0)
+    assert (await client.get("/api/logs")).json()["total"] == 6
+    res = await client.delete("/api/tenants/fake", params={"purge": "true"})
+    assert res.json()["deleted_entries"] == 3
+    db = app_db()
+    for table in ("logs", "file_imports", "unparsed_lines"):
+        n = await db.read(db.fetch_val, f"SELECT count(*) FROM {table} WHERE tenant = 'fake'")
+        assert n == 0, table
+        n = await db.read(db.fetch_val, f"SELECT count(*) FROM {table} WHERE tenant = 'other'")
+        assert n > 0, table
+    assert not (settings.logs_dir / "fake").exists()
+    assert (settings.logs_dir / "other").exists()
+    assert (await client.get("/api/stats")).json()["total"] == 3
+    # Created again, the tenant imports its files from scratch.
+    await client.post("/api/tenants", json=FAKE_TENANT)
+    assert (await fetch(client, tenants=["fake"], log_types=["trace"], hours=0))["imported"] == 3
+
+
+async def test_purge_only_removes_the_tenant_directory(client, settings):
+    (settings.logs_dir / "x").mkdir(parents=True)
+    (settings.logs_dir / "keep").mkdir()
+    outside = settings.logs_dir.parent / "outside"
+    outside.mkdir()
+    for tenant_id in ("x", "../outside", "keep/..", "."):
+        await tenant_service.delete_tenant(app_db(), tenant_id, purge=True)
+    assert not (settings.logs_dir / "x").exists()
+    assert (settings.logs_dir / "keep").exists()
+    assert outside.exists()
+
+
+async def test_delete_removes_the_tenant_from_schedules(client):
+    await client.post("/api/tenants", json=FAKE_TENANT)
+    base = {"log_types": ["trace"], "hours": 1, "interval_minutes": 15}
+    await client.post("/api/schedules", json={**base, "name": "only fake", "tenants": ["fake"]})
+    await client.post("/api/schedules", json={**base, "name": "fake and qa", "tenants": ["fake", "qa"]})
+    await client.post("/api/schedules", json={**base, "name": "all", "tenants": ["all"]})
+    res = await client.delete("/api/tenants/fake")
+    assert res.json()["schedules_changed"] == 1
+    assert res.json()["schedules_deleted"] == 1
+    schedules = {s["name"]: s["tenants"] for s in (await client.get("/api/schedules")).json()}
+    assert schedules == {"fake and qa": ["qa"], "all": ["all"]}
 
 
 async def test_delete_of_an_unknown_tenant_answers_ok(client):

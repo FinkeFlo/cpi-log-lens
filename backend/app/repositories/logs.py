@@ -202,10 +202,9 @@ async def clear_db(db: Database):
         db.execute(conn, "DELETE FROM logs")
         db.execute(conn, "DELETE FROM fetch_runs")
         db.execute(conn, "DELETE FROM file_imports")
-        # DuckDB doesn't reclaim freed disk space from deletes automatically;
-        # CHECKPOINT forces a rewrite of the underlying row groups so the
-        # .duckdb file actually shrinks back down instead of permanently
-        # keeping the pre-delete size.
+        db.execute(conn, "DELETE FROM unparsed_lines")
+        # CHECKPOINT frees the blocks of the deleted rows for reuse; the file
+        # itself does not shrink.
         conn.execute("CHECKPOINT")
 
     await db.run(_run)

@@ -1,6 +1,8 @@
 """Tenant seeding from TENANTS_CONFIG and the demo tenant."""
 
+import asyncio
 import logging
+import shutil
 
 import json5
 
@@ -8,6 +10,7 @@ from app.config import get_settings
 from app.cpi import DEMO_URL
 from app.repositories import tenants as tenants_repo
 from app.repositories.database import Database
+from app.services import stats
 
 log = logging.getLogger("cpi")
 
@@ -52,3 +55,25 @@ async def load_tenants_from_json(conn: Database) -> None:
         updated += exists
         added += not exists
     log.info("tenants from %s: %d added, %d updated (mode %s)", config_path, added, updated, settings.tenants_seed_mode)
+
+
+async def delete_tenant(db: Database, tenant_id: str, *, purge: bool = False) -> dict:
+    """Delete a tenant and remove it from schedules. `purge` also deletes its log
+    entries, import bookkeeping, unparsed lines and downloaded log files."""
+    result = await tenants_repo.delete_tenant(db, tenant_id, purge=purge)
+    if purge:
+        stats.invalidate()
+        logs_dir = get_settings().logs_dir.resolve()
+        tenant_dir = logs_dir / tenant_id
+        # Only a direct child of the log directory, whatever the id contains.
+        if tenant_dir.resolve().parent == logs_dir and tenant_dir.name == tenant_id and tenant_dir.is_dir():
+            await asyncio.to_thread(shutil.rmtree, tenant_dir)
+    log.info(
+        "tenant %s deleted (%s); %d entries deleted, %d schedules changed, %d deleted",
+        tenant_id,
+        "with its data" if purge else "data kept",
+        result["deleted_entries"],
+        result["schedules_changed"],
+        result["schedules_deleted"],
+    )
+    return result
