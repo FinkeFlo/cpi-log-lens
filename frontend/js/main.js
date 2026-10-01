@@ -3,6 +3,7 @@
 import Alpine from '../vendor/alpine.esm.min.js';
 
 import browsePage from './pages/browse.js';
+import { registerDialogDirective } from './dialog.js';
 import fetchPage from './pages/fetch.js';
 import settingsPage from './pages/settings.js';
 import statsPage from './pages/stats.js';
@@ -22,6 +23,7 @@ Alpine.data('browsePage', browsePage);
 Alpine.data('fetchPage', fetchPage);
 Alpine.data('statsPage', statsPage);
 Alpine.data('settingsPage', settingsPage);
+registerDialogDirective(Alpine);
 
 window.Alpine = Alpine;
 Alpine.start();

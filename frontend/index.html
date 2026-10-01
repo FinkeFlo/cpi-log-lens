@@ -32,34 +32,81 @@
     [x-cloak]          { display: none !important; }
     .log-row           { cursor: pointer; }
     .font-mono-xs      { font-family: ui-monospace, monospace; font-size: 0.72rem; }
+    :focus-visible     { outline: 3px solid var(--color-primary); outline-offset: 2px; }
+    .skip-link         { position: absolute; left: 1rem; top: -4rem; z-index: 100; }
+    .skip-link:focus   { top: 1rem; }
+    @media (max-width: 767px) {
+      body { overflow-x: hidden; }
+      .navbar { min-height: 3.5rem; }
+      .mobile-nav-toggle { display: inline-flex; }
+      #primary-navigation { display: none; position: absolute; top: 100%; right: 0.5rem; z-index: 60; }
+      #primary-navigation.is-open { display: block; }
+      #primary-navigation .menu { flex-direction: column; align-items: stretch; min-width: 12rem; }
+      #primary-navigation .menu li > a { justify-content: flex-start; }
+      .page-content { min-width: 0; max-width: 100%; padding-inline: 0.75rem; }
+      .log-table { display: block; }
+      .log-table thead { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+      .log-table > tbody { display: block; margin: 0.75rem; border: 1px solid var(--color-base-300); border-radius: 0.5rem; overflow: hidden; }
+      .log-table tr.log-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem; padding: 0.75rem; }
+      .log-table tr.log-row td { display: block; min-width: 0; max-width: none; padding: 0; white-space: normal; overflow-wrap: anywhere; }
+      .log-table tr.log-row td::before { content: attr(data-label); display: block; margin-bottom: 0.15rem; color: var(--lens-muted); font-size: 0.65rem; font-weight: 600; }
+      .log-table tr.log-row td:last-child { grid-column: 1 / -1; }
+      .log-table tr.log-row td:last-child > div { white-space: normal; overflow: visible; }
+      .log-table tr.log-row td:first-child button { text-align: left; white-space: normal; }
+      .log-table tr.log-detail { display: block; }
+      .log-table tr.log-detail > td { display: block; width: auto; }
+      .responsive-table { display: block; }
+      .responsive-table thead { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+      .responsive-table tbody { display: block; }
+      .responsive-table tbody tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem; padding: 0.75rem; border-bottom: 1px solid var(--color-base-300); }
+      .responsive-table tbody td { display: block; min-width: 0; padding: 0.25rem; overflow-wrap: anywhere; text-align: left; }
+      .responsive-table tbody td::before { content: attr(data-label); display: block; margin-bottom: 0.15rem; color: var(--lens-muted); font-size: 0.65rem; font-weight: 600; }
+      .responsive-table tbody td:last-child { grid-column: 1 / -1; }
+      .chart-card canvas { max-width: 100%; }
+      .schedule-grid { grid-template-columns: minmax(0, 1fr); }
+      .schedule-grid fieldset { min-width: 0; }
+    }
+    @media (min-width: 768px) {
+      .mobile-nav-toggle { display: none; }
+      #primary-navigation { display: block !important; }
+    }
   </style>
 </head>
 <body class="bg-base-200 min-h-screen" x-data x-cloak>
 
+<a class="skip-link btn btn-primary" href="#main-content">Skip to main content</a>
+
 <!-- ── Navbar ── -->
-<div class="navbar bg-base-100 shadow-md sticky top-0 z-50 px-4 gap-2">
+<header class="navbar bg-base-100 shadow-md sticky top-0 z-50 px-4 gap-2">
   <div class="flex-1 gap-2">
-    <span class="text-lg font-bold text-primary flex items-center">
+    <a href="#browse" class="text-lg font-bold text-primary flex items-center" aria-label="CPI Log Lens home">
       <img src="/logo.svg" alt="" aria-hidden="true" class="w-6 h-6 mr-2" />
       CPI Log Lens
-    </span>
+    </a>
   </div>
-  <div class="flex-none">
-    <ul class="menu menu-horizontal px-1 gap-1 text-sm">
-      <li><a :aria-current="$store.route.page==='browse' ? 'page' : 'false'" @click="$store.route.navigate('browse')">Browse</a></li>
+  <button type="button" class="mobile-nav-toggle btn btn-ghost btn-sm" aria-controls="primary-navigation"
+          :aria-expanded="$store.route.mobileNavOpen"
+          @click="$store.route.mobileNavOpen = !$store.route.mobileNavOpen">
+    <span x-text="$store.route.mobileNavOpen ? 'Close' : 'Menu'"></span>
+  </button>
+  <nav id="primary-navigation" :class="$store.route.mobileNavOpen && 'is-open'" aria-label="Primary navigation"
+       @click="$store.route.mobileNavOpen = false">
+    <ul class="menu menu-horizontal bg-base-100 rounded-box shadow-md md:shadow-none px-1 gap-1 text-sm">
+      <li><a href="#browse" :href="$store.route.page==='browse' ? window.location.hash : '#browse'"
+             :aria-current="$store.route.page==='browse' ? 'page' : 'false'">Browse</a></li>
       <li>
-        <a :aria-current="$store.route.page==='fetch' ? 'page' : 'false'" @click="$store.route.navigate('fetch')" class="relative">
+        <a href="#fetch" :aria-current="$store.route.page==='fetch' ? 'page' : 'false'" class="relative">
           <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#download"></use></svg>
           Fetch
           <span x-show="$store.fetchJob.status === 'running'"
                 class="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-primary animate-pulse"></span>
         </a>
       </li>
-      <li><a :aria-current="$store.route.page==='stats' ? 'page' : 'false'" @click="$store.route.navigate('stats')"><svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#chart-column"></use></svg> Stats</a></li>
-      <li><a :aria-current="$store.route.page==='settings' ? 'page' : 'false'" @click="$store.route.navigate('settings')"><svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#settings"></use></svg> Settings</a></li>
+      <li><a href="#stats" :aria-current="$store.route.page==='stats' ? 'page' : 'false'"><svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#chart-column"></use></svg> Stats</a></li>
+      <li><a href="#settings" :aria-current="$store.route.page==='settings' ? 'page' : 'false'"><svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#settings"></use></svg> Settings</a></li>
     </ul>
-  </div>
-</div>
+  </nav>
+</header>
 
 <!-- ── Global download progress banner ── -->
 <div x-show="$store.fetchJob.status === 'running'"
@@ -67,7 +114,7 @@
      x-transition:enter-start="opacity-0 -translate-y-2"
      x-transition:enter-end="opacity-100 translate-y-0"
      class="bg-base-100 border-b border-base-300 px-4 py-2 sticky top-16 z-40 shadow-sm">
-  <div class="max-w-screen-xl mx-auto flex items-center gap-3">
+  <div class="max-w-screen-xl mx-auto flex flex-wrap items-center gap-3">
     <span class="loading loading-spinner loading-xs text-primary flex-shrink-0"></span>
     <div class="flex-1 min-w-0">
       <div class="flex items-center justify-between gap-2 mb-1">
@@ -86,17 +133,19 @@
           x-text="`+${$store.fetchJob.imported.toLocaleString('en-US')}`"></span>
     <button class="btn btn-ghost btn-xs text-error flex-shrink-0" @click="$store.fetchJob.cancel()"
             title="Cancel fetch"><svg class="w-3.5 h-3.5" aria-hidden="true" focusable="false"><use href="/icons.svg#x"></use></svg> Cancel</button>
-    <button class="btn btn-ghost btn-xs flex-shrink-0" @click="$store.route.show('fetch')">View progress <svg class="w-3.5 h-3.5" aria-hidden="true" focusable="false"><use href="/icons.svg#chevron-right"></use></svg></button>
+    <a class="btn btn-ghost btn-xs flex-shrink-0" href="#fetch">View progress <svg class="w-3.5 h-3.5" aria-hidden="true" focusable="false"><use href="/icons.svg#chevron-right"></use></svg></a>
   </div>
 </div>
 
+<main id="main-content" tabindex="-1">
 <!-- ═══════════════════════════════ BROWSE ═══════════════════════════════════ -->
-<div x-data="browsePage" x-show="$store.route.page==='browse'" class="p-4 w-full"
+<div id="browse-page" x-data="browsePage" x-show="$store.route.page==='browse'" class="page-content p-4 w-full"
      @keydown.escape.window="closeRow()"
      @logs-changed.window="onLogsChanged($event.detail)"
      @browse-iflow.window="showIflow($event.detail)"
      @page-shown.window="onPageShown($event.detail)">
 
+  <h1 class="text-2xl font-bold mb-4">Browse logs</h1>
   <!-- First run: no tenants yet -->
   <div x-show="$store.tenants.loaded && tenants.length===0" class="card bg-base-100 shadow mb-4">
     <div class="card-body">
@@ -121,8 +170,8 @@
       <div x-show="urlError" class="alert alert-error mb-2" role="alert" x-text="urlError"></div>
       <div class="flex flex-wrap gap-2 items-end">
         <fieldset class="fieldset gap-0 pb-0">
-          <legend class="fieldset-legend py-0 pb-1 text-xs font-normal">Tenant</legend>
-          <select class="select select-sm w-32" x-model="q.tenant" @change="filtersChanged()">
+          <label class="fieldset-legend py-0 pb-1 text-xs font-normal" for="filter-tenant">Tenant</label>
+          <select id="filter-tenant" class="select select-sm w-32" x-model="q.tenant" @change="filtersChanged()">
             <option value="">All tenants</option>
             <template x-for="t in tenants" :key="t.id">
               <option :value="t.id" x-text="t.name"></option>
@@ -130,15 +179,15 @@
           </select>
         </fieldset>
         <fieldset class="fieldset gap-0 pb-0">
-          <legend class="fieldset-legend py-0 pb-1 text-xs font-normal">Level</legend>
-          <select class="select select-sm w-24" x-model="q.level" @change="filtersChanged()">
+          <label class="fieldset-legend py-0 pb-1 text-xs font-normal" for="filter-level">Level</label>
+          <select id="filter-level" class="select select-sm w-24" x-model="q.level" @change="filtersChanged()">
             <option value="">All levels</option>
             <option>ERROR</option><option>WARN</option><option>INFO</option><option>DEBUG</option>
           </select>
         </fieldset>
         <fieldset class="fieldset gap-0 pb-0 flex-1 min-w-48">
-          <legend class="fieldset-legend py-0 pb-1 text-xs font-normal">IFlow</legend>
-          <input class="input input-sm w-full" x-model="q.iflow" list="browse-iflow-options" maxlength="500"
+          <label class="fieldset-legend py-0 pb-1 text-xs font-normal" for="filter-iflow">IFlow</label>
+          <input id="filter-iflow" class="input input-sm w-full" x-model="q.iflow" list="browse-iflow-options" maxlength="500"
                  placeholder="Filter IFlow…" @input.debounce.250ms="filtersChanged()" />
           <datalist id="browse-iflow-options">
             <template x-for="name in iflowOptions" :key="name">
@@ -147,18 +196,18 @@
           </datalist>
         </fieldset>
         <fieldset class="fieldset gap-0 pb-0 flex-1 min-w-48">
-          <legend class="fieldset-legend py-0 pb-1 text-xs font-normal">Search</legend>
-          <input class="input input-sm w-full" x-model="q.grep" maxlength="500" placeholder="Message or logger…"
+          <label class="fieldset-legend py-0 pb-1 text-xs font-normal" for="filter-search">Search</label>
+          <input id="filter-search" class="input input-sm w-full" x-model="q.grep" maxlength="500" placeholder="Message or logger…"
                  @input.debounce.250ms="filtersChanged()" />
         </fieldset>
         <fieldset class="fieldset gap-0 pb-0">
-          <legend class="fieldset-legend py-0 pb-1 text-xs font-normal">From (UTC)</legend>
-          <input type="datetime-local" step="1" class="input input-sm w-44" x-model="q.date_from"
+          <label class="fieldset-legend py-0 pb-1 text-xs font-normal" for="filter-from">From (UTC)</label>
+          <input id="filter-from" type="datetime-local" step="1" class="input input-sm w-44" x-model="q.date_from"
                  @change="filtersChanged()" />
         </fieldset>
         <fieldset class="fieldset gap-0 pb-0">
-          <legend class="fieldset-legend py-0 pb-1 text-xs font-normal">To (UTC)</legend>
-          <input type="datetime-local" step="1" class="input input-sm w-44" x-model="q.date_to"
+          <label class="fieldset-legend py-0 pb-1 text-xs font-normal" for="filter-to">To (UTC)</label>
+          <input id="filter-to" type="datetime-local" step="1" class="input input-sm w-44" x-model="q.date_to"
                  @change="filtersChanged()" />
         </fieldset>
         <button class="btn btn-ghost btn-sm tooltip tooltip-bottom" data-tip="Reset filters"
@@ -195,36 +244,40 @@
   <!-- Table -->
   <div class="card bg-base-100 shadow overflow-hidden">
     <div class="overflow-x-auto">
-      <table class="table table-xs table-zebra w-full">
+      <table class="table table-xs table-zebra w-full log-table" aria-label="Log entries">
         <thead>
           <tr class="bg-base-300 text-xs">
-            <th class="w-36">Time</th>
-            <th class="w-28">Tenant</th>
-            <th class="w-12">Type</th>
-            <th class="w-16">Level</th>
-            <th class="w-64">IFlow</th>
-            <th>Message</th>
+            <th scope="col" class="w-36">Time</th>
+            <th scope="col" class="w-28">Tenant</th>
+            <th scope="col" class="w-12">Type</th>
+            <th scope="col" class="w-16">Level</th>
+            <th scope="col" class="w-64">IFlow</th>
+            <th scope="col">Message</th>
           </tr>
         </thead>
         <template x-for="row in logs.items" :key="row.id">
           <tbody>
             <!-- Data row -->
             <tr class="log-row level-marker hover:bg-base-200 cursor-pointer"
-                :class="[selected?.id === row.id ? 'bg-base-200' : '', ['ERROR','WARN','INFO','DEBUG'].includes(row.level) ? 'level-'+row.level.toLowerCase() : '']"
-                @click="toggleRow(row)">
-              <td class="font-mono-xs whitespace-nowrap" x-text="row.timestamp?.slice(0,19)"></td>
-              <td><span class="badge badge-outline badge-xs" x-text="row.tenant?.toUpperCase()"></span></td>
-              <td class="text-xs text-muted" x-text="row.log_type"></td>
-              <td>
+                :class="[selected?.id === row.id ? 'bg-base-200' : '', ['ERROR','WARN','INFO','DEBUG'].includes(row.level) ? 'level-'+row.level.toLowerCase() : '']">
+              <td data-label="Time" class="font-mono-xs whitespace-nowrap">
+                <button type="button" class="link link-hover text-left font-mono-xs"
+                        :aria-expanded="selected?.id === row.id"
+                        :aria-label="`Open log entry from ${row.timestamp || 'unknown time'}${row.iflow ? `, ${row.iflow}` : ''}`"
+                        @click.stop="toggleRow(row)" x-text="row.timestamp?.slice(0,19)"></button>
+              </td>
+              <td data-label="Tenant" @click="toggleRow(row)"><span class="badge badge-outline badge-xs" x-text="row.tenant?.toUpperCase()"></span></td>
+              <td data-label="Type" class="text-xs text-muted" @click="toggleRow(row)" x-text="row.log_type"></td>
+              <td data-label="Level" @click="toggleRow(row)">
                 <span class="badge badge-xs level-badge" x-text="row.level"></span>
               </td>
-              <td class="font-mono-xs max-w-xs truncate" :title="row.iflow" x-text="shortIflow(row.iflow)"></td>
-              <td class="text-xs text-muted max-w-0">
+              <td data-label="IFlow" class="font-mono-xs max-w-xs truncate" :title="row.iflow" @click="toggleRow(row)" x-text="shortIflow(row.iflow)"></td>
+              <td data-label="Message" class="text-xs text-muted max-w-0" @click="toggleRow(row)">
                 <div class="truncate" x-text="row.message"></div>
               </td>
             </tr>
             <!-- Expanded detail row -->
-            <tr x-show="selected?.id === row.id" class="bg-base-200">
+            <tr x-show="selected?.id === row.id" class="bg-base-200 log-detail">
               <td colspan="6" class="p-0">
                 <div class="p-4 space-y-3 border-t border-base-300">
                   <div class="grid grid-cols-[6rem_1fr] gap-x-4 gap-y-1 text-xs">
@@ -261,7 +314,9 @@
           <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#chevron-left"></use></svg>
         </button>
         <template x-for="p in pageRange()" :key="p">
-          <button class="join-item btn btn-sm" :class="p===logs.page && 'btn-active'" @click="goPage(p)" x-text="p"></button>
+          <button class="join-item btn btn-sm" :class="p===logs.page && 'btn-active'"
+                  :aria-current="p===logs.page ? 'page' : 'false'" :aria-label="`Page ${p}`"
+                  @click="goPage(p)" x-text="p"></button>
         </template>
         <button class="join-item btn btn-sm tooltip tooltip-top" data-tip="Next page"
                 aria-label="Next page" title="Next page" :disabled="logs.page>=logs.pages" @click="goPage(logs.page+1)">
@@ -274,14 +329,15 @@
 
 <!-- ═══════════════════════════════ FETCH ════════════════════════════════════ -->
 <div x-data="fetchPage" @schedules-changed.window="loadSchedules()">
-<div x-show="$store.route.page==='fetch'" class="container mx-auto p-4 max-w-4xl">
+<div x-show="$store.route.page==='fetch'" class="page-content container mx-auto p-4 max-w-4xl">
+  <h1 class="text-2xl font-bold mb-4">Fetch logs</h1>
   <div class="card bg-base-100 shadow">
     <div class="card-body">
-      <h2 class="card-title mb-4"><svg class="w-5 h-5" aria-hidden="true" focusable="false"><use href="/icons.svg#download"></use></svg> Fetch logs</h2>
+      <h2 class="card-title mb-4"><svg class="w-5 h-5" aria-hidden="true" focusable="false"><use href="/icons.svg#download"></use></svg> Fetch now</h2>
 
       <div class="grid grid-cols-1 sm:grid-cols-3 gap-6 mb-6">
-        <div>
-          <p class="text-sm font-semibold mb-2">Tenant</p>
+        <fieldset>
+          <legend class="text-sm font-semibold mb-2">Tenant</legend>
           <div class="flex flex-col gap-2">
             <template x-for="t in tenants" :key="t.id">
               <label class="flex items-center gap-2 cursor-pointer">
@@ -292,9 +348,9 @@
               </label>
             </template>
           </div>
-        </div>
-        <div>
-          <p class="text-sm font-semibold mb-2">Log type</p>
+        </fieldset>
+        <fieldset>
+          <legend class="text-sm font-semibold mb-2">Log type</legend>
           <div class="flex flex-col gap-2">
             <template x-for="[val,label] in [['trace','trace'],['http','http']]" :key="val">
               <label class="flex items-center gap-2 cursor-pointer">
@@ -305,9 +361,9 @@
               </label>
             </template>
           </div>
-        </div>
-        <div>
-          <p class="text-sm font-semibold mb-2">Time range</p>
+        </fieldset>
+        <fieldset>
+          <legend class="text-sm font-semibold mb-2">Time range</legend>
           <div class="flex flex-col gap-2">
             <template x-for="[h,label] in [[1,'Last hour'],[6,'Last 6 hours'],[24,'Last 24 hours'],[72,'Last 3 days'],[168,'Last 7 days'],[0,'All available']]" :key="h">
               <label class="flex items-center gap-2 cursor-pointer">
@@ -316,7 +372,7 @@
               </label>
             </template>
           </div>
-        </div>
+        </fieldset>
       </div>
 
       <!-- Progress -->
@@ -356,7 +412,7 @@
         </div>
       </div>
 
-      <div class="flex gap-2 items-center">
+      <div class="flex flex-wrap gap-2 items-center">
         <button class="btn btn-primary" :disabled="job.status==='running' || form.log_types.length===0 || form.tenants.length===0"
                 @click="startFetch()">
           <span x-show="job.status!=='running'"><svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#play"></use></svg> Start fetch</span>
@@ -394,27 +450,28 @@
         every 15 minutes.
       </p>
       <div class="overflow-x-auto" x-show="schedules.length>0">
-        <table class="table table-sm">
+        <table class="table table-sm responsive-table" aria-label="Scheduled fetches">
           <thead>
             <tr>
-              <th>Name</th><th>Tenants</th><th>Log types</th><th>Time range</th>
-              <th>Interval</th><th>Last run</th><th>Enabled</th><th></th>
+              <th scope="col">Name</th><th scope="col">Tenants</th><th scope="col">Log types</th><th scope="col">Time range</th>
+              <th scope="col">Interval</th><th scope="col">Last run</th><th scope="col">Enabled</th><th scope="col">Actions</th>
             </tr>
           </thead>
           <tbody>
             <template x-for="s in schedules" :key="s.id">
               <tr>
-                <td x-text="s.name"></td>
-                <td class="text-xs" x-text="scheduleTenantLabel(s)"></td>
-                <td class="text-xs" x-text="s.log_types.join(', ')"></td>
-                <td class="text-xs" x-text="s.hours === 0 ? 'All' : `${s.hours}h`"></td>
-                <td class="text-xs" x-text="`${s.interval_minutes} min`"></td>
-                <td class="text-xs text-muted" x-text="s.last_run_at || '—'"></td>
-                <td>
+                <td data-label="Name" x-text="s.name"></td>
+                <td data-label="Tenants" class="text-xs" x-text="scheduleTenantLabel(s)"></td>
+                <td data-label="Log types" class="text-xs" x-text="s.log_types.join(', ')"></td>
+                <td data-label="Time range" class="text-xs" x-text="s.hours === 0 ? 'All' : `${s.hours}h`"></td>
+                <td data-label="Interval" class="text-xs" x-text="`${s.interval_minutes} min`"></td>
+                <td data-label="Last run" class="text-xs text-muted" x-text="s.last_run_at || '—'"></td>
+                <td data-label="Enabled">
                   <input type="checkbox" class="toggle toggle-sm toggle-success"
+                         :aria-label="`Enable schedule ${s.name}`"
                          :checked="s.enabled" @change="toggleSchedule(s)" />
                 </td>
-                <td class="whitespace-nowrap">
+                <td data-label="Actions" class="whitespace-nowrap">
                   <div class="flex gap-1">
                     <button class="btn btn-ghost btn-xs tooltip tooltip-top" data-tip="Edit schedule"
                             aria-label="Edit schedule" title="Edit schedule" @click="openScheduleModal(s)">
@@ -436,18 +493,20 @@
 </div>
 
 <!-- ── Modal: Fetch Schedule ── -->
-<dialog class="modal" :class="scheduleModal.open && 'modal-open'">
+<dialog x-dialog="scheduleModal.open" class="modal" aria-labelledby="schedule-dialog-title"
+        @cancel.prevent="scheduleModal.open=false">
   <div class="modal-box max-w-lg">
-    <h3 class="font-bold text-lg mb-4" x-text="scheduleModal.editing ? 'Edit schedule' : 'New schedule'"></h3>
+    <h2 id="schedule-dialog-title" tabindex="-1" autofocus class="font-bold text-lg mb-4"
+        x-text="scheduleModal.editing ? 'Edit schedule' : 'New schedule'"></h2>
     <div class="space-y-3">
       <fieldset class="fieldset gap-0 pb-0">
-        <legend class="fieldset-legend py-0 pb-1 text-sm font-normal">Name</legend>
+        <label class="fieldset-legend py-0 pb-1 text-sm font-normal" for="schedule-name">Name</label>
         <input type="text" class="input input-sm w-full" placeholder="e.g. PRD every 15 min"
-               x-model="scheduleModal.form.name" />
+               id="schedule-name" x-model="scheduleModal.form.name" />
       </fieldset>
-      <div class="grid grid-cols-2 gap-4">
-        <div>
-          <p class="text-sm font-semibold mb-2">Tenants</p>
+      <div class="grid grid-cols-2 gap-4 schedule-grid">
+        <fieldset>
+          <legend class="text-sm font-semibold mb-2">Tenants</legend>
           <div class="flex flex-col gap-1 max-h-32 overflow-y-auto">
             <template x-for="t in tenants" :key="t.id">
               <label class="flex items-center gap-2 cursor-pointer">
@@ -458,9 +517,9 @@
               </label>
             </template>
           </div>
-        </div>
-        <div>
-          <p class="text-sm font-semibold mb-2">Log types</p>
+        </fieldset>
+        <fieldset>
+          <legend class="text-sm font-semibold mb-2">Log types</legend>
           <div class="flex flex-col gap-1">
             <template x-for="[val,label] in [['trace','trace'],['http','http']]" :key="val">
               <label class="flex items-center gap-2 cursor-pointer">
@@ -471,16 +530,16 @@
               </label>
             </template>
           </div>
-        </div>
+        </fieldset>
       </div>
-      <div class="grid grid-cols-2 gap-4">
+      <div class="grid grid-cols-2 gap-4 schedule-grid">
         <fieldset class="fieldset gap-0 pb-0">
-          <legend class="fieldset-legend py-0 pb-1 text-sm font-normal">Time range per run (hours, 0 = all)</legend>
-          <input type="number" min="0" class="input input-sm w-full" x-model="scheduleModal.form.hours" />
+          <label class="fieldset-legend py-0 pb-1 text-sm font-normal" for="schedule-hours">Time range per run (hours, 0 = all)</label>
+          <input id="schedule-hours" type="number" min="0" class="input input-sm w-full" x-model="scheduleModal.form.hours" />
         </fieldset>
         <fieldset class="fieldset gap-0 pb-0">
-          <legend class="fieldset-legend py-0 pb-1 text-sm font-normal">Interval (minutes)</legend>
-          <input type="number" min="1" class="input input-sm w-full" x-model="scheduleModal.form.interval_minutes" />
+          <label class="fieldset-legend py-0 pb-1 text-sm font-normal" for="schedule-interval">Interval (minutes)</label>
+          <input id="schedule-interval" type="number" min="1" class="input input-sm w-full" x-model="scheduleModal.form.interval_minutes" />
         </fieldset>
       </div>
       <label class="flex items-center gap-2 cursor-pointer">
@@ -493,30 +552,31 @@
       <button class="btn btn-ghost btn-sm"   @click="scheduleModal.open=false">Cancel</button>
     </div>
   </div>
-  <form method="dialog" class="modal-backdrop" @click="scheduleModal.open=false"><button>close</button></form>
 </dialog>
 
 <!-- ── Modal: Confirm delete schedule ── -->
-<dialog class="modal" :class="confirmDeleteScheduleId && 'modal-open'">
+<dialog x-dialog="!!confirmDeleteScheduleId" class="modal" aria-labelledby="delete-schedule-dialog-title"
+        @cancel.prevent="confirmDeleteScheduleId=null">
   <div class="modal-box max-w-sm">
-    <h3 class="font-bold text-lg mb-2">Delete schedule?</h3>
+    <h2 id="delete-schedule-dialog-title" tabindex="-1" autofocus class="font-bold text-lg mb-2">Delete schedule?</h2>
     <p class="text-sm text-muted">This scheduled fetch will be permanently deleted.</p>
     <div class="modal-action">
       <button class="btn btn-error btn-sm" @click="deleteSchedule(confirmDeleteScheduleId)">Delete</button>
       <button class="btn btn-ghost btn-sm" @click="confirmDeleteScheduleId=null">Cancel</button>
     </div>
   </div>
-  <form method="dialog" class="modal-backdrop" @click="confirmDeleteScheduleId=null"><button>close</button></form>
 </dialog>
 </div>
 
 <!-- ═══════════════════════════════ STATS ════════════════════════════════════ -->
-<div x-data="statsPage" x-show="$store.route.page==='stats'" class="container mx-auto p-4 max-w-screen-xl"
+<div x-data="statsPage" x-show="$store.route.page==='stats'" class="page-content container mx-auto p-4 max-w-screen-xl"
      @page-shown.window="onPageShown($event.detail)"
      @theme-changed.window="onThemeChanged()">
 
+  <h1 class="text-2xl font-bold mb-4">Statistics</h1>
   <div class="flex gap-2 mb-4 items-center">
-    <select class="select select-sm w-28" x-model="statsFilter" @change="loadStats()">
+    <label class="sr-only" for="stats-tenant">Filter statistics by tenant</label>
+    <select id="stats-tenant" class="select select-sm w-28" x-model="statsFilter" @change="loadStats()">
       <option value="">All tenants</option>
       <template x-for="t in tenants" :key="t.id">
         <option :value="t.id" x-text="t.name"></option>
@@ -562,21 +622,21 @@
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
     <div class="card bg-base-100 shadow">
       <div class="card-body p-4">
-        <h3 class="font-semibold text-sm mb-2">Top IFlows by errors</h3>
-        <canvas id="chartErrors" height="260"></canvas>
+        <h2 class="font-semibold text-sm mb-2">Top IFlows by errors</h2>
+        <canvas id="chartErrors" height="260" role="img" aria-label="Top IFlows by errors chart"></canvas>
       </div>
     </div>
     <div class="flex flex-col gap-4">
       <div class="card bg-base-100 shadow">
         <div class="card-body p-4">
-          <h3 class="font-semibold text-sm mb-2">Level distribution</h3>
-          <canvas id="chartLevels" height="130"></canvas>
+          <h2 class="font-semibold text-sm mb-2">Level distribution</h2>
+          <canvas id="chartLevels" height="130" role="img" aria-label="Log level distribution chart"></canvas>
         </div>
       </div>
       <div class="card bg-base-100 shadow">
         <div class="card-body p-4">
-          <h3 class="font-semibold text-sm mb-2">Errors per hour (last 48 h)</h3>
-          <canvas id="chartTimeline" height="100"></canvas>
+          <h2 class="font-semibold text-sm mb-2">Errors per hour (last 48 h)</h2>
+          <canvas id="chartTimeline" height="100" role="img" aria-label="Errors per hour chart for the last 48 hours"></canvas>
         </div>
       </div>
     </div>
@@ -585,25 +645,28 @@
   <!-- IFlow table -->
   <div class="card bg-base-100 shadow">
     <div class="card-body p-4">
-      <h3 class="font-semibold text-sm mb-3">IFlows Detail</h3>
+      <h2 class="font-semibold text-sm mb-3">IFlows Detail</h2>
       <div class="overflow-x-auto">
-        <table class="table table-xs table-zebra">
+        <table class="table table-xs table-zebra responsive-table" aria-label="IFlow statistics">
           <thead><tr>
-            <th>IFlow</th>
-            <th class="text-right level-error level-text">ERROR</th>
-            <th class="text-right level-warn level-text">WARN</th>
-            <th class="text-right level-info level-text">INFO</th>
-            <th class="text-right">TOTAL</th>
+            <th scope="col">IFlow</th>
+            <th scope="col" class="text-right level-error level-text">ERROR</th>
+            <th scope="col" class="text-right level-warn level-text">WARN</th>
+            <th scope="col" class="text-right level-info level-text">INFO</th>
+            <th scope="col" class="text-right">TOTAL</th>
           </tr></thead>
           <tbody>
             <template x-for="row in iflowStats" :key="row.iflow">
-              <tr class="cursor-pointer hover"
-                  @click="showIflow(row.iflow)">
-                <td class="font-mono text-xs" x-text="shortIflow(row.iflow)"></td>
-                <td class="text-right font-mono text-xs level-error level-text" x-text="(row.error||0).toLocaleString('en-US')"></td>
-                <td class="text-right font-mono text-xs level-warn level-text" x-text="(row.warn||0).toLocaleString('en-US')"></td>
-                <td class="text-right font-mono text-xs level-info level-text" x-text="(row.info||0).toLocaleString('en-US')"></td>
-                <td class="text-right font-mono text-xs font-bold"    x-text="(row.total||0).toLocaleString('en-US')"></td>
+              <tr>
+                <td data-label="IFlow" class="font-mono text-xs">
+                  <button type="button" class="link link-hover text-left"
+                          :aria-label="`Browse errors for ${row.iflow}`"
+                          @click="showIflow(row.iflow)" x-text="shortIflow(row.iflow)"></button>
+                </td>
+                <td data-label="ERROR" class="text-right font-mono text-xs level-error level-text" x-text="(row.error||0).toLocaleString('en-US')"></td>
+                <td data-label="WARN" class="text-right font-mono text-xs level-warn level-text" x-text="(row.warn||0).toLocaleString('en-US')"></td>
+                <td data-label="INFO" class="text-right font-mono text-xs level-info level-text" x-text="(row.info||0).toLocaleString('en-US')"></td>
+                <td data-label="TOTAL" class="text-right font-mono text-xs font-bold"    x-text="(row.total||0).toLocaleString('en-US')"></td>
               </tr>
             </template>
           </tbody>
@@ -615,14 +678,15 @@
 
 <!-- ═══════════════════════════════ SETTINGS ═════════════════════════════════ -->
 <div x-data="settingsPage" @open-tenant-modal.window="openTenantModal()" @page-shown.window="onPageShown($event.detail)">
-<div x-show="$store.route.page==='settings'" class="container mx-auto p-4 max-w-2xl">
+<div x-show="$store.route.page==='settings'" class="page-content container mx-auto p-4 max-w-2xl">
 
+  <h1 class="text-2xl font-bold mb-4">Settings</h1>
   <div class="card bg-base-100 shadow mb-4">
     <div class="card-body">
       <h2 class="card-title text-base">Appearance</h2>
       <fieldset class="fieldset">
-        <legend class="fieldset-legend">Theme</legend>
-        <select class="select select-sm w-full max-w-xs" aria-label="Theme preference"
+        <label class="fieldset-legend" for="theme-preference">Theme</label>
+        <select id="theme-preference" class="select select-sm w-full max-w-xs"
                 :value="$store.theme.preference" @change="$store.theme.setPreference($event.target.value)">
           <option value="system">System</option>
           <option value="light">Light</option>
@@ -650,12 +714,12 @@
             <div class="flex gap-1">
               <button class="btn btn-xs btn-ghost" @click="testTenant(t)">Test connection</button>
               <button class="btn btn-xs btn-ghost" @click="openTenantModal(t)">Edit</button>
-              <button class="btn btn-xs btn-ghost text-error" @click="deleteTenant(t.id)">Delete</button>
+              <button class="btn btn-xs btn-ghost text-error" @click="confirmDeleteTenant(t.id)">Delete</button>
             </div>
           </div>
           <div class="space-y-0.5 text-xs font-mono text-muted">
-            <p><span class="text-muted w-20 inline-block">API URL</span><span x-text="t.api_url"></span></p>
-            <p><span class="text-muted w-20 inline-block">OAuth URL</span><span x-text="t.oauth_url"></span></p>
+            <p><span class="text-muted w-20 inline-block">API URL</span><span class="break-all" x-text="t.api_url"></span></p>
+            <p><span class="text-muted w-20 inline-block">OAuth URL</span><span class="break-all" x-text="t.oauth_url"></span></p>
             <p><span class="text-muted w-20 inline-block">Client ID</span>
                <span x-text="t.client_id?.slice(0,30)"></span><span x-show="t.client_id?.length>30">…</span></p>
           </div>
@@ -691,7 +755,7 @@
       <h2 class="card-title text-base mb-3">Database</h2>
       <div class="grid grid-cols-2 gap-y-1 text-sm mb-4">
         <span class="text-muted">Path</span>
-        <span class="font-mono text-xs" x-text="dbInfo.path || '–'"></span>
+        <span class="font-mono text-xs break-all" x-text="dbInfo.path || '–'"></span>
         <span class="text-muted">Size</span>
         <span class="font-mono" x-text="dbInfo.size_mb ? dbInfo.size_mb + ' MB' : '–'"></span>
         <span class="text-muted">Entries</span>
@@ -706,8 +770,8 @@
         Downloaded files are kept.</p>
       <div class="flex flex-wrap gap-2 items-end">
         <fieldset class="fieldset gap-0 pb-0">
-          <legend class="fieldset-legend py-0 pb-1 text-xs font-normal">Tenant</legend>
-          <select class="select select-sm" x-model="cleanup.tenant">
+          <label class="fieldset-legend py-0 pb-1 text-xs font-normal" for="cleanup-tenant">Tenant</label>
+          <select id="cleanup-tenant" class="select select-sm" x-model="cleanup.tenant">
             <option value="all">All tenants</option>
             <template x-for="t in tenants" :key="t.id">
               <option :value="t.id" x-text="t.name"></option>
@@ -715,8 +779,8 @@
           </select>
         </fieldset>
         <fieldset class="fieldset gap-0 pb-0">
-          <legend class="fieldset-legend py-0 pb-1 text-xs font-normal">Older than (days)</legend>
-          <input type="number" min="1" class="input input-sm w-28" x-model.number="cleanup.olderThanDays" />
+          <label class="fieldset-legend py-0 pb-1 text-xs font-normal" for="cleanup-days">Older than (days)</label>
+          <input id="cleanup-days" type="number" min="1" class="input input-sm w-28" x-model.number="cleanup.olderThanDays" />
         </fieldset>
         <button class="btn btn-sm btn-warning btn-outline" @click="confirmCleanupOpen=true"><svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#eraser"></use></svg> Delete old entries</button>
       </div>
@@ -725,13 +789,16 @@
 </div>
 
 <!-- ── Modal: Tenant ── -->
-<dialog class="modal" :class="tenantModal.open && 'modal-open'">
+<dialog x-dialog="tenantModal.open" class="modal" aria-labelledby="tenant-dialog-title"
+        @cancel.prevent="tenantModal.open=false">
   <div class="modal-box max-w-lg">
-    <h3 class="font-bold text-lg mb-4" x-text="tenantModal.editing ? 'Edit tenant' : 'Add tenant'"></h3>
+    <h2 id="tenant-dialog-title" tabindex="-1" autofocus class="font-bold text-lg mb-4"
+        x-text="tenantModal.editing ? 'Edit tenant' : 'Add tenant'"></h2>
     <div class="space-y-3">
       <fieldset x-show="!tenantModal.editing" class="fieldset gap-0 pb-0">
-        <legend class="fieldset-legend py-0 pb-1 text-sm font-normal">Service key (optional)</legend>
+        <label class="fieldset-legend py-0 pb-1 text-sm font-normal" for="tenant-service-key">Service key (optional)</label>
         <textarea class="textarea textarea-sm h-[58px] min-h-[58px] w-full font-mono text-xs" rows="3"
+                  id="tenant-service-key"
                   placeholder='Paste the JSON service key of your Process Integration Runtime (plan "api") to fill in the fields below'
                   x-model="tenantModal.serviceKey" @input.debounce.300ms="applyServiceKey()"></textarea>
         <span x-show="tenantModal.serviceKeyError" class="text-error text-xs mt-1" x-text="tenantModal.serviceKeyError"></span>
@@ -745,8 +812,8 @@
         ['client_secret', 'Client Secret',            '',                 'password']
       ]" :key="field">
         <fieldset class="fieldset gap-0 pb-0">
-          <legend class="fieldset-legend py-0 pb-1 text-sm font-normal" x-text="label"></legend>
-          <input :type="type" class="input input-sm w-full"
+          <label class="fieldset-legend py-0 pb-1 text-sm font-normal" :for="'tenant-'+field" x-text="label"></label>
+          <input :id="'tenant-'+field" :type="type" class="input input-sm w-full"
                  :placeholder="field==='client_secret' && tenantModal.editing ? 'Leave empty to keep the current secret' : ph"
                  :disabled="field==='id' && tenantModal.editing"
                  x-model="tenantModal.form[field]" />
@@ -758,13 +825,32 @@
       <button class="btn btn-ghost btn-sm"   @click="tenantModal.open=false">Cancel</button>
     </div>
   </div>
-  <form method="dialog" class="modal-backdrop" @click="tenantModal.open=false"><button>close</button></form>
+</dialog>
+
+<!-- ── Modal: Confirm tenant deletion ── -->
+<dialog x-dialog="tenantDeleteModal.open" class="modal" aria-labelledby="delete-tenant-dialog-title"
+        @cancel.prevent="tenantDeleteModal.open=false">
+  <div class="modal-box">
+    <h2 id="delete-tenant-dialog-title" tabindex="-1" autofocus class="font-bold text-lg">Delete tenant?</h2>
+    <p class="py-3 text-sm">
+      Delete tenant <strong x-text="tenantDeleteModal.tenantId"></strong>? Scheduled fetches will no longer include it.
+    </p>
+    <label class="flex items-start gap-2 text-sm">
+      <input type="checkbox" class="checkbox checkbox-sm checkbox-primary mt-0.5" x-model="tenantDeleteModal.purgeLogs" />
+      <span>Also delete this tenant's imported log entries and downloaded files. This cannot be undone.</span>
+    </label>
+    <div class="modal-action">
+      <button class="btn btn-error btn-sm" @click="deleteTenant(tenantDeleteModal.tenantId, tenantDeleteModal.purgeLogs)">Delete tenant</button>
+      <button class="btn btn-ghost btn-sm" @click="tenantDeleteModal.open=false">Cancel</button>
+    </div>
+  </div>
 </dialog>
 
 <!-- ── Modal: Confirm clear DB ── -->
-<dialog class="modal" :class="confirmClearOpen && 'modal-open'">
+<dialog x-dialog="confirmClearOpen" class="modal" aria-labelledby="clear-database-dialog-title"
+        @cancel.prevent="confirmClearOpen=false">
   <div class="modal-box">
-    <h3 class="font-bold text-lg">Clear the entire database?</h3>
+    <h2 id="clear-database-dialog-title" tabindex="-1" autofocus class="font-bold text-lg">Clear the entire database?</h2>
     <p class="py-3 text-sm">All imported log entries will be deleted. Downloaded files are kept.</p>
     <div class="modal-action">
       <button class="btn btn-error btn-sm" :class="clearDbBusy && 'btn-disabled'" @click="clearDb()">
@@ -774,13 +860,13 @@
       <button class="btn btn-ghost btn-sm" :disabled="clearDbBusy" @click="confirmClearOpen=false">Cancel</button>
     </div>
   </div>
-  <form method="dialog" class="modal-backdrop" @click="!clearDbBusy && (confirmClearOpen=false)"><button>close</button></form>
 </dialog>
 
 <!-- ── Modal: Confirm cleanup (tenant + time range) ── -->
-<dialog class="modal" :class="confirmCleanupOpen && 'modal-open'">
+<dialog x-dialog="confirmCleanupOpen" class="modal" aria-labelledby="cleanup-dialog-title"
+        @cancel.prevent="confirmCleanupOpen=false">
   <div class="modal-box">
-    <h3 class="font-bold text-lg">Delete old entries?</h3>
+    <h2 id="cleanup-dialog-title" tabindex="-1" autofocus class="font-bold text-lg">Delete old entries?</h2>
     <p class="py-3 text-sm">
       Deletes all entries for
       <strong x-text="cleanup.tenant==='all' ? 'all tenants' : (tenants.find(t=>t.id===cleanup.tenant)?.name || cleanup.tenant)"></strong>
@@ -794,9 +880,9 @@
       <button class="btn btn-ghost btn-sm" :disabled="cleanup.busy" @click="confirmCleanupOpen=false">Cancel</button>
     </div>
   </div>
-  <form method="dialog" class="modal-backdrop" @click="!cleanup.busy && (confirmCleanupOpen=false)"><button>close</button></form>
 </dialog>
 </div>
+</main>
 
 <!-- ── Toast ── -->
 <div class="toast toast-end" x-show="$store.toast.show" x-transition>
