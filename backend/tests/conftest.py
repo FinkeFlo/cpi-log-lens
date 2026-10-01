@@ -15,9 +15,10 @@ import httpx
 import pytest
 from asgi_lifespan import LifespanManager
 
-from app import main, tasks
+from app import cpi, main, tasks
 from app.config import Settings, get_settings
 from app.cpi import client as cpi_api
+from app.cpi.client import CpiClient
 from app.repositories.database import Database
 from app.services import fetch as fetch_service
 from app.services import stats
@@ -78,13 +79,19 @@ async def db(app_env):
 
 @pytest.fixture
 def fake_cpi(monkeypatch):
-    """Fake CPI API; every HTTP client the CPI module creates talks to it."""
+    """Fake CPI API; every CPI client of the app talks to it."""
     fake = FakeCpi()
-    real_client = httpx.AsyncClient
 
-    def client_with_fake_transport(*args, **kwargs):
-        kwargs.setdefault("transport", httpx.ASGITransport(app=fake.app))
-        return real_client(*args, **kwargs)
+    def client_for(tenant, *, timeout=None):
+        transport = httpx.ASGITransport(app=fake.app)
+        return CpiClient(
+            tenant["api_url"],
+            tenant["oauth_url"],
+            tenant["client_id"],
+            tenant["client_secret"],
+            transport=transport,
+            retry_backoff=0,
+        )
 
-    monkeypatch.setattr(cpi_api.httpx, "AsyncClient", client_with_fake_transport)
+    monkeypatch.setattr(cpi, "client_for", client_for)
     return fake
