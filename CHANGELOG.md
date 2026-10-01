@@ -5,7 +5,7 @@
 
 ### Upgrade notes
 
-* **Back up the database before upgrading.** On its first start, 0.2.0 migrates the database schema (to version 5, shown in `GET /api/db/info`). Earlier versions refuse to open a migrated database; to go back, restore the backup.
+* **Back up the database before upgrading.** On its first start, 0.2.0 migrates the database schema (to version 5, shown in `GET /api/db/info`). Running 0.1.x on a migrated database is not supported; to go back, restore the backup.
 * **Storage format (optional, one-way).** New databases store the log texts ZSTD-compressed, about 2.5–4 times smaller. An existing database keeps its format until you convert it with `python -m app.storage` or by starting once with `DB_STORAGE_UPGRADE=true` (README, *Storage format*). The converted file can only be opened with DuckDB 1.5 or newer; the old file is kept as `cpi_logs.duckdb.bak-<UTC time>`.
 * **API errors use HTTP status codes** with `{"detail": …}`: starting a fetch while one runs answers 409 (was 200 with `"ok": false`), an unknown tenant or schedule 404, a failed token request in the connection test 502, an unexpected error 500. Scripts that checked `"ok": false` need to check the status code.
 * Deleting a tenant keeps its log entries and downloaded files; `DELETE /api/tenants/{id}?purge=true` (or the second question in the UI) deletes them too.
