@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.2.0](https://github.com/FinkeFlo/cpi-log-lens/compare/v0.1.1...v0.2.0) (2026-10-01)
+
+
+### Upgrade notes
+
+* **Back up the database before upgrading.** On its first start, 0.2.0 migrates the database schema (to version 5, shown in `GET /api/db/info`). Running 0.1.x on a migrated database is not supported; to go back, restore the backup.
+* **Storage format (optional, one-way).** New databases store the log texts ZSTD-compressed, about 2.5–4 times smaller. An existing database keeps its format until you convert it with `python -m app.storage` or by starting once with `DB_STORAGE_UPGRADE=true` (README, *Storage format*). The converted file can only be opened with DuckDB 1.5 or newer; the old file is kept as `cpi_logs.duckdb.bak-<UTC time>`.
+* **API errors use HTTP status codes** with `{"detail": …}`: starting a fetch while one runs answers 409 (was 200 with `"ok": false`), an unknown tenant or schedule 404, a failed token request in the connection test 502, an unexpected error 500. Scripts that checked `"ok": false` need to check the status code.
+* Deleting a tenant keeps its log entries and downloaded files; `DELETE /api/tenants/{id}?purge=true` (or the second question in the UI) deletes them too.
+* `SCHEDULE_CHECK_SECONDS` is no longer read: schedules run at their due time.
+
+
+### Features
+
+* **db:** compressed log storage and database backups ([#9](https://github.com/FinkeFlo/cpi-log-lens/issues/9)) ([1fac83e](https://github.com/FinkeFlo/cpi-log-lens/commit/1fac83e9916693a6a8e6e3671d00e31d31307483))
+* **db:** versioned schema migrations ([#8](https://github.com/FinkeFlo/cpi-log-lens/issues/8)) ([110f517](https://github.com/FinkeFlo/cpi-log-lens/commit/110f517df6252206275e770e53a17e1e2cfe09f8))
+* **fetch:** persistent fetch run history and a locked job start ([#12](https://github.com/FinkeFlo/cpi-log-lens/issues/12)) ([30e6255](https://github.com/FinkeFlo/cpi-log-lens/commit/30e625554ee0894a93d7eb2deb61be7472b1ced7))
+
+
+### Bug Fixes
+
+* **api:** http status codes and one error schema ([#14](https://github.com/FinkeFlo/cpi-log-lens/issues/14)) ([d0eb86f](https://github.com/FinkeFlo/cpi-log-lens/commit/d0eb86f47d2adc62fb069a4bf5376eba06460037))
+* import bookkeeping per log type and consistent tenant deletion ([#11](https://github.com/FinkeFlo/cpi-log-lens/issues/11)) ([f0cb0d5](https://github.com/FinkeFlo/cpi-log-lens/commit/f0cb0d570c4f26849131360668be7514742b2189))
+* **scheduler:** run schedules and retention with apscheduler ([#13](https://github.com/FinkeFlo/cpi-log-lens/issues/13)) ([b36eca9](https://github.com/FinkeFlo/cpi-log-lens/commit/b36eca93b0484172b69a62501739463a06c83cea))
+
+
+### Build and Dependencies
+
+* python tooling with uv, ruff and mypy ([#4](https://github.com/FinkeFlo/cpi-log-lens/issues/4)) ([27ea0c9](https://github.com/FinkeFlo/cpi-log-lens/commit/27ea0c9d95f4a225355f087b67bfd811fc4f84ae))
+
+
+### Documentation
+
+* point changelog entries to the current commit history ([#1](https://github.com/FinkeFlo/cpi-log-lens/issues/1)) ([4d39161](https://github.com/FinkeFlo/cpi-log-lens/commit/4d391613446e15f2134ed9d64429f2160464fc45))
+
 ## [0.1.1](https://github.com/FinkeFlo/cpi-log-lens/compare/v0.1.0...v0.1.1) (2026-09-30)
 
 
