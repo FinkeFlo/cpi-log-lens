@@ -46,6 +46,8 @@ SSE_QUEUE_SIZE = 1000
 MAX_PROBLEMS = 50
 # Events after which a job has ended and its SSE stream closes.
 FINAL_EVENTS = ("done", "error", "cancelled")
+# Error of the parts a failed job did not reach.
+NOT_FETCHED = "Not fetched: the job stopped with an error."
 # How often the progress of a running job is written to its history entry.
 PROGRESS_SAVE_SECONDS = 10.0
 
@@ -176,11 +178,16 @@ class FetchJob:
         part.update(changes)
         return dict(part)
 
-    def end_parts(self) -> None:
-        """A cancelled job: parts not finished are cancelled."""
+    def end_parts(self, status: str, error: str = "") -> None:
+        """The job ends early (cancelled or failed): every part not finished gets `status`;
+        on an error, the running part gets the error and the waiting ones a note."""
         for part in self.parts:
-            if part["status"] in ("pending", "running"):
-                self.push({"type": "part", "part": self.update_part(part["index"], status="cancelled")})
+            if part["status"] not in ("pending", "running"):
+                continue
+            changes: dict = {"status": status}
+            if error:
+                changes["error"] = error if part["status"] == "running" else NOT_FETCHED
+            self.push({"type": "part", "part": self.update_part(part["index"], **changes)})
 
     def summary(self) -> str:
         if self.errors:
@@ -363,17 +370,27 @@ async def run_fetch(db: Database, job: FetchJob, params: FetchParams) -> None:
                     index += 1
 
         if job.cancel_requested:
-            job.end_parts()
+            job.end_parts("cancelled")
             await job.finish("cancelled", _final_event(job, "cancelled"), status_msg="Cancelled")
         else:
             await job.finish("done", _final_event(job, "done"), status_msg=job.summary())
 
     except Exception as e:
-        await job.finish("error", {"type": "error", "msg": str(e)}, error=str(e))
+        # An unexpected failure (database, file system): no part may stay "running".
+        job.end_parts("failed", error=str(e))
+        await job.finish("error", {"type": "error", "msg": str(e), "parts": [dict(p) for p in job.parts]}, error=str(e))
 
 
 def _final_event(job: FetchJob, kind: str) -> dict:
-    return {"type": kind, "imported": job.imported, "warnings": job.warnings, "errors": job.errors}
+    """The last event of a job, with its final parts, so a client that missed part
+    updates still ends with the right state."""
+    return {
+        "type": kind,
+        "imported": job.imported,
+        "warnings": job.warnings,
+        "errors": job.errors,
+        "parts": [dict(p) for p in job.parts],
+    }
 
 
 @dataclass

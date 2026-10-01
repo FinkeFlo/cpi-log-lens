@@ -219,6 +219,22 @@ async def test_only_the_latest_problems_are_kept(client, tenant, monkeypatch):
     assert len(status["problems"]) == 2
 
 
+async def test_an_unexpected_error_ends_every_part(client, tenant, monkeypatch):
+    tenant.add("a.log", numbered_lines(2))
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("database file is broken")
+
+    monkeypatch.setattr(file_imports_repo, "get_file_import", broken)
+    status = await fetch(client, tenants=["fake"], log_types=["trace", "http"], hours=0)
+    assert status["status"] == "error"
+    assert status["error_msg"] == "database file is broken"
+    assert [(p["status"], p["error"]) for p in status["parts"]] == [
+        ("failed", "database file is broken"),
+        ("failed", "Not fetched: the job stopped with an error."),
+    ]
+
+
 async def test_unknown_tenants_end_the_job_with_an_error(client, tenant):
     status = await fetch(client, tenants=["nope"], log_types=["trace"], hours=0)
     assert status["status"] == "error"
@@ -302,7 +318,13 @@ async def test_stream_of_a_running_job_sends_snapshot_progress_and_done(client, 
     assert {e["file"] for e in progress} <= {"a.log", "b.log"}
     assert all(set(e) == {"type", "done", "total", "file", "new_rows", "imported", "part"} for e in progress)
     assert all((e["part"]["tenant"], e["part"]["log_type"]) == ("fake", "trace") for e in progress)
-    assert events[-1] == {"type": "done", "imported": 5, "warnings": 0, "errors": 0}
+    assert {k: v for k, v in events[-1].items() if k != "parts"} == {
+        "type": "done",
+        "imported": 5,
+        "warnings": 0,
+        "errors": 0,
+    }
+    assert [p["status"] for p in events[-1]["parts"]] == ["done"]
 
 
 async def test_stream_goes_on_after_a_tenant_error(db):
