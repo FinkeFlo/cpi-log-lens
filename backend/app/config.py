@@ -51,7 +51,6 @@ class Settings(BaseSettings):
     # endpoint takes ~30-90 s per file (it decompresses server-side), so
     # parallelism is the main client-side lever.
     fetch_concurrency: int = Field(4, ge=1, le=32)
-    schedule_check_seconds: int = Field(60, ge=1)
     # Delete entries older than this many days automatically (0 = keep everything).
     retention_days: int = Field(0, ge=0)
     retention_check_hours: float = Field(24, gt=0)

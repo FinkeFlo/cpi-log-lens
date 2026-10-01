@@ -5,7 +5,7 @@ import uuid
 
 from fastapi import APIRouter, HTTPException
 
-from app.api.deps import DbDep
+from app.api.deps import DbDep, SchedulesDep
 from app.api.schemas import ScheduleRequest
 from app.repositories import schedules as schedules_repo
 
@@ -22,7 +22,7 @@ async def list_schedules(db: DbDep):
 
 
 @router.post("", status_code=201)
-async def create_schedule(body: ScheduleRequest, db: DbDep):
+async def create_schedule(body: ScheduleRequest, db: DbDep, schedules: SchedulesDep):
     schedule_id = str(uuid.uuid4())
     await schedules_repo.create_schedule(
         db,
@@ -34,11 +34,12 @@ async def create_schedule(body: ScheduleRequest, db: DbDep):
         body.interval_minutes,
         body.enabled,
     )
+    await schedules.reload()
     return {"ok": True, "id": schedule_id}
 
 
 @router.put("/{schedule_id}")
-async def update_schedule(schedule_id: str, body: ScheduleRequest, db: DbDep):
+async def update_schedule(schedule_id: str, body: ScheduleRequest, db: DbDep, schedules: SchedulesDep):
     existing = await schedules_repo.get_schedule(db, schedule_id)
     if not existing:
         raise HTTPException(404, "Schedule not found")
@@ -52,10 +53,12 @@ async def update_schedule(schedule_id: str, body: ScheduleRequest, db: DbDep):
         body.interval_minutes,
         body.enabled,
     )
+    await schedules.reload()
     return {"ok": True}
 
 
 @router.delete("/{schedule_id}")
-async def remove_schedule(schedule_id: str, db: DbDep):
+async def remove_schedule(schedule_id: str, db: DbDep, schedules: SchedulesDep):
     await schedules_repo.delete_schedule(db, schedule_id)
+    await schedules.reload()
     return {"ok": True}
