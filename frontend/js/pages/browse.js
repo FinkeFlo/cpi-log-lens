@@ -158,12 +158,14 @@ export default () => ({
   // background: a refresh the user did not ask for (new entries were imported); if it
   // fails, the last loaded list stays and a notice says it may be outdated. A search never
   // closes the drawer; whoever changes filters or pages does that.
+  // Returns the page it loaded, also when a newer search replaced it in the list
+  // (null if it failed).
   async search(page = this.currentPage, { writeUrl = true, background = false } = {}) {
     this.urlError = '';
     if (!validRange(this.q)) {
       this.urlError = 'From must be earlier than or equal to To.';
       this.$store.toast.notify(this.urlError, 'error');
-      return;
+      return null;
     }
     this.currentPage = page;
     if (writeUrl) this.writeUrl(page);
@@ -177,15 +179,16 @@ export default () => ({
         date_from: toUtcDateTime(this.q.date_from, 'date_from'),
         date_to: toUtcDateTime(this.q.date_to, 'date_to'),
       });
-      if (requestId !== this._requestId) return;
+      if (requestId !== this._requestId) return logs;
       await this.checkEmpty(logs, requestId);
-      if (requestId !== this._requestId) return;
+      if (requestId !== this._requestId) return logs;
       this.logs = logs;
       this.listError = null;
       this.refreshError = null;
       this.loadedOnce = true;
+      return logs;
     } catch (error) {
-      if (requestId !== this._requestId) return;
+      if (requestId !== this._requestId) return null;
       const state = describeError(error, 'log entries');
       if (background && this.logs.items.length) {
         this.refreshError = state;
@@ -193,6 +196,7 @@ export default () => ({
         this.listError = state;
         this.logs = emptyLogs();
       }
+      return null;
     } finally {
       if (requestId === this._requestId) this.loading = false;
     }
@@ -361,9 +365,11 @@ export default () => ({
     if (!row) {
       const page = this.logs.page + delta;
       if (page < 1 || page > this.logs.pages) return;
-      await this.search(page, { writeUrl: false });
-      if (this.listState !== 'results') return;
-      row = delta > 0 ? this.logs.items[0] : this.logs.items[this.logs.items.length - 1];
+      // Take the entry from the page this search loaded: a refresh started meanwhile
+      // (entries being imported) may answer first or last.
+      const logs = await this.search(page, { writeUrl: false });
+      if (!logs?.items.length) return;
+      row = delta > 0 ? logs.items[0] : logs.items[logs.items.length - 1];
     }
     this.writeUrl(this.currentPage, row.id, true);
     await this.openEntry(row);

@@ -232,6 +232,35 @@ await drawer.stepEntry(-1);
 assert.equal(drawer.currentPage, 2, 'previous at the start of a page loads the previous page');
 assert.equal(drawer.detail.id, 995);
 assert.equal(drawer.detailOpen, true);
+// Next across a page boundary while a background refresh (a fetch imports entries) is in flight,
+// whichever answer arrives first: the drawer shows the first entry of the next page.
+for (const refreshFirst of [false, true]) {
+  globalThis.__browseSearch = query => ({ total: 9, page: query.page, page_size: 3, pages: 3, items: rows(query.page) });
+  const racing = newPage('#browse');
+  racing.init();
+  await settle();
+  await racing.showEntry(racing.logs.items[2]);
+  assert.equal(racing.detail.id, 998);
+  const pending = [];
+  globalThis.__browseSearch = query => new Promise(resolve => pending.push({ query, resolve }));
+  const step = racing.stepEntry(1);
+  await settle();
+  racing.onLogsChanged({ firstPage: false, visibleOnly: true });
+  await settle();
+  assert.deepEqual(pending.map(request => request.query.page), [2, 2]);
+  const answer = request => request.resolve({ total: 9, page: 2, page_size: 3, pages: 3, items: rows(2) });
+  if (refreshFirst) answer(pending[1]);
+  answer(pending[0]);
+  await settle();
+  if (!refreshFirst) answer(pending[1]);
+  await step;
+  await settle();
+  assert.equal(racing.detail.id, 997, `Next shows the first entry of page 2 (refresh answered ${refreshFirst ? 'first' : 'last'})`);
+  assert.ok(location.hash.includes('page=2') && location.hash.includes('entry=997'), location.hash);
+  assert.equal(racing.logs.page, 2);
+}
+globalThis.__browseSearch = query => ({ total: 9, page: query.page, page_size: 3, pages: 3, items: rows(query.page) });
+
 globalThis.__browseGet = () => { throw { status: 404, kind: 'failed', message: 'Entry not found' }; };
 await drawer.openEntry(42);
 assert.equal(drawer.detailError.title, 'Log entry not found');
