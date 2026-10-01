@@ -19,10 +19,10 @@ from app import cpi, main, tasks
 from app.config import Settings, get_settings
 from app.cpi import client as cpi_api
 from app.cpi.client import CpiClient
+from app.cpi.fake import FakeCpi
 from app.repositories.database import Database
 from app.services import fetch as fetch_service
 from app.services import stats
-from tests.support import FakeCpi
 
 BASE_URL = "http://localhost"
 
@@ -79,10 +79,14 @@ async def db(app_env):
 
 @pytest.fixture
 def fake_cpi(monkeypatch):
-    """Fake CPI API; every CPI client of the app talks to it."""
+    """Fake CPI API; CPI requests for regular tenants go to it (the demo tenant and
+    MOCK mode keep using the app's own fake with the sample logs)."""
     fake = FakeCpi()
+    real_client_for = cpi.client_for
 
     def client_for(tenant, *, timeout=None):
+        if get_settings().mock or cpi.is_demo(tenant):
+            return real_client_for(tenant, timeout=timeout)
         transport = httpx.ASGITransport(app=fake.app)
         return CpiClient(
             tenant["api_url"],

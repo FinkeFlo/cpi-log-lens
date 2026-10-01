@@ -43,8 +43,8 @@ migration runs once, in its own transaction, recorded in `schema_version`. Never
 that has been released; add a new one.
 
 Tests live in `backend/tests/`. Each test gets a fresh DuckDB file and a started app, called through
-httpx without a server; CPI requests go to an in-process fake (`tests/support.py`), so no tenant is
-needed. Use synthetic log lines only (`log_line()` / `numbered_lines()`). A known bug can be pinned
+httpx without a server; CPI requests go to an in-process fake CPI server (`app/cpi/fake.py`), so no
+tenant is needed. Use synthetic log lines only (`log_line()` / `numbered_lines()`). A known bug can be pinned
 with `@pytest.mark.xfail(reason="<finding or issue>: …")`; xfail is strict, so remove the marker in the
 change that fixes it.
 

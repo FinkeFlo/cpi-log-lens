@@ -11,14 +11,14 @@ docker compose up -d --build                                          # like pro
 docker compose -f docker-compose.yml -f compose.dev.yaml up --build   # live reload
 ```
 
-`MOCK=true`, or the "Try demo data" button (tenant `demo` with `demo://` URLs), imports
-`backend/mock/trace_sample.log` (synthetic, regenerate with `backend/mock/generate_sample.py`)
-instead of calling CPI. CI (`.github/workflows/ci.yml`) runs ruff (lint + format), mypy, pytest,
+`MOCK=true`, or the "Try demo data" button (tenant `demo` with `demo://` URLs), fetches
+`backend/mock/trace_sample.log` (synthetic, regenerate with `backend/mock/generate_sample.py`) from
+the in-process fake CPI server instead of SAP, through the same code path as a real tenant. CI (`.github/workflows/ci.yml`) runs ruff (lint + format), mypy, pytest,
 pip-audit and an image smoke test. Dependencies: `backend/pyproject.toml`, locked in
 `backend/uv.lock` (`uv sync`, `uv lock`).
 
 Tests (`backend/tests/`, `uv run pytest`): API tests through httpx `ASGITransport` with a fresh DuckDB
-file per test; CPI calls go to the in-process fake in `tests/support.py`. Change behaviour together
+file per test; CPI calls go to the in-process fake (`app/cpi/fake.py`, fixture `fake_cpi`). Change behaviour together
 with its tests; strict `xfail` markers pin known bugs and must be removed with the fix.
 
 ## Architecture
@@ -47,8 +47,9 @@ database; `repositories` know nothing about FastAPI or HTTP.
 - `app/storage.py` — storage version checks, the opt-in conversion to ZSTD-compressed log texts
   (`DB_STORAGE_UPGRADE`, `python -m app.storage`) and `backup_to()` for `POST /api/db/backup`.
 - `app/parsing/cpi_log.py` — streaming parser `iter_log_batches` (pure, fully typed).
-- `app/cpi/client.py` — CPI client: OAuth token, file list, streaming download to gzip on disk,
-  retry with backoff.
+- `app/cpi/` — `CpiClient` (OAuth token, file list, streaming download to gzip on disk, retry with
+  backoff; injectable httpx transport), `fake.py` (in-process fake CPI API with the bundled sample,
+  used for the demo tenant, MOCK mode and tests), `client_for(tenant)` picks real or fake.
 - `app/tasks.py` (background tasks kept referenced), `app/watchdog.py` (heartbeat and the thread
   that exits a hung process), `app/errors.py`, `app/logging_config.py` (`LOG_FORMAT=text|json`).
 - `frontend/index.html` + `frontend/app.js` — single Alpine component `App()`, hash routing;

@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from app import cpi
-from app.config import BACKEND_DIR, get_settings
+from app.config import get_settings
 from app.cpi.client import CpiClient, RemoteLogFile
 from app.repositories import file_imports as file_imports_repo
 from app.repositories import tenants as tenants_repo
@@ -21,9 +21,6 @@ from app.services import importer
 from app.tasks import spawn
 
 log = logging.getLogger("cpi")
-
-# Bundled sample logs, imported instead of calling CPI in MOCK mode and for the demo tenant.
-MOCK_DIR = BACKEND_DIR / "mock"
 
 
 @dataclass(frozen=True)
@@ -179,12 +176,6 @@ async def run_fetch(db: Database, job: FetchJob, params: FetchParams) -> None:
         for tenant in tenants:
             if job.cancel_requested:
                 break
-            if get_settings().mock or cpi.is_demo(tenant):
-                for log_type in log_types:
-                    if job.cancel_requested:
-                        break
-                    await _import_samples(db, job, tenant, log_type)
-                continue
             async with cpi.client_for(tenant) as client:
                 for log_type in log_types:
                     if job.cancel_requested:
@@ -322,38 +313,3 @@ async def _fetch_file(ctx: _TenantFetch, f: RemoteLogFile, tenant_log_dir: Path)
         new_rows = 0
     job.imported += new_rows
     ctx.progress(f.name, new_rows)
-
-
-async def _import_samples(db: Database, job: FetchJob, tenant: dict, log_type: str) -> None:
-    """MOCK mode and the demo tenant: import the bundled sample logs instead of calling CPI."""
-    name = tenant["name"]
-    job.current_tenant = name
-    job.current_log_type = log_type
-    mock_files = list(MOCK_DIR.glob("*.log"))
-    job.total = len(mock_files)
-    job.status_msg = f"{name} · {log_type}: {len(mock_files)} files"
-    job.push({"type": "files_found", "count": len(mock_files), "tenant": name, "log_type": log_type})
-    for i, mf in enumerate(mock_files, 1):
-        if job.cancel_requested:
-            break
-        already = (await file_imports_repo.get_file_import(db, tenant["id"], mf.name))["lines"]
-        try:
-            new_rows = await importer.import_log_file(db, tenant["id"], log_type, mf, mf.name, already)
-        except Exception as e:
-            job.push({"type": "warn", "msg": f"Import failed: {mf.name}: {e}"})
-            new_rows = 0
-        job.imported += new_rows
-        job.done = i
-        job.current_file = mf.name
-        job.status_msg = f"{name} · {log_type}: {mf.name} ({i}/{len(mock_files)})"
-        job.push(
-            {
-                "type": "progress",
-                "done": i,
-                "total": len(mock_files),
-                "file": mf.name,
-                "new_rows": new_rows,
-                "imported": job.imported,
-            }
-        )
-        await asyncio.sleep(0.05)
