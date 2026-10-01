@@ -1,11 +1,16 @@
-// Browse page: URL-backed filters, page-based log results and the existing inline detail.
+// Browse page: URL-backed filters, page-based log results and the log entry drawer.
 // The result list shows one state at a time: loading, results, no data yet, no matches,
-// or an error (server unreachable, database busy, request failed).
+// or an error (server unreachable, database busy, request failed). The drawer shows one
+// entry (deep link: `entry` in the URL) independently of the list, so refreshing the list
+// while a fetch imports new entries leaves it open.
 import { api } from '../api.js';
 import { browseHash, emptyFilters, parseBrowseHash, toUtcDateTime } from '../browse-url.js';
+import { copyText } from '../clipboard.js';
 import { emit, OPEN_TENANT_MODAL } from '../events.js';
 import { shortIflow } from '../format.js';
 import { describeError } from '../states.js';
+
+const COPY_LABELS = { message: 'Message', raw: 'Raw line', link: 'Link' };
 
 const emptyLogs = () => ({ items: [], total: 0, page: 1, pages: 1, page_size: 100 });
 
@@ -26,7 +31,6 @@ export default () => ({
   q: emptyFilters(),
   logs: emptyLogs(),
   currentPage: 1,
-  selected: null,
   loading: false,
   loadedOnce: false, // a search has answered since the page was opened
   listError: null, // describeError() of the last failed search; the list is empty then
@@ -35,6 +39,15 @@ export default () => ({
   demoStarting: false,
   iflowOptions: [],
   urlError: '',
+  // Log entry drawer: `detail` stays set after closing, so the closing dialog keeps its content.
+  detail: null,
+  detailOpen: false,
+  detailLoading: false,
+  detailError: null,
+  copied: '', // message | raw | link: the copy button that just succeeded
+  copyStatus: '', // announced to screen readers
+  _detailRequest: 0,
+  _copyTimer: null,
   _requestId: 0,
   _filterRevision: 0,
   _iflowCache: new Map(),
@@ -66,7 +79,8 @@ export default () => ({
       if (!validRange(this.q)) throw new TypeError('Invalid Browse URL: date_from must not be after date_to');
       if (this.$store.route.page === 'browse') this.writeUrl(state.page, state.entry, true);
       this.loadIflows();
-      this.search(state.page, { restoreEntry: state.entry, writeUrl: false });
+      if (state.entry !== null && this.$store.route.page === 'browse') this.openEntry(state.entry);
+      this.search(state.page, { writeUrl: false });
     } catch (error) {
       this.setUrlError(error);
     }
@@ -75,14 +89,14 @@ export default () => ({
   setUrlError(error) {
     this.urlError = error.message;
     this._requestId++;
-    this.selected = null;
+    this.detailOpen = false;
     this.logs = emptyLogs();
     this.listError = null;
     this.loading = false;
     this.$store.toast.notify(this.urlError, 'error');
   },
 
-  writeUrl(page = this.currentPage, entry = this.selected?.id ?? null, replace = false) {
+  writeUrl(page = this.currentPage, entry = this.detailOpen ? this.detail?.id ?? null : null, replace = false) {
     if (this.$store.route.page !== 'browse') return;
     this.$store.route.writeHash(browseHash({ filters: this.q, page, entry }), replace);
   },
@@ -119,7 +133,7 @@ export default () => ({
     this.urlError = '';
     this._filterRevision++;
     this.currentPage = 1;
-    this.selected = null;
+    this.detailOpen = false;
     this.ensureSearchWindow();
     if (!validRange(this.q)) {
       this.urlError = 'From must be earlier than or equal to To.';
@@ -142,8 +156,9 @@ export default () => ({
   },
 
   // background: a refresh the user did not ask for (new entries were imported); if it
-  // fails, the last loaded list stays and a notice says it may be outdated.
-  async search(page = this.currentPage, { restoreEntry = null, writeUrl = true, background = false } = {}) {
+  // fails, the last loaded list stays and a notice says it may be outdated. A search never
+  // closes the drawer; whoever changes filters or pages does that.
+  async search(page = this.currentPage, { writeUrl = true, background = false } = {}) {
     this.urlError = '';
     if (!validRange(this.q)) {
       this.urlError = 'From must be earlier than or equal to To.';
@@ -154,7 +169,6 @@ export default () => ({
     if (writeUrl) this.writeUrl(page);
     const requestId = ++this._requestId;
     this.loading = true;
-    this.selected = null;
     try {
       const logs = await api.logs.search({
         page,
@@ -170,15 +184,6 @@ export default () => ({
       this.listError = null;
       this.refreshError = null;
       this.loadedOnce = true;
-      if (restoreEntry !== null) {
-        const row = logs.items.find(item => item.id === restoreEntry);
-        if (!row) {
-          this.urlError = `Entry ${restoreEntry} is not on page ${page} for these filters.`;
-          this.$store.toast.notify(this.urlError, 'error');
-          return;
-        }
-        await this.openRow(row);
-      }
     } catch (error) {
       if (requestId !== this._requestId) return;
       const state = describeError(error, 'log entries');
@@ -219,7 +224,7 @@ export default () => ({
   resetSearch() {
     this.q = emptyFilters();
     this.currentPage = 1;
-    this.selected = null;
+    this.detailOpen = false;
     this.urlError = '';
     this.writeUrl(1, null);
     this.search(1, { writeUrl: false });
@@ -227,7 +232,7 @@ export default () => ({
 
   goPage(page) {
     this.currentPage = page;
-    this.selected = null;
+    this.detailOpen = false;
     this.writeUrl(page, null);
     this.search(page, { writeUrl: false });
   },
@@ -240,12 +245,12 @@ export default () => ({
     return range;
   },
 
+  // Entries were imported or deleted: reload the list; an open entry stays in the drawer.
   onLogsChanged({ firstPage, visibleOnly }) {
     if (visibleOnly && this.$store.route.page !== 'browse') return;
     const page = firstPage ? 1 : this.currentPage;
     this.currentPage = page;
-    this.selected = null;
-    this.writeUrl(page, null);
+    this.writeUrl(page, undefined, true);
     this.search(page, { writeUrl: false, background: true });
   },
 
@@ -255,54 +260,132 @@ export default () => ({
     this.filtersChanged();
   },
 
+  // The URL changed (navigation, back/forward): show its filters, page and entry. When
+  // only the entry differs, the list is not loaded again.
   onPageShown(page) {
-    if (page !== 'browse') return;
+    if (page !== 'browse') {
+      this.detailOpen = false;
+      return;
+    }
     const revision = this._filterRevision;
     queueMicrotask(() => {
       if (revision !== this._filterRevision) return;
       try {
         const state = parseBrowseHash(window.location.hash);
         if (!state) return;
+        const sameList = this.loadedOnce && !this.listError &&
+          browseHash({ filters: state.filters, page: state.page }) === browseHash({ filters: this.q, page: this.currentPage });
         this.q = state.filters;
         this.currentPage = state.page;
-        this.selected = null;
         this.ensureSearchWindow();
         if (!validRange(this.q)) throw new TypeError('Invalid Browse URL: date_from must not be after date_to');
         this.writeUrl(state.page, state.entry, true);
+        if (state.entry === null) this.detailOpen = false;
+        else if (!this.detailOpen || this.detail?.id !== state.entry) this.openEntry(state.entry);
+        if (sameList) return;
         this.loadIflows();
-        this.search(state.page, { restoreEntry: state.entry, writeUrl: false });
+        this.search(state.page, { writeUrl: false });
       } catch (error) {
         this.setUrlError(error);
       }
     });
   },
 
-  closeRow() {
-    if (!this.selected) return;
-    this.selected = null;
+  // ── Log entry drawer ──
+
+  // A row was activated: open the drawer (a new history entry, so Back closes it).
+  async showEntry(row) {
+    this.detailOpen = true;
+    this.writeUrl(this.currentPage, row.id);
+    await this.openEntry(row);
+  },
+
+  // Show an entry: a row of the list at once, then the stored entry with its raw line.
+  async openEntry(rowOrId) {
+    const id = typeof rowOrId === 'object' ? rowOrId.id : rowOrId;
+    const row = typeof rowOrId === 'object' ? rowOrId : this.logs.items.find(item => item.id === id);
+    const request = ++this._detailRequest;
+    this.detail = row ? { ...row } : { id };
+    this.detailOpen = true;
+    this.detailError = null;
+    this.copied = '';
+    this.copyStatus = '';
+    this.detailLoading = true;
+    try {
+      const entry = await api.logs.get(id);
+      if (request === this._detailRequest) this.detail = { ...this.detail, ...entry };
+    } catch (error) {
+      if (request !== this._detailRequest) return;
+      this.detailError = error.status === 404
+        ? { kind: 'missing', icon: 'search-x', title: 'Log entry not found',
+            text: `Entry ${id} no longer exists. It may have been deleted by a cleanup or retention.`, detail: '' }
+        : describeError(error, 'the log entry');
+    } finally {
+      if (request === this._detailRequest) this.detailLoading = false;
+    }
+  },
+
+  closeDetail() {
+    if (!this.detailOpen) return;
+    this.detailOpen = false;
+    this._detailRequest++;
     this.writeUrl(this.currentPage, null);
   },
 
-  async toggleRow(row) {
-    if (this.selected?.id === row.id) {
-      this.selected = null;
-      this.writeUrl(this.currentPage, null);
-      return;
-    }
-    this.selected = row;
-    this.writeUrl(this.currentPage, row.id);
-    await this.openRow(row);
+  // Position of the open entry in the loaded list (-1: not on this page).
+  get detailIndex() {
+    return this.detail ? this.logs.items.findIndex(item => item.id === this.detail.id) : -1;
   },
 
-  async openRow(row) {
-    this.selected = row;
-    if (row.raw_line === undefined) {
-      try {
-        row.raw_line = (await api.logs.get(row.id)).raw_line;
-      } catch (error) {
-        this.$store.toast.notify(`Couldn't load log entry: ${error.message}`, 'error');
-      }
+  get canStepNewer() {
+    return this.detailIndex > 0 || (this.detailIndex === 0 && this.logs.page > 1);
+  },
+
+  get canStepOlder() {
+    const index = this.detailIndex;
+    return index >= 0 && (index < this.logs.items.length - 1 || this.logs.page < this.logs.pages);
+  },
+
+  get detailPosition() {
+    const index = this.detailIndex;
+    if (index < 0) return this.loadedOnce ? 'Not in the current list' : '';
+    const position = (this.logs.page - 1) * this.logs.page_size + index + 1;
+    return `${position.toLocaleString('en-US')} of ${this.logs.total.toLocaleString('en-US')}`;
+  },
+
+  // Previous (-1, newer) or next (+1, older) entry of the list, across page boundaries.
+  async stepEntry(delta) {
+    const index = this.detailIndex;
+    if (index < 0) return;
+    let row = this.logs.items[index + delta];
+    if (!row) {
+      const page = this.logs.page + delta;
+      if (page < 1 || page > this.logs.pages) return;
+      await this.search(page, { writeUrl: false });
+      if (this.listState !== 'results') return;
+      row = delta > 0 ? this.logs.items[0] : this.logs.items[this.logs.items.length - 1];
     }
+    this.writeUrl(this.currentPage, row.id, true);
+    await this.openEntry(row);
+  },
+
+  entryLink() {
+    const hash = browseHash({ filters: this.q, page: this.currentPage, entry: this.detail.id });
+    return `${window.location.origin}${window.location.pathname}${hash}`;
+  },
+
+  async copy(kind) {
+    const text = { message: this.detail?.message, raw: this.detail?.raw_line, link: this.entryLink() }[kind];
+    if (!text) return;
+    const ok = await copyText(text, this.$refs.detailDialog);
+    this.copied = ok ? kind : '';
+    this.copyStatus = ok ? `${COPY_LABELS[kind]} copied` : "Couldn't copy. Select the text and copy it manually.";
+    clearTimeout(this._copyTimer);
+    this._copyTimer = setTimeout(() => { this.copied = ''; }, 2000);
+  },
+
+  levelClass(level) {
+    return ['ERROR', 'WARN', 'INFO', 'DEBUG'].includes(level) ? `level-${level.toLowerCase()}` : '';
   },
 
   connectTenant() {

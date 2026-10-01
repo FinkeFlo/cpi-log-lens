@@ -123,6 +123,13 @@
   .is-stale { opacity: 0.55; transition: opacity 0.2s; }
 }
 
+/* Log entry drawer: a full-height sheet at the end, the full width on phones. Unlayered,
+   so it overrides the size daisyUI gives every .modal-end box. */
+.modal-end > .log-detail-box { width: 100%; height: 100dvh; }
+@media (min-width: 640px) {
+  .modal-end > .log-detail-box { width: min(44rem, 92vw); }
+}
+
 .badge.level-badge {
   color: var(--level-color, var(--lens-muted));
   background-color: var(--level-background, var(--color-base-200));

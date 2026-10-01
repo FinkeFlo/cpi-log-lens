@@ -16,7 +16,8 @@ assert.equal((html.match(/<h1\b/g) || []).length, 4);
 const mobileToggle = html.match(/<button type="button" class="mobile-nav-toggle[\s\S]*?<\/button>/)[0];
 assert.doesNotMatch(mobileToggle, /aria-label=/, 'the mobile toggle name comes from its visible label');
 assert.match(mobileToggle, /<span x-text="\$store\.route\.mobileNavOpen \? 'Close' : 'Menu'"><\/span>/);
-assert.match(html, /<button type="button" class="link link-hover text-left font-mono-xs"[\s\S]*?@click\.stop="toggleRow\(row\)"/);
+assert.match(html, /<button type="button" class="link link-hover text-left font-mono-xs"[\s\S]*?@click\.stop="showEntry\(row\)"/);
+assert.match(html, /<dialog x-dialog="detailOpen"[^>]*aria-labelledby="log-detail-title"[^>]*@cancel\.prevent="closeDetail\(\)"/);
 assert.doesNotMatch(html, /<tr[^>]*(?:@click|tabindex=)/);
 assert.match(html, /<dialog x-dialog="tenantModal\.open"[^>]*aria-labelledby="tenant-dialog-title"[^>]*@cancel\.prevent/);
 assert.doesNotMatch(html, /:class="[^"]*modal-open|modal-backdrop/);
@@ -107,6 +108,22 @@ runEffect();
 assert.deepEqual(focusEvents, ['dialog', 'trigger', 'dialog', 'trigger'], 'programmatic close still restores focus');
 assert.match(html, /@cancel\.prevent="tenantModal\.open=false"/, 'Escape cancellation closes the tenant dialog');
 
+// data-return-focus: closing focuses the named element (the row of the entry shown last).
+const rowButton = { isConnected: true, focus() { focusEvents.push('row'); } };
+globalThis.document.querySelector = selector => (selector === "[data-entry-id='5']" ? rowButton : null);
+element.dataset = { returnFocus: "[data-entry-id='5']" };
+state.open = true;
+runEffect();
+state.open = false;
+runEffect();
+assert.deepEqual(focusEvents.slice(-2), ['dialog', 'row'], 'closing focuses the data-return-focus target');
+element.dataset = { returnFocus: "[data-entry-id='6']" };
+state.open = true;
+runEffect();
+state.open = false;
+runEffect();
+assert.deepEqual(focusEvents.slice(-2), ['dialog', 'trigger'], 'without that target, focus returns to the opener');
+
 const apiStub = moduleUrl(`
   export const api = { logs: { get: async id => ({ raw_line: 'raw ' + id }) } };
 `);
@@ -123,15 +140,18 @@ const browseSource = (await read('frontend/js/pages/browse.js'))
   .replace("'../browse-url.js'", `'${browseUrlStub}'`)
   .replace("'../events.js'", `'${browseEvents}'`)
   .replace("'../format.js'", `'${formatStub}'`)
-  .replace("'../states.js'", `'${moduleUrl(await read('frontend/js/states.js'))}'`);
+  .replace("'../states.js'", `'${moduleUrl(await read('frontend/js/states.js'))}'`)
+  .replace("'../clipboard.js'", `'${moduleUrl('export const copyText = async () => true;')}'`);
 const { default: browsePage } = await import(moduleUrl(browseSource));
 const page = browsePage();
 page.$store = {
   route: { page: 'browse', writeHash() {} },
   toast: { notify() {} },
 };
+page.$refs = {};
 const row = { id: 17, timestamp: '2026-09-30T12:00:00Z', iflow: 'Demo' };
-await page.toggleRow(row);
-assert.equal(page.selected.id, 17, 'keyboard button activation opens the log entry');
-assert.equal(row.raw_line, 'raw 17', 'opening preserves the existing inline detail fetch');
-console.log('Navigation, page titles, dialog focus, Escape wiring, and keyboard log opening passed');
+await page.showEntry(row);
+assert.equal(page.detailOpen, true, 'keyboard button activation opens the log entry drawer');
+assert.equal(page.detail.id, 17);
+assert.equal(page.detail.raw_line, 'raw 17', 'the drawer loads the raw line');
+console.log('Navigation, page titles, dialog focus and return focus, Escape wiring, and keyboard log opening passed');

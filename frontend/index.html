@@ -53,8 +53,6 @@
       .log-table tr.log-row td:last-child { grid-column: 1 / -1; }
       .log-table tr.log-row td:last-child > div { white-space: normal; overflow: visible; }
       .log-table tr.log-row td:first-child button { text-align: left; white-space: normal; }
-      .log-table tr.log-detail { display: block; }
-      .log-table tr.log-detail > td { display: block; width: auto; }
       .responsive-table { display: block; }
       .responsive-table thead { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
       .responsive-table tbody { display: block; }
@@ -140,7 +138,6 @@
 <main id="main-content" tabindex="-1">
 <!-- ═══════════════════════════════ BROWSE ═══════════════════════════════════ -->
 <div id="browse-page" x-data="browsePage" x-show="$store.route.page==='browse'" class="page-content p-4 w-full"
-     @keydown.escape.window="closeRow()"
      @logs-changed.window="onLogsChanged($event.detail)"
      @browse-iflow.window="showIflow($event.detail)"
      @page-shown.window="onPageShown($event.detail)">
@@ -323,43 +320,23 @@
         </thead>
         <template x-for="row in logs.items" :key="row.id">
           <tbody>
-            <!-- Data row -->
+            <!-- Data row; the time button opens the entry in the drawer -->
             <tr class="log-row level-marker hover:bg-base-200 cursor-pointer"
-                :class="[selected?.id === row.id ? 'bg-base-200' : '', ['ERROR','WARN','INFO','DEBUG'].includes(row.level) ? 'level-'+row.level.toLowerCase() : '']">
+                :class="[detailOpen && detail?.id === row.id ? 'bg-base-200' : '', levelClass(row.level)]">
               <td data-label="Time" class="font-mono-xs whitespace-nowrap">
-                <button type="button" class="link link-hover text-left font-mono-xs"
-                        :aria-expanded="selected?.id === row.id"
+                <button type="button" class="link link-hover text-left font-mono-xs" aria-haspopup="dialog"
+                        :data-entry-id="row.id"
                         :aria-label="`Open log entry from ${row.timestamp || 'unknown time'}${row.iflow ? `, ${row.iflow}` : ''}`"
-                        @click.stop="toggleRow(row)" x-text="row.timestamp?.slice(0,19)"></button>
+                        @click.stop="showEntry(row)" x-text="row.timestamp?.slice(0,19)"></button>
               </td>
-              <td data-label="Tenant" @click="toggleRow(row)"><span class="badge badge-outline badge-xs" x-text="row.tenant?.toUpperCase()"></span></td>
-              <td data-label="Type" class="text-xs text-muted" @click="toggleRow(row)" x-text="row.log_type"></td>
-              <td data-label="Level" @click="toggleRow(row)">
+              <td data-label="Tenant" @click="showEntry(row)"><span class="badge badge-outline badge-xs" x-text="row.tenant?.toUpperCase()"></span></td>
+              <td data-label="Type" class="text-xs text-muted" @click="showEntry(row)" x-text="row.log_type"></td>
+              <td data-label="Level" @click="showEntry(row)">
                 <span class="badge badge-xs level-badge" x-text="row.level"></span>
               </td>
-              <td data-label="IFlow" class="font-mono-xs max-w-xs truncate" :title="row.iflow" @click="toggleRow(row)" x-text="shortIflow(row.iflow)"></td>
-              <td data-label="Message" class="text-xs text-muted max-w-0" @click="toggleRow(row)">
+              <td data-label="IFlow" class="font-mono-xs max-w-xs truncate" :title="row.iflow" @click="showEntry(row)" x-text="shortIflow(row.iflow)"></td>
+              <td data-label="Message" class="text-xs text-muted max-w-0" @click="showEntry(row)">
                 <div class="truncate" x-text="row.message"></div>
-              </td>
-            </tr>
-            <!-- Expanded detail row -->
-            <tr x-show="selected?.id === row.id" class="bg-base-200 log-detail">
-              <td colspan="6" class="p-0">
-                <div class="p-4 space-y-3 border-t border-base-300">
-                  <div class="grid grid-cols-[6rem_1fr] gap-x-4 gap-y-1 text-xs">
-                    <span class="text-muted font-semibold pt-0.5">IFlow</span>
-                    <span class="font-mono break-all" x-text="row.iflow"></span>
-                    <span class="text-muted font-semibold pt-0.5">Logger</span>
-                    <span class="font-mono break-all" x-text="row.logger"></span>
-                    <span class="text-muted font-semibold pt-0.5">Node</span>
-                    <span class="font-mono" x-text="`${row.ip}  #${row.node}`"></span>
-                  </div>
-                  <pre class="bg-base-300 rounded p-3 font-mono text-xs whitespace-pre-wrap break-all max-h-64 overflow-y-auto" x-text="row.message"></pre>
-                  <details x-show="row.raw_line" class="text-xs">
-                    <summary class="cursor-pointer text-muted font-semibold select-none">Raw line</summary>
-                    <pre class="bg-base-300 rounded p-3 font-mono whitespace-pre-wrap break-all max-h-64 overflow-y-auto mt-1" x-text="row.raw_line"></pre>
-                  </details>
-                </div>
               </td>
             </tr>
           </tbody>
@@ -386,6 +363,94 @@
       </div>
     </div>
   </div>
+
+  <!-- ── Drawer: log entry ── -->
+  <dialog x-dialog="detailOpen" x-ref="detailDialog" class="modal modal-end" aria-labelledby="log-detail-title"
+          :data-return-focus="detail ? `[data-entry-id='${detail.id}']` : ''" @cancel.prevent="closeDetail()">
+    <div class="modal-box log-detail-box p-0 flex flex-col overflow-hidden">
+      <header class="flex items-start gap-2 p-4 border-b border-base-300">
+        <div class="flex-1 min-w-0">
+          <h2 id="log-detail-title" tabindex="-1" autofocus class="font-bold text-lg">Log entry</h2>
+          <p class="text-xs text-muted flex flex-wrap items-center gap-x-2 gap-y-1 mt-1">
+            <span x-show="detail?.level" class="badge badge-sm level-badge" :class="levelClass(detail?.level)" x-text="detail?.level"></span>
+            <span x-show="detail?.tenant" x-text="$store.tenants.name(detail?.tenant)"></span>
+            <span x-show="detail?.log_type" x-text="detail?.log_type"></span>
+            <span x-show="detail?.timestamp" class="font-mono" x-text="`${detail?.timestamp?.replace('T', ' ')} UTC`"></span>
+          </p>
+        </div>
+        <button type="button" class="btn btn-ghost btn-sm" @click="copy('link')"
+                :aria-label="copied === 'link' ? 'Link copied' : 'Copy link to this entry'">
+          <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use :href="copied === 'link' ? '/icons.svg#circle-check' : '/icons.svg#link'"></use></svg>
+          <span class="hidden sm:inline" x-text="copied === 'link' ? 'Copied' : 'Copy link'"></span>
+        </button>
+        <button type="button" class="btn btn-ghost btn-sm btn-square" aria-label="Close log entry" @click="closeDetail()">
+          <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#x"></use></svg>
+        </button>
+      </header>
+
+      <div class="flex-1 overflow-y-auto p-4 space-y-4">
+        <template x-if="detailError">
+          <div class="state-panel py-6" :data-kind="detailError.kind" role="alert">
+            <svg class="state-icon" aria-hidden="true" focusable="false"><use :href="`/icons.svg#${detailError.icon}`"></use></svg>
+            <h3 class="font-semibold" x-text="detailError.title"></h3>
+            <p x-text="detailError.text"></p>
+            <p x-show="detailError.detail" class="state-detail" x-text="detailError.detail"></p>
+            <div class="state-actions" x-show="detailError.kind !== 'missing'">
+              <button type="button" class="btn btn-primary btn-sm" @click="openEntry(detail.id)">Try again</button>
+            </div>
+          </div>
+        </template>
+
+        <dl x-show="detail?.timestamp" class="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-x-3 gap-y-1 text-sm">
+          <dt class="text-muted">IFlow</dt><dd class="font-mono text-xs break-all pt-0.5" x-text="detail?.iflow || '—'"></dd>
+          <dt class="text-muted">Logger</dt><dd class="font-mono text-xs break-all pt-0.5" x-text="detail?.logger || '—'"></dd>
+          <dt class="text-muted">IP address</dt><dd class="font-mono text-xs pt-0.5" x-text="detail?.ip || '—'"></dd>
+          <dt class="text-muted">Node</dt><dd class="font-mono text-xs pt-0.5" x-text="detail?.node || '—'"></dd>
+          <dt class="text-muted">Log file</dt><dd class="font-mono text-xs break-all pt-0.5" x-text="detail?.filename || '—'"></dd>
+          <dt class="text-muted">Entry ID</dt><dd class="font-mono text-xs pt-0.5" x-text="detail?.id"></dd>
+        </dl>
+
+        <section x-show="detail?.timestamp" aria-labelledby="log-detail-message">
+          <div class="flex items-center justify-between gap-2 mb-1">
+            <h3 id="log-detail-message" class="text-sm font-semibold">Message</h3>
+            <button type="button" class="btn btn-ghost btn-xs" :disabled="!detail?.message" @click="copy('message')">
+              <svg class="w-3.5 h-3.5" aria-hidden="true" focusable="false"><use :href="copied === 'message' ? '/icons.svg#circle-check' : '/icons.svg#copy'"></use></svg>
+              <span x-text="copied === 'message' ? 'Copied' : 'Copy message'"></span>
+            </button>
+          </div>
+          <pre class="bg-base-200 rounded-box p-3 font-mono text-xs whitespace-pre-wrap break-all max-h-[45vh] overflow-y-auto"
+               x-text="detail?.message || '—'"></pre>
+        </section>
+
+        <section x-show="!detailError" aria-labelledby="log-detail-raw">
+          <div class="flex items-center justify-between gap-2 mb-1">
+            <h3 id="log-detail-raw" class="text-sm font-semibold">Raw line</h3>
+            <button type="button" class="btn btn-ghost btn-xs" :disabled="!detail?.raw_line" @click="copy('raw')">
+              <svg class="w-3.5 h-3.5" aria-hidden="true" focusable="false"><use :href="copied === 'raw' ? '/icons.svg#circle-check' : '/icons.svg#copy'"></use></svg>
+              <span x-text="copied === 'raw' ? 'Copied' : 'Copy raw line'"></span>
+            </button>
+          </div>
+          <div x-show="detailLoading && detail?.raw_line === undefined" class="skeleton h-16" role="status">
+            <span class="sr-only">Loading the raw line…</span>
+          </div>
+          <pre x-show="detail?.raw_line" class="bg-base-200 rounded-box p-3 font-mono text-xs whitespace-pre-wrap break-all max-h-[30vh] overflow-y-auto"
+               x-text="detail?.raw_line"></pre>
+          <p x-show="!detailLoading && detail && !detail.raw_line" class="text-xs text-muted">No raw line stored for this entry.</p>
+        </section>
+        <p class="sr-only" role="status" aria-live="polite" x-text="copyStatus"></p>
+      </div>
+
+      <footer class="flex items-center gap-2 p-3 border-t border-base-300">
+        <button type="button" class="btn btn-sm" :disabled="!canStepNewer" @click="stepEntry(-1)">
+          <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#chevron-up"></use></svg> Previous
+        </button>
+        <span class="flex-1 text-center text-xs text-muted" x-text="detailPosition"></span>
+        <button type="button" class="btn btn-sm" :disabled="!canStepOlder" @click="stepEntry(1)">
+          Next <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#chevron-down"></use></svg>
+        </button>
+      </footer>
+    </div>
+  </dialog>
 </div>
 
 <!-- ═══════════════════════════════ FETCH ════════════════════════════════════ -->

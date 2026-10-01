@@ -65,6 +65,7 @@ const apiModule = moduleUrl(`
       },
       get: async id => {
         globalThis.__browseTestRequests.push({ path: 'entry', id });
+        if (globalThis.__browseGet) return globalThis.__browseGet(id);
         return { raw_line: 'raw log line' };
       },
     },
@@ -80,7 +81,8 @@ const pageSource = (await readFile(new URL('../frontend/js/pages/browse.js', imp
   .replace("'../browse-url.js'", `'${urlModule}'`)
   .replace("'../events.js'", `'${eventsModule}'`)
   .replace("'../format.js'", `'${formatModule}'`)
-  .replace("'../states.js'", `'${statesModule}'`);
+  .replace("'../states.js'", `'${statesModule}'`)
+  .replace("'../clipboard.js'", `'${moduleUrl('export const copyText = async () => true;')}'`);
 const { default: browsePage } = await import(moduleUrl(pageSource));
 function newPage(hash) {
   location.hash = hash;
@@ -106,11 +108,16 @@ const restored = newPage(
 restored.init();
 await settle();
 assert.equal(restored.currentPage, 2);
-assert.equal(restored.selected?.id, 123);
-assert.equal(restored.selected?.raw_line, 'raw log line');
+assert.equal(restored.detailOpen, true, 'a deep link opens the entry drawer');
+assert.equal(restored.detail?.id, 123);
+assert.equal(restored.detail?.raw_line, 'raw log line');
 assert.ok(requests.some(request => request.path === 'logs' && request.query.page === 2));
-restored.closeRow();
-assert.equal(restored.selected, null);
+restored.onLogsChanged({ firstPage: false, visibleOnly: true });
+await settle();
+assert.equal(restored.detailOpen, true, 'an auto-refresh keeps the drawer open');
+assert.ok(location.hash.includes('entry=123'), 'and keeps the entry in the URL');
+restored.closeDetail();
+assert.equal(restored.detailOpen, false);
 assert.ok(location.hash.includes('page=2'));
 assert.ok(!location.hash.includes('entry='));
 
@@ -202,5 +209,35 @@ await settle();
 assert.equal(refreshed.refreshError, null);
 assert.deepEqual(notifications, [], 'list states are shown in the page, not as toasts');
 
+// Drawer: an entry that is not on the loaded page, previous/next across pages, a deleted entry.
+const rows = (page, count = 3) => Array.from({ length: count }, (_, i) => ({ id: 1000 - (page - 1) * 3 - i, message: `m${i}` }));
+globalThis.__browseSearch = query => ({ total: 9, page: query.page, page_size: 3, pages: 3, items: rows(query.page) });
+globalThis.__browseGet = id => ({ id, raw_line: `raw ${id}` });
+const drawer = newPage('#browse?page=2&entry=5');
+drawer.init();
+await settle();
+assert.equal(drawer.detail.raw_line, 'raw 5', 'a deep-linked entry is loaded even when it is not on the page');
+assert.equal(drawer.detailIndex, -1);
+assert.equal(drawer.canStepNewer || drawer.canStepOlder, false);
+await drawer.showEntry(drawer.logs.items[2]);
+assert.equal(drawer.detail.id, 995);
+assert.equal(drawer.detailPosition, '6 of 9');
+assert.equal(drawer.canStepOlder, true);
+await drawer.stepEntry(1);
+assert.equal(drawer.currentPage, 3, 'next at the end of a page loads the next page');
+assert.equal(drawer.detail.id, 994);
+assert.equal(drawer.detail.raw_line, 'raw 994');
+assert.ok(location.hash.includes('page=3') && location.hash.includes('entry=994'));
+await drawer.stepEntry(-1);
+assert.equal(drawer.currentPage, 2, 'previous at the start of a page loads the previous page');
+assert.equal(drawer.detail.id, 995);
+assert.equal(drawer.detailOpen, true);
+globalThis.__browseGet = () => { throw { status: 404, kind: 'failed', message: 'Entry not found' }; };
+await drawer.openEntry(42);
+assert.equal(drawer.detailError.title, 'Log entry not found');
+globalThis.__browseSearch = undefined;
+globalThis.__browseGet = undefined;
+
 console.log('Browse URL restoration, immediate filters, default text window and validation passed');
+console.log('Log entry drawer (deep link, refresh keeps it open, previous/next across pages, missing entry) passed');
 console.log('Browse result states (empty, no matches, unreachable, busy, failed, background refresh) passed');
