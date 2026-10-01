@@ -6,5 +6,116 @@
 @source not "./.build/daisyui.mjs";
 
 @plugin "./.build/daisyui.mjs" {
-  themes: dark --default;
+  themes: false;
+}
+
+:root, [data-theme="lens-light"] {
+  color-scheme: light;
+  --color-base-100: #ffffff;
+  --color-base-200: #f3f6fb;
+  --color-base-300: #e4eaf3;
+  --color-base-content: #18263b;
+  --color-primary: #194b92;
+  --color-primary-content: #ffffff;
+  --color-secondary: #51439a;
+  --color-secondary-content: #ffffff;
+  --color-accent: #086b72;
+  --color-accent-content: #ffffff;
+  --color-neutral: #26364d;
+  --color-neutral-content: #ffffff;
+  --color-info: #075785;
+  --color-info-content: #ffffff;
+  --color-success: #146b43;
+  --color-success-content: #ffffff;
+  --color-warning: #74500b;
+  --color-warning-content: #ffffff;
+  --color-error: #a42435;
+  --color-error-content: #ffffff;
+  --radius-selector: 0.5rem;
+  --radius-field: 0.375rem;
+  --radius-box: 0.75rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 1;
+  --noise: 0;
+  --lens-muted: #52627a;
+  --lens-chart-grid: #8492a7;
+  --lens-control-border: #7a889b;
+  --level-error: #ad293f;
+  --level-error-bg: #fbeaed;
+  --level-warn: #80520b;
+  --level-warn-bg: #fff1d9;
+  --level-info: #145696;
+  --level-info-bg: #e6f1fe;
+  --level-debug: #644196;
+  --level-debug-bg: #f1eafb;
+}
+
+[data-theme="lens-dark"] {
+  color-scheme: dark;
+  --color-base-100: #1b2a3d;
+  --color-base-200: #111b2b;
+  --color-base-300: #2a3b51;
+  --color-base-content: #eef3fb;
+  --color-primary: #9ec5ff;
+  --color-primary-content: #102340;
+  --color-secondary: #c5b6ff;
+  --color-secondary-content: #241a47;
+  --color-accent: #82dad7;
+  --color-accent-content: #122d34;
+  --color-neutral: #c4d4e8;
+  --color-neutral-content: #1b2a3d;
+  --color-info: #8dcdf5;
+  --color-info-content: #10293d;
+  --color-success: #8ce2b7;
+  --color-success-content: #153526;
+  --color-warning: #f6cf83;
+  --color-warning-content: #37290d;
+  --color-error: #ffa8ae;
+  --color-error-content: #421d27;
+  --radius-selector: 0.5rem;
+  --radius-field: 0.375rem;
+  --radius-box: 0.75rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 1;
+  --noise: 0;
+  --lens-muted: #afc1d8;
+  --lens-chart-grid: #7289a4;
+  --lens-control-border: #9bafc9;
+  --level-error: #ffb2b9;
+  --level-error-bg: #3a2635;
+  --level-warn: #f4cf92;
+  --level-warn-bg: #403322;
+  --level-info: #94c5ff;
+  --level-info-bg: #263852;
+  --level-debug: #c7b0f6;
+  --level-debug-bg: #352c4a;
+}
+
+@layer components {
+  .text-muted { color: var(--lens-muted); }
+  .level-marker { border-inline-start: 3px solid var(--level-color, var(--lens-control-border)); }
+  .level-text { color: var(--level-color); }
+  .level-error { --level-color: var(--level-error); --level-background: var(--level-error-bg); }
+  .level-warn { --level-color: var(--level-warn); --level-background: var(--level-warn-bg); }
+  .level-info { --level-color: var(--level-info); --level-background: var(--level-info-bg); }
+  .level-debug { --level-color: var(--level-debug); --level-background: var(--level-debug-bg); }
+}
+
+.badge.level-badge {
+  color: var(--level-color, var(--lens-muted));
+  background-color: var(--level-background, var(--color-base-200));
+  border-color: var(--level-color, var(--lens-muted));
+}
+.input, .select, .textarea { border-color: var(--lens-control-border); }
+.input:focus-within, .select:focus-within, .textarea:focus-within {
+  border-color: var(--color-primary);
+}
+button.tooltip[data-tip]:focus-visible::before,
+button.tooltip[data-tip]:focus-visible::after {
+  opacity: 1;
+  --tt-pos: 0rem;
 }

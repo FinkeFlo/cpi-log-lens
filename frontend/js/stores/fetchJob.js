@@ -7,6 +7,7 @@ export default {
   jobId: null,
   status: 'idle', // idle | running | done | error | cancelled
   statusMsg: '',
+  statusIcon: '',
   done: 0,
   total: 0,
   currentFile: '',
@@ -19,7 +20,7 @@ export default {
   async start(body) {
     if (this.status === 'running') return;
     Object.assign(this, {
-      status: 'running', statusMsg: 'Connecting…', done: 0, total: 0,
+      status: 'running', statusMsg: 'Connecting…', statusIcon: '', done: 0, total: 0,
       currentFile: '', imported: 0, errorMsg: '',
     });
     try {
@@ -41,7 +42,7 @@ export default {
   /** Ask the running job to stop at the next file. */
   async cancel() {
     if (this.status !== 'running') return;
-    this.statusMsg = 'Cancelling…';
+    this.setStatus('Cancelling…');
     try {
       await api.fetch.cancel();
     } catch (e) {
@@ -64,13 +65,19 @@ export default {
   applySnapshot(s) {
     this.jobId = s.job_id;
     this.status = s.status;
-    this.statusMsg = s.status_msg;
+    this.setStatus(s.status_msg);
     this.done = s.done;
     this.total = s.total;
     this.currentFile = s.current_file;
     this.currentTenant = s.current_tenant;
     this.imported = s.imported;
     this.errorMsg = s.error_msg;
+  },
+
+  setStatus(message) {
+    const keyPrefix = `${String.fromCodePoint(0x1f511)} `;
+    this.statusIcon = message.startsWith(keyPrefix) ? 'key-round' : '';
+    this.statusMsg = this.statusIcon ? message.slice(keyPrefix.length) : message;
   },
 
   /** Open/reopen the SSE stream for the active job. */
@@ -96,12 +103,12 @@ export default {
         this.applySnapshot(ev);
         break;
       case 'status':
-        this.statusMsg = ev.msg;
+        this.setStatus(ev.msg);
         break;
       case 'files_found':
         this.total = ev.count;
         this.currentTenant = ev.tenant;
-        this.statusMsg = `${ev.tenant} · ${ev.log_type}: ${ev.count} files found`;
+        this.setStatus(`${ev.tenant} · ${ev.log_type}: ${ev.count} files found`);
         break;
       case 'progress':
         this.done = ev.done;
@@ -122,14 +129,14 @@ export default {
       case 'done':
         this.status = 'done';
         this.imported = ev.imported;
-        this.statusMsg = 'Completed';
+        this.setStatus('Completed');
         this.closeStream();
         emit(LOGS_CHANGED, { firstPage: true, visibleOnly: true });
         break;
       case 'cancelled':
         this.status = 'cancelled';
         this.imported = ev.imported;
-        this.statusMsg = 'Cancelled';
+        this.setStatus('Cancelled');
         this.closeStream();
         emit(LOGS_CHANGED, { firstPage: true, visibleOnly: true });
         break;

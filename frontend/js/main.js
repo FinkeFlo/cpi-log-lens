@@ -9,12 +9,14 @@ import statsPage from './pages/stats.js';
 import fetchJob from './stores/fetchJob.js';
 import route from './stores/route.js';
 import tenants from './stores/tenants.js';
+import theme from './stores/theme.js';
 import toast from './stores/toast.js';
 
 Alpine.store('toast', toast);
 Alpine.store('route', route);
 Alpine.store('tenants', tenants);
 Alpine.store('fetchJob', fetchJob);
+Alpine.store('theme', theme);
 
 Alpine.data('browsePage', browsePage);
 Alpine.data('fetchPage', fetchPage);
