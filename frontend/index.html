@@ -481,13 +481,23 @@
       <div class="stat-desc" x-text="stats.total ? Math.round(((stats.levels?.find(l=>l.lvl==='ERROR')?.cnt||0)/stats.total)*100)+'%' : '–'"></div>
     </div>
     <div class="stat bg-base-100 rounded-box shadow py-3">
+      <div class="stat-title text-xs text-warning">Warnings</div>
+      <div class="stat-value text-2xl text-warning" x-text="(stats.levels?.find(l=>l.lvl==='WARN')?.cnt||0).toLocaleString('en-US')"></div>
+      <div class="stat-desc">WARN entries</div>
+    </div>
+    <div class="stat bg-base-100 rounded-box shadow py-3">
+      <div class="stat-title text-xs text-success">Info</div>
+      <div class="stat-value text-2xl text-success" x-text="(stats.levels?.find(l=>l.lvl==='INFO')?.cnt||0).toLocaleString('en-US')"></div>
+      <div class="stat-desc">INFO entries</div>
+    </div>
+    <div class="stat bg-base-100 rounded-box shadow py-3">
       <div class="stat-title text-xs">IFlows</div>
-      <div class="stat-value text-2xl" x-text="(stats.top_errors?.length||0)"></div>
+      <div class="stat-value text-2xl" x-text="(stats.iflow_error_count||0).toLocaleString('en-US')"></div>
       <div class="stat-desc">with errors</div>
     </div>
     <div class="stat bg-base-100 rounded-box shadow py-3">
       <div class="stat-title text-xs">Tenants</div>
-      <div class="stat-value text-2xl" x-text="(stats.per_tenant?.length||0)"></div>
+      <div class="stat-value text-2xl" x-text="(stats.tenant_count||0).toLocaleString('en-US')"></div>
       <div class="stat-desc">with data</div>
     </div>
   </div>

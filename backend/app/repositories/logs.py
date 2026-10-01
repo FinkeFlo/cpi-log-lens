@@ -142,8 +142,23 @@ async def compute_stats(db: Database, tenant: str | None = None) -> dict:
             cur,
             f"SELECT iflow, COUNT(*) as cnt FROM logs "
             f"WHERE upper(level)='ERROR' {err_where} "
-            f"GROUP BY iflow ORDER BY cnt DESC LIMIT 15",
+            f"GROUP BY iflow ORDER BY cnt DESC, iflow ASC LIMIT 15",
             err_params or None,
+        )
+
+        iflow_stats = db.fetch_all(
+            cur,
+            f"SELECT iflow, "
+            f"SUM(CASE WHEN upper(level)='ERROR' THEN 1 ELSE 0 END) as error, "
+            f"SUM(CASE WHEN upper(level)='WARN' THEN 1 ELSE 0 END) as warn, "
+            f"SUM(CASE WHEN upper(level)='INFO' THEN 1 ELSE 0 END) as info, "
+            f"COUNT(*) as total "
+            f"FROM logs {where} "
+            f"{'AND' if where else 'WHERE'} iflow IS NOT NULL "
+            f"GROUP BY iflow "
+            f"HAVING SUM(CASE WHEN upper(level)='ERROR' THEN 1 ELSE 0 END) > 0 "
+            f"ORDER BY error DESC, iflow ASC",
+            params or None,
         )
 
         timeline = db.fetch_all(
@@ -158,6 +173,18 @@ async def compute_stats(db: Database, tenant: str | None = None) -> dict:
 
         total = db.fetch_val(cur, f"SELECT COUNT(*) as cnt FROM logs {where}", params or None)
 
+        iflow_error_count = db.fetch_val(
+            cur,
+            f"SELECT COUNT(DISTINCT iflow) FROM logs WHERE upper(level)='ERROR' {err_where} AND iflow IS NOT NULL",
+            err_params or None,
+        )
+
+        tenant_count = db.fetch_val(
+            cur,
+            f"SELECT COUNT(DISTINCT tenant) FROM logs {where}",
+            params or None,
+        )
+
         per_tenant = db.fetch_all(
             cur,
             f"SELECT tenant, log_type, COUNT(*) as cnt, MAX(timestamp) as last_ts "
@@ -169,6 +196,9 @@ async def compute_stats(db: Database, tenant: str | None = None) -> dict:
             "total": total or 0,
             "levels": levels,
             "top_errors": top_errors,
+            "iflow_stats": iflow_stats,
+            "iflow_error_count": iflow_error_count or 0,
+            "tenant_count": tenant_count or 0,
             "timeline": timeline,
             "per_tenant": per_tenant,
         }

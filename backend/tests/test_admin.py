@@ -106,12 +106,27 @@ async def test_stats(client, tmp_path):
     )
     await import_lines(tmp_path, "t2", [log_line(level="WARN")])
     body = (await client.get("/api/stats")).json()
-    assert set(body) == {"total", "levels", "top_errors", "timeline", "per_tenant"}
+    assert set(body) == {
+        "total",
+        "levels",
+        "top_errors",
+        "iflow_stats",
+        "iflow_error_count",
+        "tenant_count",
+        "timeline",
+        "per_tenant",
+    }
     assert body["total"] == 5
     # Sorted by count; level names are upper-cased.
     assert body["levels"][0] == {"lvl": "ERROR", "cnt": 3}
     assert sorted(body["levels"][1:], key=lambda r: r["lvl"]) == [{"lvl": "INFO", "cnt": 1}, {"lvl": "WARN", "cnt": 1}]
     assert body["top_errors"] == [{"iflow": "Flow_A", "cnt": 2}, {"iflow": "Flow_B", "cnt": 1}]
+    assert body["iflow_error_count"] == 2
+    assert body["tenant_count"] == 2
+    assert body["iflow_stats"] == [
+        {"iflow": "Flow_A", "error": 2, "warn": 0, "info": 0, "total": 2},
+        {"iflow": "Flow_B", "error": 1, "warn": 0, "info": 1, "total": 2},
+    ]
     # Errors per hour, last 48 hours only.
     assert sum(r["cnt"] for r in body["timeline"]) == 2
     assert [(r["tenant"], r["log_type"], r["cnt"]) for r in body["per_tenant"]] == [
@@ -121,6 +136,55 @@ async def test_stats(client, tmp_path):
     t2 = (await client.get("/api/stats", params={"tenant": "t2"})).json()
     assert t2["total"] == 1
     assert t2["top_errors"] == []
+    assert t2["iflow_stats"] == []
+    assert t2["iflow_error_count"] == 0
+    assert t2["tenant_count"] == 1
+
+
+async def test_stats_counts_all_iflows_and_orders_ties(client, tmp_path):
+    await import_lines(
+        tmp_path,
+        "t1",
+        [
+            log_line(level="ERROR", thread="Camel (Zulu) thread 1"),
+            log_line(level="ERROR", thread="Camel (Alpha) thread 1"),
+            log_line(level="WARN", thread="Camel (Alpha) thread 1"),
+            log_line(level="INFO", thread="Camel (Alpha) thread 1"),
+        ],
+        name="trace.log",
+    )
+    await import_lines(
+        tmp_path,
+        "t1",
+        [log_line(level="ERROR", thread="Camel (Other) thread 1")],
+        name="http.log",
+    )
+    await import_lines(tmp_path, "t2", [log_line(level="INFO")], name="trace.log")
+    await import_lines(tmp_path, "t3", [log_line(level="WARN")], name="trace.log")
+    await import_lines(
+        tmp_path,
+        "t4",
+        [log_line(level="ERROR", thread=f"Camel (Flow_{i:02}) thread 1") for i in range(16)],
+        name="trace.log",
+    )
+
+    body = (await client.get("/api/stats")).json()
+    assert body["iflow_error_count"] == 19
+    assert body["tenant_count"] == 4
+    assert body["levels"] == [
+        {"lvl": "ERROR", "cnt": 19},
+        {"lvl": "INFO", "cnt": 2},
+        {"lvl": "WARN", "cnt": 2},
+    ]
+    assert body["top_errors"][:3] == [
+        {"iflow": "Alpha", "cnt": 1},
+        {"iflow": "Flow_00", "cnt": 1},
+        {"iflow": "Flow_01", "cnt": 1},
+    ]
+    assert len(body["top_errors"]) == 15
+    assert len(body["iflow_stats"]) == body["iflow_error_count"]
+    assert {row["iflow"] for row in body["iflow_stats"]}.isdisjoint({"Demo_Flow"})
+    assert body["iflow_stats"][0] == {"iflow": "Alpha", "error": 1, "warn": 1, "info": 1, "total": 3}
 
 
 async def test_stats_are_cached_until_data_changes(client, tmp_path, monkeypatch):
