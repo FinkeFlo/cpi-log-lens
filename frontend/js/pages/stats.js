@@ -29,16 +29,7 @@ export default () => ({
     try {
       this.stats = await api.stats.get(this.statsFilter);
 
-      // Aggregate iflow stats from top_errors
-      const map = {};
-      for (const row of (this.stats.top_errors || [])) {
-        if (!row.iflow) continue;
-        const key = shortIflow(row.iflow);
-        if (!map[key]) map[key] = { iflow: key, error: 0, warn: 0, info: 0, total: 0 };
-        map[key].error += row.cnt || 0;
-        map[key].total += row.cnt || 0;
-      }
-      this.iflowStats = Object.values(map).sort((a, b) => b.error - a.error);
+      this.iflowStats = this.stats.iflow_stats || [];
 
       this.$nextTick(() => this.renderCharts());
     } catch (e) {
@@ -50,7 +41,7 @@ export default () => ({
 
   showIflow(iflow) {
     this.$store.route.navigate('browse');
-    emit(BROWSE_IFLOW, iflow);
+    emit(BROWSE_IFLOW, { iflow, level: 'ERROR' });
   },
 
   renderCharts() {

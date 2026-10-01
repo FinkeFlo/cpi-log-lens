@@ -77,8 +77,9 @@ export default () => ({
   },
 
   // Stats page: show the entries of one IFlow
-  showIflow(iflow) {
+  showIflow({ iflow, level = '' }) {
     this.q.iflow = iflow;
+    this.q.level = level;
     this.search();
   },
 
