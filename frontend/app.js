@@ -1,5 +1,32 @@
 /* CPI Log Lens — App Logic (Alpine.js) */
 
+/** Error answers carry {"detail": message} or, for invalid input (422), a list of fields. */
+function errorMessage(data, res) {
+  const detail = data?.detail;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    return detail.map(e => `${(e.loc || []).filter(x => x !== 'body').join('.')}: ${e.msg}`).join('; ');
+  }
+  return `HTTP ${res.status}`;
+}
+
+/** Call the API and return the JSON answer; non-2xx answers throw an Error with the server's message. */
+async function api(path, { method = 'GET', body } = {}) {
+  const res = await fetch(path, {
+    method,
+    headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  const data = res.status === 204 ? null : await res.json().catch(() => null);
+  if (!res.ok) {
+    const err = new Error(errorMessage(data, res));
+    err.status = res.status;
+    err.data = data;
+    throw err;
+  }
+  return data;
+}
+
 function App() {
   return {
     // ── State ────────────────────────────────────────────────────────────────
@@ -141,8 +168,7 @@ function App() {
     // ── Tenants ───────────────────────────────────────────────────────────────
     async loadTenants() {
       try {
-        const res = await fetch('/api/tenants');
-        this.tenants = await res.json();
+        this.tenants = await api('/api/tenants');
         this.tenantsLoaded = true;
         if (this._wantAllTenants) {
           // Saved default config was ["all"] — resolve to the concrete list
@@ -161,8 +187,7 @@ function App() {
     // ── Fetch: default form config ─────────────────────────────────────────────
     async loadDefaultFetchConfig() {
       try {
-        const res = await fetch('/api/fetch/default-config');
-        const cfg = await res.json();
+        const cfg = await api('/api/fetch/default-config');
         if (cfg) {
           this._hasDefaultFetchConfig = true;
           this.fetch.tenants   = cfg.tenants.includes('all') ? [] : cfg.tenants; // resolved against tenants once loaded below
@@ -185,12 +210,7 @@ function App() {
           log_types: this.fetch.log_types,
           hours:     parseInt(this.fetch.hours),
         };
-        const res = await fetch('/api/fetch/default-config', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        if (!res.ok) throw new Error(await res.text());
+        await api('/api/fetch/default-config', { method: 'PUT', body });
         this._hasDefaultFetchConfig = true;
         this.notify('Saved as default', 'success');
       } catch (e) {
@@ -201,8 +221,7 @@ function App() {
     // ── Fetch schedules (recurring pulls) ───────────────────────────────────────
     async loadSchedules() {
       try {
-        const res = await fetch('/api/schedules');
-        this.schedules = await res.json();
+        this.schedules = await api('/api/schedules');
       } catch (e) {
         console.error('loadSchedules:', e);
       }
@@ -237,12 +256,7 @@ function App() {
       const method = this.scheduleModal.editing ? 'PUT' : 'POST';
       const url = this.scheduleModal.editing ? `/api/schedules/${f.id}` : '/api/schedules';
       try {
-        const res = await fetch(url, {
-          method,
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        if (!res.ok) throw new Error(await res.text());
+        await api(url, { method, body });
         this.scheduleModal.open = false;
         await this.loadSchedules();
         this.notify('Schedule saved', 'success');
@@ -257,12 +271,7 @@ function App() {
           name: s.name, tenants: s.tenants, log_types: s.log_types,
           hours: s.hours, interval_minutes: s.interval_minutes, enabled: !s.enabled,
         };
-        const res = await fetch(`/api/schedules/${s.id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        if (!res.ok) throw new Error(await res.text());
+        await api(`/api/schedules/${s.id}`, { method: 'PUT', body });
         await this.loadSchedules();
       } catch (e) {
         this.notify(`Couldn't update schedule: ${e.message}`, 'error');
@@ -270,10 +279,14 @@ function App() {
     },
 
     async deleteSchedule(id) {
-      await fetch(`/api/schedules/${id}`, { method: 'DELETE' });
       this.confirmDeleteScheduleId = null;
+      try {
+        await api(`/api/schedules/${id}`, { method: 'DELETE' });
+        this.notify('Schedule deleted');
+      } catch (e) {
+        this.notify(`Couldn't delete the schedule: ${e.message}`, 'error');
+      }
       await this.loadSchedules();
-      this.notify('Schedule deleted');
     },
 
     scheduleTenantLabel(s) {
@@ -289,8 +302,7 @@ function App() {
       // The list omits raw_line; load it once when the row is opened.
       if (row.raw_line === undefined) {
         try {
-          const res = await fetch(`/api/logs/${row.id}`);
-          row.raw_line = res.ok ? (await res.json()).raw_line : null;
+          row.raw_line = (await api(`/api/logs/${row.id}`)).raw_line;
         } catch (e) {
           row.raw_line = null;
         }
@@ -319,9 +331,7 @@ function App() {
     async startDemo() {
       this.demoStarting = true;
       try {
-        const res = await fetch('/api/demo', { method: 'POST' });
-        const data = await res.json();
-        if (!res.ok || !data.ok) throw new Error(data.error || data.detail || `HTTP ${res.status}`);
+        const data = await api('/api/demo', { method: 'POST' });
         await this.loadTenants();
         this.fetch.status = 'running';
         this.fetch.jobId = data.job_id;
@@ -349,12 +359,7 @@ function App() {
       const method = this.tenantModal.editing ? 'PUT' : 'POST';
       const url = this.tenantModal.editing ? `/api/tenants/${f.id}` : '/api/tenants';
       try {
-        const res = await fetch(url, {
-          method,
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(f),
-        });
-        if (!res.ok) throw new Error(await res.text());
+        await api(url, { method, body: f });
         this.tenantModal.open = false;
         await this.loadTenants();
         this.notify('Tenant saved', 'success');
@@ -365,10 +370,9 @@ function App() {
 
     async testTenant(t) {
       try {
-        const res = await fetch(`/api/tenants/${t.id}/test`, { method: 'POST' });
-        const data = await res.json();
-        t._testOk = data.ok;
-        t._testResult = data.ok ? '✓ Connection successful' : `✗ Connection failed: ${data.error}`;
+        await api(`/api/tenants/${t.id}/test`, { method: 'POST' });
+        t._testOk = true;
+        t._testResult = '✓ Connection successful';
       } catch (e) {
         t._testOk = false;
         t._testResult = `✗ Connection failed: ${e.message}`;
@@ -381,14 +385,16 @@ function App() {
         `Also delete the imported log entries and downloaded files of "${id}"?\n\n` +
         'OK: delete them. Cancel: keep them (a tenant added again with this ID continues where it stopped).'
       );
-      const res = await fetch(`/api/tenants/${encodeURIComponent(id)}?purge=${purge}`, { method: 'DELETE' });
-      await this.loadTenants();
-      await this.loadSchedules();
-      if (!res.ok) {
-        this.notify(`Could not delete tenant (HTTP ${res.status})`, 'error');
+      let data;
+      try {
+        data = await api(`/api/tenants/${encodeURIComponent(id)}?purge=${purge}`, { method: 'DELETE' });
+      } catch (e) {
+        this.notify(`Couldn't delete the tenant: ${e.message}`, 'error');
         return;
+      } finally {
+        await this.loadTenants();
+        await this.loadSchedules();
       }
-      const data = await res.json();
       if (purge) {
         await this.loadDbInfo();
         await this.search();
@@ -410,8 +416,7 @@ function App() {
         if (this.q.grep)      params.set('grep',      this.q.grep);
         if (this.q.date_from) params.set('date_from', this.q.date_from);
         if (this.q.date_to)   params.set('date_to',   this.q.date_to);
-        const res = await fetch(`/api/logs?${params}`);
-        this.logs = await res.json();
+        this.logs = await api(`/api/logs?${params}`);
         // Only sync URL on page 1 — pagination is ephemeral
         if (page === 1) this._pushHash();
       } catch (e) {
@@ -469,23 +474,14 @@ function App() {
       this.fetch.errorMsg    = '';
 
       try {
-        const res = await fetch('/api/fetch', {
+        const data = await api('/api/fetch', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+          body: {
             tenants:   this.fetch.tenants.length === this.tenants.length ? ['all'] : this.fetch.tenants,
             log_types: this.fetch.log_types,
             hours:     parseInt(this.fetch.hours),
-          }),
+          },
         });
-
-        const data = await res.json();
-        if (!data.ok) {
-          this.fetch.status   = 'error';
-          this.fetch.errorMsg = data.error || 'Unknown error';
-          return;
-        }
-
         this.fetch.jobId = data.job_id;
         this._openFetchStream();
       } catch (e) {
@@ -519,8 +515,7 @@ function App() {
     /** Called on page load to reconnect to any still-running job. */
     async _reconnectFetchStream() {
       try {
-        const res = await fetch('/api/fetch/status');
-        const data = await res.json();
+        const data = await api('/api/fetch/status');
         if (data.status === 'idle') return;
 
         // Restore state from snapshot
@@ -613,7 +608,7 @@ function App() {
       if (this.fetch.status !== 'running') return;
       this.fetch.statusMsg = 'Cancelling…';
       try {
-        await fetch('/api/fetch/cancel', { method: 'POST' });
+        await api('/api/fetch/cancel', { method: 'POST' });
       } catch (e) {
         console.error('cancelFetch:', e);
       }
@@ -624,8 +619,7 @@ function App() {
       this.statsLoading = true;
       try {
         const params = this.statsFilter ? `?tenant=${this.statsFilter}` : '';
-        const res = await fetch(`/api/stats${params}`);
-        this.stats = await res.json();
+        this.stats = await api(`/api/stats${params}`);
 
         // Aggregate iflow stats from top_errors + all logs
         const map = {};
@@ -721,8 +715,7 @@ function App() {
     // ── DB ────────────────────────────────────────────────────────────────────
     async loadDbInfo() {
       try {
-        const res = await fetch('/api/db/info');
-        this.dbInfo = await res.json();
+        this.dbInfo = await api('/api/db/info');
       } catch (e) {
         console.error(e);
       }
@@ -731,14 +724,13 @@ function App() {
     async clearDb() {
       this.clearDbBusy = true;
       try {
-        await fetch('/api/db/clear', { method: 'POST' });
+        await api('/api/db/clear', { method: 'POST' });
         this.confirmClearOpen = false;
         await this.loadDbInfo();
         await this.search();
         this.notify('Database cleared');
       } catch (e) {
-        console.error('clearDb:', e);
-        this.notify('Couldn\'t clear the database', 'error');
+        this.notify(`Couldn't clear the database: ${e.message}`, 'error');
       } finally {
         this.clearDbBusy = false;
       }
@@ -747,26 +739,17 @@ function App() {
     async cleanupLogs() {
       this.cleanup.busy = true;
       try {
-        const res = await fetch('/api/db/cleanup', {
+        const data = await api('/api/db/cleanup', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            older_than_days: this.cleanup.olderThanDays,
-            tenant: this.cleanup.tenant,
-          }),
+          body: { older_than_days: this.cleanup.olderThanDays, tenant: this.cleanup.tenant },
         });
-        const data = await res.json();
         this.confirmCleanupOpen = false;
-        if (!res.ok || !data.ok) {
-          this.notify(data.detail || "Couldn't delete old entries", 'error');
-          return;
-        }
         await this.loadDbInfo();
         await this.search();
         this.notify(`Deleted ${data.deleted.toLocaleString('en-US')} entries (${data.remaining.toLocaleString('en-US')} remaining)`);
       } catch (e) {
-        console.error('cleanupLogs:', e);
-        this.notify("Couldn't delete old entries", 'error');
+        this.confirmCleanupOpen = false;
+        this.notify(`Couldn't delete old entries: ${e.message}`, 'error');
       } finally {
         this.cleanup.busy = false;
       }
