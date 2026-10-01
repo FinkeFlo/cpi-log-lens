@@ -26,11 +26,18 @@ Split the frontend into native ES modules, loaded by the browser without a build
 
 A bundler (Vite, esbuild) would add a Node.js build to the image and to contributing, for a UI of a
 few hundred lines per page; browsers load a dozen small modules from the same origin fast enough.
+Tailwind CSS and daisyUI are the CSS-only exception: the image builds them with their pinned
+standalone tools, while the development Compose file watches source changes. Neither path uses
+Node.js or npm.
 
 ## Consequences
 
-- No build step: edit a file, reload the page. CI checks that every module parses.
+- JavaScript still has no build step: edit a module, reload the page. CI checks that every module
+  parses. Run `scripts/build-css.sh` for a one-off local CSS build; the generated stylesheet is
+  ignored and is not committed.
+- The production image includes only the generated stylesheet, not the standalone CSS tools.
 - Every `.js` file is served with `Cache-Control: no-cache`, so a new version is picked up on
   reload without cache-busting file names.
-- `scripts/vendor-frontend.sh` vendors `alpine.esm.min.js` and scans `frontend/js/` for Tailwind
-  classes.
+- `scripts/vendor-frontend.sh` vendors Alpine and Chart.js. `scripts/build-css.sh` downloads and
+  checksum-verifies the pinned Tailwind CSS and daisyUI standalone artifacts, then scans
+  `frontend/index.html` and `frontend/js/` for the CSS classes in use.

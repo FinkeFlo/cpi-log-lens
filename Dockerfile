@@ -5,6 +5,19 @@ ARG PYTHON_VERSION=3.12
 # uv installs the locked dependencies (backend/uv.lock); pinned, kept current by Dependabot.
 FROM ghcr.io/astral-sh/uv:0.12.21 AS uv
 
+# ── CSS build stage: pinned standalone tools are not copied to runtime ────────
+FROM debian:bookworm-slim AS css-builder
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
+COPY scripts/build-css.sh scripts/tailwind.input.css ./scripts/
+COPY frontend/index.html ./frontend/index.html
+COPY frontend/js/ ./frontend/js/
+ENV CSS_TOOL_CACHE=/opt/tailwind
+RUN chmod +x scripts/build-css.sh \
+ && scripts/build-css.sh --output frontend/tailwind.css
+
 # ── Stage 1: install dependencies into an isolated virtualenv ─────────────────
 FROM python:${PYTHON_VERSION}-slim AS builder
 COPY --from=uv /uv /bin/uv
@@ -43,6 +56,7 @@ COPY --from=builder /opt/venv /opt/venv
 COPY backend/app/     /app/backend/app/
 COPY backend/mock/    /app/backend/mock/
 COPY frontend/        /app/frontend/
+COPY --from=css-builder /build/frontend/tailwind.css /app/frontend/tailwind.css
 
 ENV PATH=/opt/venv/bin:$PATH \
     PYTHONUNBUFFERED=1 \

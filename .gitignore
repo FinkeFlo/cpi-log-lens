@@ -31,3 +31,5 @@ Thumbs.db
 
 # ── Tooling artifacts ─────────────────────────────────────────────────────────
 .playwright-mcp/
+/frontend/tailwind.css
+/scripts/.build/

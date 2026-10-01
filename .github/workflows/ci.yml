@@ -37,6 +37,13 @@ jobs:
         run: uv run --locked mypy .
       - name: App imports
         run: DB_PATH=/tmp/ci.duckdb TENANTS_CONFIG=/nonexistent uv run --locked python -c "import app.main"
+      - name: Build and size-check frontend CSS
+        working-directory: .
+        run: |
+          scripts/build-css.sh --output /tmp/cpi-log-lens-tailwind.css
+          size=$(gzip -n -c /tmp/cpi-log-lens-tailwind.css | wc -c | tr -d '[:space:]')
+          echo "Generated CSS: ${size} bytes gzip"
+          test "$size" -le 61440
       - uses: actions/setup-node@v7
         with:
           node-version: 24
@@ -85,6 +92,11 @@ jobs:
           docker run -d --name smoke -p 127.0.0.1:8080:8080 -e MOCK=true cpi-log-lens:ci
           for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/healthz && break; sleep 1; done
           curl -fsS http://127.0.0.1:8080/ | grep -q "<title>CPI Log Lens</title>"
+          curl -fsS http://127.0.0.1:8080/tailwind.css -o /tmp/shipped-tailwind.css
+          css_size=$(gzip -n -c /tmp/shipped-tailwind.css | wc -c | tr -d '[:space:]')
+          echo "Shipped CSS: ${css_size} bytes gzip"
+          test "$css_size" -le 61440
+          docker exec smoke sh -c 'test ! -d /opt/tailwind && ! command -v tailwindcss'
           curl -fsS -X POST http://127.0.0.1:8080/api/tenants -H 'Content-Type: application/json' \
             -d '{"id":"demo","name":"DEMO","api_url":"https://example.invalid","oauth_url":"https://example.invalid/token","client_id":"c","client_secret":"s"}'
           curl -fsS -X POST http://127.0.0.1:8080/api/fetch -H 'Content-Type: application/json' \
