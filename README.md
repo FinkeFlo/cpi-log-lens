@@ -201,9 +201,15 @@ curl -X POST http://localhost:8080/api/query \
 | `tenant` | string | Tenant ID; omit for all tenants |
 | `level` | string | `ERROR`, `WARN`, `INFO`, `DEBUG` |
 | `iflow` | string | Partial IFlow name |
-| `grep` | string | Text search in message and logger |
-| `date_from` / `date_to` | string | `YYYY-MM-DD` or `YYYY-MM-DD HH:MM:SS` |
+| `grep` | string | Case-insensitive text search in message and logger; defaults to the last 24 hours when no range is supplied |
+| `date_from` / `date_to` | string | ISO date or datetime; bounds are inclusive and a bare `date_to` includes the full day |
 | `limit` | int | Max entries returned (1–200, default 50) |
+
+Log timestamps are stored as timezone-naive CPI timestamps and interpreted as UTC for filtering.
+Timezone-less API datetimes are interpreted as UTC; offset-aware values are converted to UTC before
+comparison. Browse date-time controls and quick ranges use UTC; their timezone-less ISO values in
+the `#browse` URL mean the same instant in every browser. The URL also carries its filters, current
+page (`page`), and opened entry (`entry`).
 
 ## Log format
 

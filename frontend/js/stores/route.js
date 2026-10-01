@@ -10,14 +10,20 @@ export function pageFromHash() {
 
 export default {
   page: 'browse',
+  lastHash: '',
 
   init() {
     this.page = pageFromHash();
-    // Keep the page in sync when the user presses back/forward
-    window.addEventListener('hashchange', () => {
-      const page = pageFromHash();
-      if (page !== this.page) this.show(page);
-    });
+    this.lastHash = window.location.hash;
+    const sync = () => {
+      const hash = window.location.hash;
+      if (hash === this.lastHash) return;
+      this.lastHash = hash;
+      this.page = pageFromHash();
+      emit(PAGE_SHOWN, this.page);
+    };
+    window.addEventListener('popstate', sync);
+    window.addEventListener('hashchange', sync);
   },
 
   show(page) {
@@ -25,10 +31,18 @@ export default {
     emit(PAGE_SHOWN, page);
   },
 
+  writeHash(hash, replace = false) {
+    if (window.location.hash === hash) {
+      this.lastHash = hash;
+      return false;
+    }
+    history[replace ? 'replaceState' : 'pushState'](null, '', hash);
+    this.lastHash = hash;
+    return true;
+  },
+
   navigate(page) {
+    this.writeHash('#' + page);
     this.show(page);
-    // replaceState keeps the URL in sync without firing hashchange; Browse adds
-    // its filters when it searches.
-    if (page !== 'browse') history.replaceState(null, '', '#' + page);
   },
 };

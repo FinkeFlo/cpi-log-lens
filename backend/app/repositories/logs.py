@@ -1,5 +1,6 @@
 """Log entries: bulk insert, list/detail queries, statistics and deletion."""
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pyarrow as pa
@@ -53,6 +54,46 @@ def replace_unparsed(conn, tenant: str, log_type: str, filename: str, lines: lis
 # which loads it via get_log_entry(). Reading it for every listed row
 # roughly doubled the data each list query had to scan and transfer.
 _LIST_COLUMNS = "id, tenant, log_type, filename, timestamp, level, logger, iflow, message, ip, node, imported_at"
+TEXT_SEARCH_DEFAULT_HOURS = 24
+
+
+def effective_date_bounds(
+    *,
+    grep: str | None,
+    date_from: str | None,
+    date_to: str | None,
+    now: datetime | None = None,
+) -> tuple[str | None, str | None]:
+    """Bound text searches to 24 hours unless the caller supplies both bounds."""
+    if not grep or (date_from is not None and date_to is not None):
+        return date_from, date_to
+
+    current = now or datetime.now(UTC).replace(tzinfo=None, microsecond=0)
+    if date_to is not None:
+        end = datetime.fromisoformat(date_to)
+        if len(date_to) == 10:
+            end = end.replace(hour=23, minute=59, second=59)
+        start = end - timedelta(hours=TEXT_SEARCH_DEFAULT_HOURS)
+    else:
+        end = current
+        start = datetime.fromisoformat(date_from) if date_from else end - timedelta(hours=TEXT_SEARCH_DEFAULT_HOURS)
+
+    return start.isoformat(sep=" "), date_to or end.isoformat(sep=" ")
+
+
+async def list_iflows(db: Database, tenant: str | None = None) -> list[str]:
+    def _run(cur):
+        where = "WHERE iflow IS NOT NULL AND iflow <> ''"
+        params: list[str] = []
+        if tenant and tenant != "all":
+            where += " AND tenant = ?"
+            params.append(tenant)
+        rows = db.fetch_all(
+            cur, f"SELECT DISTINCT iflow FROM logs {where} ORDER BY lower(iflow), iflow", params or None
+        )
+        return [row["iflow"] for row in rows]
+
+    return await db.read(_run)
 
 
 async def query_logs(
@@ -67,6 +108,8 @@ async def query_logs(
     page: int = 1,
     page_size: int = 100,
 ) -> dict:
+    date_from, date_to = effective_date_bounds(grep=grep, date_from=date_from, date_to=date_to)
+
     def _run(cur):
         conditions, params = [], []
 
@@ -77,10 +120,10 @@ async def query_logs(
             conditions.append("upper(level) = ?")
             params.append(level.upper())
         if iflow:
-            conditions.append("iflow LIKE ?")
+            conditions.append("iflow ILIKE ?")
             params.append(f"%{iflow}%")
         if grep:
-            conditions.append("(message LIKE ? OR logger LIKE ?)")
+            conditions.append("(message ILIKE ? OR logger ILIKE ?)")
             params.extend([f"%{grep}%", f"%{grep}%"])
         if date_from:
             conditions.append("timestamp >= CAST(? AS TIMESTAMP)")

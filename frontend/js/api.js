@@ -45,6 +45,7 @@ export const api = {
   },
   logs: {
     search: query => request('GET', '/logs', { query }),
+    iflows: tenant => request('GET', '/logs/iflows', { query: { tenant } }),
     get: entryId => request('GET', `/logs/${id(entryId)}`),
   },
   fetch: {

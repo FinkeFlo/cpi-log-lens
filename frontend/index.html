@@ -92,7 +92,7 @@
 
 <!-- ═══════════════════════════════ BROWSE ═══════════════════════════════════ -->
 <div x-data="browsePage" x-show="$store.route.page==='browse'" class="p-4 w-full"
-     @keydown.escape.window="selected=null"
+     @keydown.escape.window="closeRow()"
      @logs-changed.window="onLogsChanged($event.detail)"
      @browse-iflow.window="showIflow($event.detail)"
      @page-shown.window="onPageShown($event.detail)">
@@ -118,10 +118,11 @@
   <!-- Filter bar -->
   <div class="card bg-base-100 shadow mb-4">
     <div class="card-body p-3">
+      <div x-show="urlError" class="alert alert-error mb-2" role="alert" x-text="urlError"></div>
       <div class="flex flex-wrap gap-2 items-end">
         <fieldset class="fieldset gap-0 pb-0">
           <legend class="fieldset-legend py-0 pb-1 text-xs font-normal">Tenant</legend>
-          <select class="select select-sm w-32" x-model="q.tenant">
+          <select class="select select-sm w-32" x-model="q.tenant" @change="filtersChanged()">
             <option value="">All tenants</option>
             <template x-for="t in tenants" :key="t.id">
               <option :value="t.id" x-text="t.name"></option>
@@ -130,35 +131,49 @@
         </fieldset>
         <fieldset class="fieldset gap-0 pb-0">
           <legend class="fieldset-legend py-0 pb-1 text-xs font-normal">Level</legend>
-          <select class="select select-sm w-24" x-model="q.level">
+          <select class="select select-sm w-24" x-model="q.level" @change="filtersChanged()">
             <option value="">All levels</option>
-            <option>ERROR</option><option>WARN</option><option>INFO</option>
+            <option>ERROR</option><option>WARN</option><option>INFO</option><option>DEBUG</option>
           </select>
         </fieldset>
         <fieldset class="fieldset gap-0 pb-0 flex-1 min-w-48">
           <legend class="fieldset-legend py-0 pb-1 text-xs font-normal">IFlow</legend>
-          <input class="input input-sm w-full" x-model="q.iflow" placeholder="filter…" @keydown.enter="search()" />
+          <input class="input input-sm w-full" x-model="q.iflow" list="browse-iflow-options" maxlength="500"
+                 placeholder="Filter IFlow…" @input.debounce.250ms="filtersChanged()" />
+          <datalist id="browse-iflow-options">
+            <template x-for="name in iflowOptions" :key="name">
+              <option :value="name" x-text="name"></option>
+            </template>
+          </datalist>
         </fieldset>
         <fieldset class="fieldset gap-0 pb-0 flex-1 min-w-48">
           <legend class="fieldset-legend py-0 pb-1 text-xs font-normal">Search</legend>
-          <input class="input input-sm w-full" x-model="q.grep" placeholder="Search message or logger…" @keydown.enter="search()" />
+          <input class="input input-sm w-full" x-model="q.grep" maxlength="500" placeholder="Message or logger…"
+                 @input.debounce.250ms="filtersChanged()" />
         </fieldset>
         <fieldset class="fieldset gap-0 pb-0">
-          <legend class="fieldset-legend py-0 pb-1 text-xs font-normal">From</legend>
-          <input type="date" class="input input-sm w-36" x-model="q.date_from" />
+          <legend class="fieldset-legend py-0 pb-1 text-xs font-normal">From (UTC)</legend>
+          <input type="datetime-local" step="1" class="input input-sm w-44" x-model="q.date_from"
+                 @change="filtersChanged()" />
         </fieldset>
         <fieldset class="fieldset gap-0 pb-0">
-          <legend class="fieldset-legend py-0 pb-1 text-xs font-normal">To</legend>
-          <input type="date" class="input input-sm w-36" x-model="q.date_to" />
+          <legend class="fieldset-legend py-0 pb-1 text-xs font-normal">To (UTC)</legend>
+          <input type="datetime-local" step="1" class="input input-sm w-44" x-model="q.date_to"
+                 @change="filtersChanged()" />
         </fieldset>
-        <button class="btn btn-primary btn-sm tooltip tooltip-bottom" data-tip="Search logs"
-                aria-label="Search logs" title="Search logs" @click="search()">
-          <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#search"></use></svg>
-        </button>
         <button class="btn btn-ghost btn-sm tooltip tooltip-bottom" data-tip="Reset filters"
                 aria-label="Reset filters" title="Reset filters" @click="resetSearch()">
           <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#rotate-ccw"></use></svg>
         </button>
+      </div>
+      <div class="flex flex-wrap items-center gap-1 mt-2">
+        <span class="text-xs text-muted mr-1">Quick range:</span>
+        <button class="btn btn-ghost btn-xs" @click="setQuickRange(15)">15 min</button>
+        <button class="btn btn-ghost btn-xs" @click="setQuickRange(60)">1 h</button>
+        <button class="btn btn-ghost btn-xs" @click="setQuickRange(120)">2 h</button>
+        <button class="btn btn-ghost btn-xs" @click="setQuickRange(1440)">24 h</button>
+        <button class="btn btn-ghost btn-xs" @click="setQuickRange(10080)">7 d</button>
+        <span class="text-xs text-muted ml-1" x-show="q.grep">Text search defaults to the last 24 hours.</span>
       </div>
     </div>
   </div>
@@ -203,7 +218,7 @@
               <td>
                 <span class="badge badge-xs level-badge" x-text="row.level"></span>
               </td>
-              <td class="font-mono-xs max-w-xs truncate" :title="shortIflow(row.iflow)" x-text="shortIflow(row.iflow)"></td>
+              <td class="font-mono-xs max-w-xs truncate" :title="row.iflow" x-text="shortIflow(row.iflow)"></td>
               <td class="text-xs text-muted max-w-0">
                 <div class="truncate" x-text="row.message"></div>
               </td>
@@ -214,7 +229,7 @@
                 <div class="p-4 space-y-3 border-t border-base-300">
                   <div class="grid grid-cols-[6rem_1fr] gap-x-4 gap-y-1 text-xs">
                     <span class="text-muted font-semibold pt-0.5">IFlow</span>
-                    <span class="font-mono break-all" x-text="shortIflow(row.iflow)"></span>
+                    <span class="font-mono break-all" x-text="row.iflow"></span>
                     <span class="text-muted font-semibold pt-0.5">Logger</span>
                     <span class="font-mono break-all" x-text="row.logger"></span>
                     <span class="text-muted font-semibold pt-0.5">Node</span>

@@ -19,6 +19,10 @@ Split the frontend into native ES modules, loaded by the browser without a build
   message for every non-2xx answer.
 - Shared state lives in Alpine stores (`js/stores/`): the current page (hash routing), the
   tenants, the fetch job (fed by the server-sent events) and the toast.
+- Browse filter state is serialized in the `#browse` fragment. `page` and `entry` preserve the
+  current page and expanded row; browser history traversal restores state from the fragment rather
+  than syncing Alpine state back over it. Filter changes push history entries, while restoration
+  canonicalizes valid URLs with `replaceState`.
 - Each page is an `Alpine.data` component (`js/pages/`) with its own state and dialogs. Pages do
   not call each other; they send window events (`js/events.js`), e.g. "log entries changed".
 - `js/main.js` imports the vendored ES module build of Alpine, registers stores and pages and

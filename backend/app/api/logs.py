@@ -3,10 +3,15 @@
 from fastapi import APIRouter, HTTPException, Query
 
 from app.api.deps import DbDep
-from app.api.schemas import check_datetime
+from app.api.schemas import check_date_range, check_datetime
 from app.repositories import logs as logs_repo
 
 router = APIRouter(prefix="/api/logs", tags=["logs"])
+
+
+@router.get("/iflows")
+async def get_iflows(db: DbDep, tenant: str | None = None):
+    return {"items": await logs_repo.list_iflows(db, tenant)}
 
 
 @router.get("")
@@ -21,8 +26,9 @@ async def get_logs(
     page: int = Query(1, ge=1, le=1_000_000),
     page_size: int = Query(100, ge=1, le=500),
 ):
-    check_datetime(date_from, "date_from")
-    check_datetime(date_to, "date_to")
+    date_from = check_datetime(date_from, "date_from")
+    date_to = check_datetime(date_to, "date_to")
+    check_date_range(date_from, date_to)
     return await logs_repo.query_logs(
         db,
         tenant=tenant,

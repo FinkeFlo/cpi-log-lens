@@ -1,10 +1,11 @@
 """Request models and input validation shared by the routers."""
 
-from datetime import datetime
+import re
+from datetime import UTC, date, datetime, time
 from typing import Literal
 
 from fastapi import HTTPException
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Tenant ids end up in URLs and directory names: lowercase letters, digits,
 # "-" and "_" only. "all" is reserved as the "every tenant" sentinel.
@@ -59,17 +60,71 @@ class LLMQueryRequest(BaseModel):
     date_to: str | None = None  # ISO datetime, e.g. "2024-01-31 23:59:59"
     limit: int = 50  # max log entries returned (1–200)
 
+    @field_validator("date_from", "date_to")
+    @classmethod
+    def _normalize_date_bound(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return normalize_datetime_bound(value)
+
+    @model_validator(mode="after")
+    def _check_date_range(self):
+        try:
+            check_date_range(self.date_from, self.date_to)
+        except HTTPException as exc:
+            raise ValueError(exc.detail) from None
+        return self
+
 
 class CleanupRequest(BaseModel):
     older_than_days: int = Field(ge=1, le=36500)  # delete entries older than this many days
     tenant: str | None = None  # optional: restrict to one tenant
 
 
-def check_datetime(value: str | None, field: str) -> None:
-    """date_from/date_to must be an ISO date or datetime; anything else used to
-    reach DuckDB and fail there with a 500."""
-    if value:
+def normalize_datetime_bound(value: str) -> str:
+    """Keep bare dates; normalize offset-aware ISO datetimes to naive UTC.
+
+    Log timestamps are stored as timezone-naive CPI timestamps. Naive API
+    datetimes are interpreted as UTC; offset-aware values are normalized to UTC.
+    """
+    if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
+        date.fromisoformat(value)
+        return value
+    if not re.fullmatch(
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}"
+        r"(?::[0-9]{2}(?:\.[0-9]{1,6})?)?(?:Z|[+-][0-9]{2}:[0-9]{2})?",
+        value,
+    ):
+        raise ValueError("datetime must use ISO YYYY-MM-DD[THH:MM[:SS[.ffffff]][Z|±HH:MM]]")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is not None:
         try:
-            datetime.fromisoformat(value)
-        except ValueError:
-            raise HTTPException(422, f"{field} must be YYYY-MM-DD or YYYY-MM-DD HH:MM:SS") from None
+            parsed = parsed.astimezone(UTC).replace(tzinfo=None)
+        except OverflowError as exc:
+            raise ValueError("datetime offset normalization is outside the supported range") from exc
+    return parsed.isoformat(sep=" ")
+
+
+def check_datetime(value: str | None, field: str) -> str | None:
+    """Validate ISO date/datetime input and normalize offset-aware values."""
+    if value is None:
+        return None
+    try:
+        return normalize_datetime_bound(value)
+    except ValueError:
+        raise HTTPException(422, f"{field} must be an ISO date or datetime") from None
+
+
+def check_date_range(date_from: str | None, date_to: str | None) -> None:
+    """Reject inverted ranges; a bare date_to keeps its existing end-of-day meaning."""
+    if date_from is None or date_to is None:
+        return
+    try:
+        start = datetime.fromisoformat(date_from)
+        end = datetime.fromisoformat(date_to)
+        if len(date_to) == 10:
+            end = datetime.combine(date.fromisoformat(date_to), time.max)
+    except ValueError:
+        return  # Individual field validation reports the malformed bound.
+    if start > end:
+        raise HTTPException(422, "date_from must be earlier than or equal to date_to")

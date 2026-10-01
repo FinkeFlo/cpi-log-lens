@@ -1,5 +1,7 @@
 """Log list filters and paging (GET /api/logs)."""
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from app.services import importer
@@ -36,6 +38,8 @@ async def seeded(client, tmp_path):
 
 
 async def messages(client, **params):
+    if "grep" in params and "date_from" not in params and "date_to" not in params:
+        params.update(date_from="2026-01-15", date_to="2026-01-18")
     res = await client.get("/api/logs", params=params)
     assert res.status_code == 200, res.text
     return [item["message"] for item in res.json()["items"]]
@@ -76,7 +80,9 @@ async def test_list_items_leave_out_the_raw_line(seeded):
 
 
 async def test_single_entry_includes_the_raw_line(seeded):
-    item = (await seeded.get("/api/logs", params={"grep": "all good"})).json()["items"][0]
+    item = (
+        await seeded.get("/api/logs", params={"grep": "all good", "date_from": "2026-01-15", "date_to": "2026-01-16"})
+    ).json()["items"][0]
     entry = (await seeded.get(f"/api/logs/{item['id']}")).json()
     assert entry["raw_line"] == ROWS["a"][1]
     assert (await seeded.get("/api/logs/999999")).status_code == 404
@@ -89,13 +95,16 @@ async def test_single_entry_includes_the_raw_line(seeded):
         ({"tenant": "all"}, ["x", "slow 50% done", "refused again", "all good", "connection refused"]),
         ({"level": "error"}, ["refused again", "connection refused"]),
         ({"level": "ERROR", "tenant": "a"}, ["connection refused"]),
+        ({"level": "DEBUG"}, ["x"]),
         ({"level": "ALL"}, ["x", "slow 50% done", "refused again", "all good", "connection refused"]),
         ({"iflow": "Demo_A"}, ["slow 50% done", "connection refused"]),
+        ({"iflow": "dEmO_a"}, ["slow 50% done", "connection refused"]),
         ({"iflow": "emo_"}, ["x", "slow 50% done", "refused again", "all good", "connection refused"]),
         ({"grep": "refused"}, ["refused again", "connection refused"]),
         ({"grep": "Special"}, ["x"]),  # logger is searched as well
-        # LIKE is case-sensitive and % / _ in the term act as wildcards (current behaviour).
-        ({"grep": "REFUSED"}, []),
+        ({"grep": "SPECIAL"}, ["x"]),
+        ({"grep": "REFUSED"}, ["refused again", "connection refused"]),
+        # LIKE-style % / _ in the term act as wildcards (existing behavior).
         ({"grep": "50%"}, ["slow 50% done"]),
         ({"grep": "l_w"}, ["slow 50% done"]),
     ],
@@ -122,7 +131,23 @@ async def test_date_filters(seeded, params, expected):
     assert await messages(seeded, **params) == expected
 
 
-@pytest.mark.parametrize("value", ["yesterday", "2026-13-01", "15.01.2026", "2026-01-15 25:00:00"])
+async def test_offset_datetimes_are_normalized_to_utc(seeded):
+    assert await messages(
+        seeded,
+        date_from="2026-01-15T09:00:00+01:00",
+        date_to="2026-01-15T10:00:00+02:00",
+    ) == ["connection refused"]
+
+
+async def test_inverted_datetime_range_is_rejected(seeded):
+    response = await seeded.get("/api/logs", params={"date_from": "2026-01-16", "date_to": "2026-01-15"})
+    assert response.status_code == 422
+    assert "date_from" in response.text
+
+
+@pytest.mark.parametrize(
+    "value", ["yesterday", "2026-13-01", "15.01.2026", "2026-01-15 25:00:00", "2026-W01-1", "20260115"]
+)
 async def test_invalid_dates_are_rejected_with_422(seeded, value):
     for field in ("date_from", "date_to"):
         res = await seeded.get("/api/logs", params={field: value})
@@ -154,3 +179,36 @@ async def test_paging_bounds(client, params):
 async def test_empty_database(client):
     body = (await client.get("/api/logs")).json()
     assert body == {"total": 0, "page": 1, "page_size": 100, "pages": 1, "items": []}
+
+
+async def test_text_search_defaults_to_the_last_24_hours(client, tmp_path):
+    now = datetime.now(UTC).replace(tzinfo=None, microsecond=0)
+    recent = (now - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+    stale = (now - timedelta(hours=25)).strftime("%Y-%m-%d %H:%M:%S")
+    path = write_log(
+        tmp_path / "window.log",
+        [log_line(ts=stale, message="needle old"), log_line(ts=recent, message="needle recent")],
+    )
+    await importer.import_log_file(app_db(), "a", "trace", path, path.name, 0)
+
+    response = await client.get("/api/logs", params={"grep": "needle"})
+    assert response.status_code == 200
+    assert [row["message"] for row in response.json()["items"]] == ["needle recent"]
+
+
+async def test_iflow_suggestions_keep_exact_full_names(seeded):
+    response = await seeded.get("/api/logs/iflows")
+    assert response.status_code == 200
+    assert response.json()["items"] == ["Demo_A", "Demo_B", "Demo_C"]
+
+
+async def test_iflow_suggestion_is_not_truncated(seeded, tmp_path):
+    exact_name = "Integration_Flow_With_A_Long_Exact_Name"
+    path = write_log(
+        tmp_path / "long-name.log",
+        [log_line(thread=f"1-{exact_name}_Worker-1", message="long name")],
+    )
+    await importer.import_log_file(app_db(), "a", "trace", path, path.name, 0)
+
+    response = await seeded.get("/api/logs/iflows", params={"tenant": "a"})
+    assert exact_name in response.json()["items"]
