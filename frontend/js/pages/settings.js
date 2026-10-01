@@ -76,10 +76,10 @@ export default () => ({
     try {
       await api.tenants.test(t.id);
       t._testOk = true;
-      t._testResult = '✓ Connection successful';
+      t._testResult = 'Connection successful';
     } catch (e) {
       t._testOk = false;
-      t._testResult = `✗ Connection failed: ${e.message}`;
+      t._testResult = `Connection failed: ${e.message}`;
     }
   },
 

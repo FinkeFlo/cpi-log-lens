@@ -24,6 +24,10 @@ export default () => ({
     if (page === 'stats') this.loadStats();
   },
 
+  onThemeChanged() {
+    if (this.$store.route.page === 'stats') this.$nextTick(() => this.renderCharts());
+  },
+
   async loadStats() {
     this.statsLoading = true;
     try {
@@ -45,8 +49,16 @@ export default () => ({
   },
 
   renderCharts() {
-    const gridColor = 'rgba(255,255,255,0.07)';
-    const textColor = 'rgba(255,255,255,0.45)';
+    const styles = getComputedStyle(document.documentElement);
+    const color = name => styles.getPropertyValue(name).trim();
+    const gridColor = color('--lens-chart-grid');
+    const textColor = color('--lens-muted');
+    const levelColors = {
+      ERROR: color('--level-error'),
+      WARN: color('--level-warn'),
+      INFO: color('--level-info'),
+      DEBUG: color('--level-debug'),
+    };
 
     const mkChart = (id, config) => {
       const canvas = document.getElementById(id);
@@ -61,7 +73,7 @@ export default () => ({
       type: 'bar',
       data: {
         labels: topErrors.map(r => shortIflow(r.iflow)),
-        datasets: [{ label: 'Errors', data: topErrors.map(r => r.cnt), backgroundColor: 'rgba(248,113,113,0.8)', borderRadius: 3 }],
+        datasets: [{ label: 'Errors', data: topErrors.map(r => r.cnt), backgroundColor: levelColors.ERROR, borderRadius: 3 }],
       },
       options: {
         indexAxis: 'y', responsive: true,
@@ -81,9 +93,7 @@ export default () => ({
         labels: levels.map(l => l.lvl || 'OTHER'),
         datasets: [{
           data: levels.map(l => l.cnt),
-          backgroundColor: levels.map(l =>
-            l.lvl === 'ERROR' ? '#f87171' : l.lvl === 'WARN' ? '#fbbf24' : l.lvl === 'INFO' ? '#34d399' : '#94a3b8'
-          ),
+          backgroundColor: levels.map(l => levelColors[l.lvl] || textColor),
         }],
       },
       options: {
@@ -100,7 +110,7 @@ export default () => ({
         labels: tl.map(r => r.hour?.slice(11) || r.hour),
         datasets: [{
           label: 'Errors per hour', data: tl.map(r => r.cnt),
-          borderColor: '#f87171', backgroundColor: 'rgba(248,113,113,0.12)',
+          borderColor: levelColors.ERROR, backgroundColor: color('--level-error-bg'),
           fill: true, tension: 0.4, pointRadius: 0,
         }],
       },

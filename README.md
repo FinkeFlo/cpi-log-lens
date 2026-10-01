@@ -1,6 +1,6 @@
 # CPI Log Lens
 
-<img src="frontend/logo.jpg" width="128" align="right" style="border-radius: 12px" />
+<img src="frontend/logo.svg" width="64" align="right" />
 
 Self-hosted tool to fetch, store and search the log files of SAP Cloud Integration (CPI) tenants.
 It runs on your own machine, keeps everything in a local DuckDB database and works offline once
