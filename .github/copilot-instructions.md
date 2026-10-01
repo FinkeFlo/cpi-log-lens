@@ -13,13 +13,14 @@ docker compose -f docker-compose.yml -f compose.dev.yaml up --build   # live rel
 
 `MOCK=true`, or the "Try demo data" button (tenant `demo` with `demo://` URLs), fetches
 `backend/mock/trace_sample.log` (synthetic, regenerate with `backend/mock/generate_sample.py`) from
-the in-process fake CPI server instead of SAP, through the same code path as a real tenant. CI (`.github/workflows/ci.yml`) runs ruff (lint + format), mypy, pytest,
-pip-audit and an image smoke test. Dependencies: `backend/pyproject.toml`, locked in
-`backend/uv.lock` (`uv sync`, `uv lock`).
+the in-process fake CPI server instead of SAP, through the same code path as a real tenant. CI
+(`.github/workflows/ci.yml`) runs ruff (lint + format), mypy, pytest, pip-audit and an image smoke
+test. Dependencies: `backend/pyproject.toml`, locked in `backend/uv.lock` (`uv sync`, `uv lock`).
 
-Tests (`backend/tests/`, `uv run pytest`): API tests through httpx `ASGITransport` with a fresh DuckDB
-file per test; CPI calls go to the in-process fake (`app/cpi/fake.py`, fixture `fake_cpi`). Change behaviour together
-with its tests; strict `xfail` markers pin known bugs and must be removed with the fix.
+Tests (`backend/tests/`, `uv run pytest`): API tests through httpx `ASGITransport` with a fresh
+DuckDB file per test; CPI calls go to the in-process fake (`app/cpi/fake.py`, fixture `fake_cpi`).
+Change behaviour together with its tests; strict `xfail` markers pin known bugs and must be removed
+with the fix.
 
 ## Architecture
 
