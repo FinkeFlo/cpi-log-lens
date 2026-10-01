@@ -6,9 +6,8 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from app import watchdog
-from app.api.deps import DbDep
+from app.api.deps import DbDep, FetchDep
 from app.config import get_settings
-from app.services import fetch as fetch_service
 
 router = APIRouter(tags=["health"])
 
@@ -20,11 +19,11 @@ async def healthz():
 
 
 @router.get("/readyz")
-async def readyz(db: DbDep):
+async def readyz(db: DbDep, fetch: FetchDep):
     """Readiness: the database answers a trivial query within 2 s."""
     try:
         await asyncio.wait_for(db.read(db.fetch_val, "SELECT 1"), 2)
     except Exception as e:
         return JSONResponse({"ok": False, "error": type(e).__name__}, status_code=503)
-    job = fetch_service.active_job
+    job = fetch.job
     return {"ok": True, "fetch_job": job.status if job else "idle"}

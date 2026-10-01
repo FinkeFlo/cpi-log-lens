@@ -9,6 +9,7 @@ from fastapi import FastAPI
 
 from app import storage, tasks, watchdog
 from app.config import get_settings
+from app.repositories import fetch_runs as fetch_runs_repo
 from app.repositories.database import Database
 from app.services import fetch as fetch_service
 from app.services import scheduler
@@ -29,8 +30,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         _upgrade_storage()
     db = Database.open(settings.db_path)
     app.state.db = db
+    fetch = fetch_service.FetchService(db)
+    app.state.fetch = fetch
     watchdog_stop = threading.Event()
     try:
+        interrupted = await fetch_runs_repo.mark_interrupted(db)
+        if interrupted:
+            log.warning("%d fetch job(s) were cut off by the last stop of the app; marked as interrupted", interrupted)
         await tenant_service.load_tenants_from_json(db)
         tasks.spawn(watchdog.heartbeat())
         if settings.watchdog_stall_seconds > 0:
@@ -41,13 +47,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 daemon=True,
             ).start()
         if settings.retention_days > 0:
-            tasks.spawn(scheduler.retention_loop(db))
-        tasks.spawn(scheduler.schedule_loop(db))
+            tasks.spawn(scheduler.retention_loop(db, fetch))
+        tasks.spawn(scheduler.schedule_loop(db, fetch))
         yield
     finally:
         log.info("shutting down")
         watchdog_stop.set()
-        fetch_service.mark_cancelled_for_shutdown()
+        await fetch.shutdown()
         await tasks.cancel_all()
         await db.close()
 

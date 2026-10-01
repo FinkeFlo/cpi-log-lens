@@ -63,7 +63,7 @@ async def add_schedule(db, sid, *, enabled=True, interval=15, last_run_sql=None)
         await db.run(db.execute, f"UPDATE fetch_schedules SET last_run_at = {last_run_sql} WHERE id = ?", [sid])
 
 
-async def run_scheduler(db, monkeypatch, *, seconds=0.3, job_status="done"):
+async def run_scheduler(db, monkeypatch, *, seconds=0.3, job_status="done", running_job=None):
     """Run the scheduler loop with a fast tick and a stub fetch; returns the started requests."""
     started = []
 
@@ -71,9 +71,10 @@ async def run_scheduler(db, monkeypatch, *, seconds=0.3, job_status="done"):
         started.append(params)
         job.status = job_status
 
-    monkeypatch.setattr(fetch_service, "run_fetch", fake_run_fetch)
+    fetch = fetch_service.FetchService(db, runner=fake_run_fetch)
+    fetch.job = running_job
     monkeypatch.setattr(get_settings(), "schedule_check_seconds", 0.02)
-    task = asyncio.create_task(scheduler.schedule_loop(db))
+    task = asyncio.create_task(scheduler.schedule_loop(db, fetch))
     await asyncio.sleep(seconds)
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
@@ -113,8 +114,8 @@ async def test_disabled_schedule_never_runs(db, monkeypatch):
 
 async def test_due_schedule_waits_while_a_fetch_is_running(db, monkeypatch):
     await add_schedule(db, "s1")
-    monkeypatch.setattr(fetch_service, "active_job", fetch_service.FetchJob(id="manual", status="running"))
-    assert await run_scheduler(db, monkeypatch) == []
+    manual = fetch_service.FetchJob(id="manual", status="running")
+    assert await run_scheduler(db, monkeypatch, running_job=manual) == []
     assert await last_run(db, "s1") is None
 
 
@@ -147,8 +148,9 @@ async def run_retention(db, monkeypatch, *, check_hours, seconds, job=None, fini
     monkeypatch.setattr(logs_repo, "cleanup_old_logs", fake_cleanup)
     monkeypatch.setattr(get_settings(), "retention_days", 30)
     monkeypatch.setattr(get_settings(), "retention_check_hours", check_hours)
-    monkeypatch.setattr(fetch_service, "active_job", job)
-    task = asyncio.create_task(scheduler.retention_loop(db))
+    fetch = fetch_service.FetchService(db)
+    fetch.job = job
+    task = asyncio.create_task(scheduler.retention_loop(db, fetch))
     if finish_job_after is not None:
         await asyncio.sleep(finish_job_after)
         job.status = "done"

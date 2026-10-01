@@ -7,13 +7,15 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import AsyncGenerator
-from dataclasses import dataclass, field
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 from app import cpi
 from app.config import get_settings
 from app.cpi.client import CpiClient, RemoteLogFile
+from app.repositories import fetch_runs as fetch_runs_repo
 from app.repositories import file_imports as file_imports_repo
 from app.repositories import tenants as tenants_repo
 from app.repositories.database import Database
@@ -30,9 +32,24 @@ class FetchParams:
     hours: int  # 0 = all available files
 
 
+class JobAlreadyRunning(Exception):
+    """Only one fetch job runs at a time."""
+
+    def __init__(self, job: "FetchJob") -> None:
+        super().__init__(f"fetch job {job.id} is already running")
+        self.job = job
+
+
+# Events a subscriber may fall behind by; older ones are dropped.
+SSE_QUEUE_SIZE = 1000
+# How often the progress of a running job is written to its history entry.
+PROGRESS_SAVE_SECONDS = 10.0
+
+
 @dataclass
 class FetchJob:
     id: str
+    trigger: str = "manual"
     status: str = "running"  # running | done | error | cancelled
     status_msg: str = ""
     done: int = 0
@@ -43,26 +60,44 @@ class FetchJob:
     imported: int = 0
     error_msg: str = ""
     cancel_requested: bool = False
+    # Totals over all tenants and log types, for the run history.
+    files_total: int = 0
+    files_done: int = 0
+    warnings: int = 0
+    errors: int = 0
+    last_error: str = ""
     # Listeners waiting for new events (one queue per SSE subscriber)
     _listeners: list = field(default_factory=list)
 
     def push(self, event: dict):
         """Broadcast an event to all active SSE listeners."""
-        if event.get("type") in ("warn", "error", "done", "cancelled"):
-            level = logging.INFO if event["type"] in ("done", "cancelled") else logging.WARNING
+        kind = event.get("type")
+        if kind == "files_found":
+            self.files_total += event["count"]
+        elif kind == "progress":
+            self.files_done += 1
+        elif kind == "warn":
+            self.warnings += 1
+        elif kind == "error":
+            self.errors += 1
+            self.last_error = event.get("msg", "")
+        if kind in ("warn", "error", "done", "cancelled"):
+            level = logging.INFO if kind in ("done", "cancelled") else logging.WARNING
             log.log(
                 level,
                 "fetch job %s: %s %s",
                 self.id[:8],
-                event["type"],
+                kind,
                 event.get("msg", f"imported={event.get('imported')}"),
-                extra={"fields": {"job_id": self.id, "event": event["type"]}},
+                extra={"fields": {"job_id": self.id, "event": kind}},
             )
         for q in list(self._listeners):
+            if q.full():  # a subscriber that does not read: drop its oldest event
+                q.get_nowait()
             q.put_nowait(event)
 
     def attach(self) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue()
+        q: asyncio.Queue = asyncio.Queue(maxsize=SSE_QUEUE_SIZE)
         self._listeners.append(q)
         return q
 
@@ -84,75 +119,120 @@ class FetchJob:
             "error_msg": self.error_msg,
         }
 
-
-# Single active job (only one fetch at a time)
-active_job: FetchJob | None = None
-
-
-def is_running() -> bool:
-    return active_job is not None and active_job.status == "running"
-
-
-def start(db: Database, params: FetchParams) -> FetchJob | None:
-    """Start a fetch job in the background; None if one is already running."""
-    global active_job
-    if is_running():
-        return None
-    job = FetchJob(id=str(uuid.uuid4()))
-    active_job = job
-    spawn(run_fetch(db, job, params))
-    return job
+    def counters(self) -> dict:
+        return {
+            "files_total": self.files_total,
+            "files_done": self.files_done,
+            "rows_imported": self.imported,
+            "warnings": self.warnings,
+            "errors": self.errors,
+            "error": self.error_msg or self.last_error or None,
+        }
 
 
-def request_cancel() -> FetchJob | None:
-    """Ask the running job to stop at the next file boundary (the file in flight
-    is finished, so the database stays consistent); None if no job is running."""
-    job = active_job
-    if job is None or job.status != "running":
-        return None
-    job.cancel_requested = True
-    job.push({"type": "status", "msg": "Cancelling…"})
-    return job
+Runner = Callable[[Database, FetchJob, FetchParams], Awaitable[None]]
 
 
-def mark_cancelled_for_shutdown() -> None:
-    job = active_job
-    if job and job.status == "running":
+class FetchService:
+    """Owns the fetch job: at most one runs at a time, whoever starts it (UI,
+    API, scheduler). Starting is guarded by a lock, so two starts in the same
+    moment cannot both pass the check. Every run is recorded in fetch_runs."""
+
+    def __init__(self, db: Database, runner: Runner | None = None) -> None:
+        self.db = db
+        self._runner = runner or run_fetch
+        self._lock = asyncio.Lock()
+        self.job: FetchJob | None = None
+        self._task: asyncio.Task | None = None
+
+    def is_running(self) -> bool:
+        return self.job is not None and self.job.status == "running"
+
+    async def start(self, params: FetchParams, trigger: str = "manual") -> FetchJob:
+        """Start a fetch job in the background; JobAlreadyRunning if one runs."""
+        async with self._lock:
+            if self.is_running():
+                assert self.job is not None
+                raise JobAlreadyRunning(self.job)
+            job = FetchJob(id=str(uuid.uuid4()), trigger=trigger)
+            await fetch_runs_repo.insert_run(self.db, job.id, trigger, asdict(params), datetime.now(UTC))
+            self.job = job
+            self._task = spawn(self._run(job, params))
+            return job
+
+    async def _run(self, job: FetchJob, params: FetchParams) -> None:
+        saver = asyncio.create_task(self._save_progress(job))
+        try:
+            await self._runner(self.db, job, params)
+        finally:
+            saver.cancel()
+            await asyncio.gather(saver, return_exceptions=True)
+            # Also when the job task is cancelled (shutdown), the run gets its final state.
+            status = job.status if job.status != "running" else "interrupted"
+            await asyncio.shield(self._save(job, status=status, finished_at=datetime.now(UTC)))
+
+    async def _save_progress(self, job: FetchJob) -> None:
+        while True:
+            await asyncio.sleep(PROGRESS_SAVE_SECONDS)
+            await self._save(job)
+
+    async def _save(self, job: FetchJob, **fields) -> None:
+        try:
+            await fetch_runs_repo.update_run(self.db, job.id, **job.counters(), **fields)
+        except Exception:
+            log.exception("fetch job %s: could not save the run history", job.id[:8])
+
+    def request_cancel(self) -> FetchJob | None:
+        """Ask the running job to stop at the next file boundary (the file in flight
+        is finished, so the database stays consistent); None if no job is running."""
+        job = self.job
+        if job is None or job.status != "running":
+            return None
+        job.cancel_requested = True
+        job.push({"type": "status", "msg": "Cancelling…"})
+        return job
+
+    async def shutdown(self) -> None:
+        """Stop a running job (app shutdown); its run is recorded as interrupted."""
+        job, task = self.job, self._task
+        if job is None or task is None or task.done():
+            return
         log.info("shutdown: cancelling fetch job %s", job.id[:8])
         job.cancel_requested = True
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
         job.status = "cancelled"
         job.status_msg = "Cancelled (shutdown)"
 
+    async def event_stream(self) -> AsyncGenerator[str, None]:
+        """SSE events of the current job: a snapshot, then live events until it ends."""
 
-async def event_stream() -> AsyncGenerator[str, None]:
-    """SSE events of the active job: a snapshot, then live events until it ends."""
+        def sse(data: dict) -> str:
+            return f"data: {json.dumps(data)}\n\n"
 
-    def sse(data: dict) -> str:
-        return f"data: {json.dumps(data)}\n\n"
+        job = self.job
+        if not job:
+            yield sse({"type": "idle"})
+            return
 
-    job = active_job
-    if not job:
-        yield sse({"type": "idle"})
-        return
+        # Send current snapshot immediately so late subscribers are up-to-date
+        yield sse({"type": "snapshot", **job.snapshot()})
 
-    # Send current snapshot immediately so late subscribers are up-to-date
-    yield sse({"type": "snapshot", **job.snapshot()})
+        if job.status != "running":
+            return
 
-    if job.status != "running":
-        return
-
-    q = job.attach()
-    try:
-        while True:
-            try:
-                event = await asyncio.wait_for(q.get(), timeout=25)
-                yield sse(event)
-                if event.get("type") in ("done", "error"):
-                    break
-            except TimeoutError:
-                yield ": keepalive\n\n"
-    finally:
-        job.detach(q)
+        q = job.attach()
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=25)
+                    yield sse(event)
+                    if event.get("type") in ("done", "error"):
+                        break
+                except TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            job.detach(q)
 
 
 async def run_fetch(db: Database, job: FetchJob, params: FetchParams) -> None:

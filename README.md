@@ -179,6 +179,8 @@ Allow enough stop time (Compose: `stop_grace_period: 60s`; `docker run`: `--stop
 Two endpoints allow LLMs or scripts to query logs. Interactive API docs are at `/docs`.
 
 `GET /api/query/schema` describes the query API, available filters and configured tenants.
+`GET /api/fetch/runs` lists past fetch jobs (manual, demo or scheduled) with their status, times and
+counters; a job cut off by a stop of the app is marked `interrupted`.
 
 `POST /api/query` searches log entries with structured filters and returns a natural-language
 `summary` plus the matching `items`:

@@ -11,7 +11,6 @@ import pytest
 from asgi_lifespan import LifespanManager
 
 from app import main, tasks, watchdog
-from app.services import fetch as fetch_service
 from tests.support import FAKE_TENANT, numbered_lines, wait_for_job
 
 pytestmark = pytest.mark.anyio
@@ -50,8 +49,9 @@ async def test_shutdown_cancels_a_running_fetch(app_env, fake_cpi):
         assert (await client.get("/api/fetch/status")).json()["status"] == "running"
         t0 = time.perf_counter()
     assert time.perf_counter() - t0 < 5
-    assert fetch_service.active_job is not None
-    assert fetch_service.active_job.status == "cancelled"
+    job = main.app.state.fetch.job
+    assert job is not None
+    assert job.status == "cancelled"
     assert main.app.state.db.closed
 
 
