@@ -53,9 +53,13 @@ jobs:
           for f in $(find ../frontend/js -name '*.js'); do
             node --input-type=module --check < "$f" || { echo "::error::$f does not parse"; exit 1; }
           done
+          node --check ../scripts/test-rendered-accessibility.mjs
       - name: Browse URL state
         working-directory: .
         run: node scripts/test-browse-url.mjs
+      - name: Accessible frontend behavior
+        working-directory: .
+        run: node scripts/test-accessibility.mjs
       - name: Dependency vulnerabilities
         run: |
           uv export --locked --no-dev --no-emit-project --format requirements-txt -o /tmp/requirements.txt
@@ -117,6 +121,20 @@ jobs:
             sleep 2
           done
           docker inspect smoke --format '{{.State.Health.Status}}' | grep -qx healthy
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Install pinned rendered accessibility test tools
+        run: |
+          mkdir -p "$RUNNER_TEMP/axe-browser"
+          npm install --prefix "$RUNNER_TEMP/axe-browser" --no-save --no-package-lock \
+            playwright@1.55.0 axe-core@4.10.3
+          "$RUNNER_TEMP/axe-browser/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Audit rendered pages and dialogs with axe-core
+        env:
+          PLAYWRIGHT_MODULE: ${{ runner.temp }}/axe-browser/node_modules/playwright/index.mjs
+          AXE_CORE_PATH: ${{ runner.temp }}/axe-browser/node_modules/axe-core/axe.min.js
+        run: node scripts/test-rendered-accessibility.mjs
       - name: Container logs
         if: always()
         run: docker logs smoke || true

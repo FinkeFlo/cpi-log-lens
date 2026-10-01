@@ -12,6 +12,7 @@ export default () => ({
     serviceKey: '',
     serviceKeyError: '',
   },
+  tenantDeleteModal: { open: false, tenantId: '', purgeLogs: false },
   dbInfo: {},
   confirmClearOpen: false,
   confirmCleanupOpen: false,
@@ -37,6 +38,10 @@ export default () => ({
     this.tenantModal.serviceKey = '';
     this.tenantModal.serviceKeyError = '';
     this.tenantModal.open = true;
+  },
+
+  confirmDeleteTenant(id) {
+    this.tenantDeleteModal = { open: true, tenantId: id, purgeLogs: false };
   },
 
   // Fill the tenant form from a CPI service key (BTP cockpit → service
@@ -83,12 +88,8 @@ export default () => ({
     }
   },
 
-  async deleteTenant(id) {
-    if (!confirm(`Delete tenant "${id}"? Scheduled fetches no longer include it.`)) return;
-    const purge = confirm(
-      `Also delete the imported log entries and downloaded files of "${id}"?\n\n` +
-      'OK: delete them. Cancel: keep them (a tenant added again with this ID continues where it stopped).'
-    );
+  async deleteTenant(id, purge) {
+    this.tenantDeleteModal.open = false;
     let data;
     try {
       data = await api.tenants.remove(id, purge);
