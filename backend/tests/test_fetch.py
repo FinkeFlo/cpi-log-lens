@@ -209,14 +209,15 @@ async def test_file_warnings_are_reported_with_their_part(client, tenant):
     assert problem["msg"].startswith("Download failed for b.log")
 
 
-async def test_only_the_latest_problems_are_kept(client, tenant, monkeypatch):
+async def test_only_the_latest_problems_are_kept(client, tenant, monkeypatch, settings):
     monkeypatch.setattr(fetch_service, "MAX_PROBLEMS", 2)
+    monkeypatch.setattr(settings, "fetch_concurrency", 1)  # files in listing order
     for i in range(4):
         tenant.add(f"f{i}.log", numbered_lines(1))
         tenant.download_status[f"f{i}.log"] = [404]
     status = await fetch(client, **TRACE)
     assert status["warnings"] == 4
-    assert len(status["problems"]) == 2
+    assert [p["file"] for p in status["problems"]] == ["f2.log", "f3.log"]
 
 
 async def test_an_unexpected_error_ends_every_part(client, tenant, monkeypatch):
