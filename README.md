@@ -75,6 +75,8 @@ unset; an invalid value stops the app at start with a message naming the variabl
 | `TENANTS_SEED_MODE` | `create` | `create`: only add missing tenants. `sync`: the file overwrites stored tenants. |
 | `DB_PATH` | `/data/cpi_logs.duckdb` | DuckDB database file. |
 | `LOGS_DIR` | `/data/logs` | Downloaded log files (gzip). |
+| `BACKUP_DIR` | `backups` next to the database | Where `POST /api/db/backup` writes backups. |
+| `DB_STORAGE_UPGRADE` | `false` | On start, convert an existing database to the compressed storage format (see *Storage format*). |
 | `FRONTEND_DIR` | `/app/frontend` | Directory of the web UI; the API is served alone if it is missing. |
 | `DUCKDB_MEMORY_LIMIT` | `1.5GB` | Memory DuckDB may use. Keep well below the container limit. |
 | `DUCKDB_THREADS` | `4` | Threads DuckDB may use. |
@@ -105,15 +107,21 @@ accordingly. Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 **Data.** Everything lives in `/data` (Compose: `./data`): the database `cpi_logs.duckdb` (plus a
 `.wal` file while running) and the downloaded log files under `logs/`.
 
-**Backup.** Stop the container and copy the database file together with its `.wal` file, if any:
+**Backup.** While the app runs, `POST /api/db/backup` writes a consistent copy of the database to
+`/data/backups/cpi_logs-<UTC time>.duckdb` (Compose: `./data/backups`; set `BACKUP_DIR` to use another
+directory, e.g. a mounted backup volume) and answers with its path and size; `GET /api/db/backups`
+lists the files. Imports wait while the copy is written, so a backup is refused while a fetch runs.
 
 ```bash
-docker compose stop
-cp data/cpi_logs.duckdb* /path/to/backup/
-docker compose start
+curl -X POST http://localhost:8080/api/db/backup
 ```
 
-Don't copy the file while the app is running: recent changes may only be in the WAL.
+Without the app, stop the container and copy the database file together with its `.wal` file, if
+any. Don't copy the file of a running app: recent changes may only be in the WAL.
+
+**Restore.** Stop the app, replace `cpi_logs.duckdb` with the backup file, delete a
+`cpi_logs.duckdb.wal` if there is one, and start the app again. Backups contain the tenant secrets:
+protect them like the database.
 
 **Upgrading.** Pull the new image (`docker compose pull && docker compose up -d`, or rebuild from
 source). On start the app applies pending schema migrations (logged as `migration NNNN …`); the
@@ -121,6 +129,24 @@ current version is shown in `GET /api/db/info` (`schema_version`). Back up the d
 upgrading across releases whose changelog mentions a storage change. Going back to an older app
 version after a schema migration is not supported: the older app refuses to start with a message
 ("written by a newer app version"); restore the backup taken before the upgrade instead.
+
+**Storage format.** New databases store the log texts ZSTD-compressed (DuckDB storage version
+v1.5.0), which makes them about 2.5–4 times smaller than the previous format; text searches over
+all entries take up to about a third longer. Databases created by earlier versions keep their
+format until you convert them, once, with the app stopped:
+
+```bash
+docker compose stop
+docker compose run --rm app python -m app.storage   # or start once with DB_STORAGE_UPGRADE=true
+docker compose start
+```
+
+The conversion copies every table into a new file (needs free disk space of about the current
+file size, and one to a few minutes for millions of entries), checks the copy, and swaps the files;
+the old file is kept as `cpi_logs.duckdb.bak-<UTC time>`. Delete it once the app works with the new
+file. **The conversion is one-way:** the new file can only be opened with DuckDB 1.5 or newer (all
+releases of this app use DuckDB 1.5), not with older DuckDB tools. To go back, stop the app and
+restore the `.bak` file.
 
 **Resources.** Plan for 2 CPU cores and 2–4 GB RAM for a database of about 10 GB. Deleting old
 entries (Settings or `RETENTION_DAYS`) keeps the database from growing without limit. The file does
