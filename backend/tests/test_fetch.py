@@ -345,6 +345,39 @@ async def test_stream_goes_on_after_a_tenant_error(db):
     assert [e["type"] for e in sse_events("".join(chunks))] == ["snapshot", "tenant_error", "progress", "done"]
 
 
+async def test_stream_misses_no_event_sent_right_after_its_snapshot(db):
+    release = asyncio.Event()
+
+    async def runner(db, job, params):
+        await release.wait()
+        await job.finish("done", {"type": "done", "imported": 0})
+
+    service = fetch_service.FetchService(db, runner=runner)
+    job = await service.start(fetch_service.FetchParams(["all"], ["trace"], 0))
+    stream = service.event_stream()
+    chunks = [await anext(stream)]  # the snapshot; the client has not asked for more yet
+    job.set_parts([("a", "A", "trace")])
+    release.set()
+    chunks += [chunk async for chunk in stream if chunk.startswith("data: ")]
+    assert [e["type"] for e in sse_events("".join(chunks))] == ["snapshot", "parts", "done"]
+
+
+async def test_stream_closes_after_a_cancel(db):
+    release = asyncio.Event()
+
+    async def runner(db, job, params):
+        await release.wait()
+        await job.finish("cancelled", {"type": "cancelled", "imported": 0})
+
+    service = fetch_service.FetchService(db, runner=runner)
+    await service.start(fetch_service.FetchParams(["all"], ["trace"], 0))
+    stream = service.event_stream()
+    chunks = [await anext(stream)]
+    release.set()
+    chunks += [chunk async for chunk in stream if chunk.startswith("data: ")]
+    assert [e["type"] for e in sse_events("".join(chunks))] == ["snapshot", "cancelled"]
+
+
 async def test_stream_of_a_finished_job_sends_only_the_snapshot(client, tenant):
     tenant.add("a.log", numbered_lines(2))
     await fetch(client, **TRACE)

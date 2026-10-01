@@ -320,14 +320,14 @@ class FetchService:
             yield sse({"type": "idle"})
             return
 
-        # Send current snapshot immediately so late subscribers are up-to-date
-        yield sse({"type": "snapshot", **job.snapshot()})
-
-        if job.status != "running":
-            return
-
-        q = job.attach()
+        # Listen before sending the snapshot: events pushed while the client reads it
+        # wait in the queue instead of being lost.
+        q = job.attach() if job.status == "running" else None
         try:
+            # Send current snapshot immediately so late subscribers are up-to-date
+            yield sse({"type": "snapshot", **job.snapshot()})
+            if q is None:
+                return
             while True:
                 try:
                     event = await asyncio.wait_for(q.get(), timeout=25)
@@ -337,7 +337,8 @@ class FetchService:
                 except TimeoutError:
                     yield ": keepalive\n\n"
         finally:
-            job.detach(q)
+            if q is not None:
+                job.detach(q)
 
 
 async def run_fetch(db: Database, job: FetchJob, params: FetchParams) -> None:
