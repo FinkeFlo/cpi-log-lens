@@ -5,5 +5,10 @@
 !backend/uv.lock
 !backend/mock/
 !frontend/
+frontend/tailwind.css
+!scripts/
+scripts/*
+!scripts/build-css.sh
+!scripts/tailwind.input.css
 **/__pycache__/
 **/*.pyc

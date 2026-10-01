@@ -5,6 +5,25 @@
 services:
   app:
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
+    depends_on:
+      css:
+        condition: service_healthy
     volumes:
       - ./backend:/app/backend
       - ./frontend:/app/frontend
+
+  css:
+    build:
+      context: .
+      target: css-builder
+    command: ["scripts/build-css.sh", "--watch"]
+    environment:
+      CSS_TOOL_CACHE: /opt/tailwind
+    volumes:
+      - ./frontend:/build/frontend
+      - ./scripts:/build/scripts
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /build/frontend/tailwind.css"]
+      interval: 1s
+      timeout: 1s
+      retries: 30

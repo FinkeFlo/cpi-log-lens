@@ -224,8 +224,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). In short:
 docker compose -f docker-compose.yml -f compose.dev.yaml up --build   # live reload
 ```
 
-Stack: Python, FastAPI, DuckDB, httpx · Alpine.js, Tailwind CSS, daisyUI, Chart.js (vendored in
-`frontend/vendor/`, no Node.js needed).
+Stack: Python, FastAPI, DuckDB, httpx · Alpine.js and Chart.js (vendored in `frontend/vendor/`),
+Tailwind CSS 4 and daisyUI 5 (built from pinned standalone artifacts; no Node.js or npm needed).
 
 ## License
 

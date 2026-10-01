@@ -5,9 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>CPI Log Lens</title>
   <link rel="icon" type="image/jpeg" href="/logo.jpg" />
-  <!-- Pinned local copies (scripts/vendor-frontend.sh): the UI works offline. -->
-  <link href="/vendor/daisyui.full.min.css" rel="stylesheet" />
-  <link href="/vendor/tailwind.min.css" rel="stylesheet" />
+  <!-- Generated in the image by scripts/build-css.sh; no runtime CDN requests. -->
+  <link href="/tailwind.css" rel="stylesheet" />
   <script src="/vendor/chart.umd.min.js"></script>
   <!-- Native ES modules, no build step: js/main.js starts Alpine. -->
   <script type="module" src="/js/main.js"></script>
@@ -29,16 +28,16 @@
   </div>
   <div class="flex-none">
     <ul class="menu menu-horizontal px-1 gap-1 text-sm">
-      <li><a :class="$store.route.page==='browse'   && 'active'" @click="$store.route.navigate('browse')">Browse</a></li>
+      <li><a :aria-current="$store.route.page==='browse' ? 'page' : 'false'" @click="$store.route.navigate('browse')">Browse</a></li>
       <li>
-        <a :class="$store.route.page==='fetch' && 'active'" @click="$store.route.navigate('fetch')" class="relative">
+        <a :aria-current="$store.route.page==='fetch' ? 'page' : 'false'" @click="$store.route.navigate('fetch')" class="relative">
           📥 Fetch
           <span x-show="$store.fetchJob.status === 'running'"
                 class="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-primary animate-pulse"></span>
         </a>
       </li>
-      <li><a :class="$store.route.page==='stats'    && 'active'" @click="$store.route.navigate('stats')">📊 Stats</a></li>
-      <li><a :class="$store.route.page==='settings' && 'active'" @click="$store.route.navigate('settings')">⚙ Settings</a></li>
+      <li><a :aria-current="$store.route.page==='stats' ? 'page' : 'false'" @click="$store.route.navigate('stats')">📊 Stats</a></li>
+      <li><a :aria-current="$store.route.page==='settings' ? 'page' : 'false'" @click="$store.route.navigate('settings')">⚙ Settings</a></li>
     </ul>
   </div>
 </div>
@@ -98,38 +97,38 @@
   <div class="card bg-base-100 shadow mb-4">
     <div class="card-body p-3">
       <div class="flex flex-wrap gap-2 items-end">
-        <div>
-          <label class="label py-0 pb-1"><span class="label-text text-xs">Tenant</span></label>
-          <select class="select select-bordered select-sm w-32" x-model="q.tenant">
+        <fieldset class="fieldset gap-0 pb-0">
+          <legend class="fieldset-legend py-0 pb-1 text-xs font-normal">Tenant</legend>
+          <select class="select select-sm w-32" x-model="q.tenant">
             <option value="">All tenants</option>
             <template x-for="t in tenants" :key="t.id">
               <option :value="t.id" x-text="t.name"></option>
             </template>
           </select>
-        </div>
-        <div>
-          <label class="label py-0 pb-1"><span class="label-text text-xs">Level</span></label>
-          <select class="select select-bordered select-sm w-24" x-model="q.level">
+        </fieldset>
+        <fieldset class="fieldset gap-0 pb-0">
+          <legend class="fieldset-legend py-0 pb-1 text-xs font-normal">Level</legend>
+          <select class="select select-sm w-24" x-model="q.level">
             <option value="">All levels</option>
             <option>ERROR</option><option>WARN</option><option>INFO</option>
           </select>
-        </div>
-        <div class="flex-1 min-w-48">
-          <label class="label py-0 pb-1"><span class="label-text text-xs">IFlow</span></label>
-          <input class="input input-bordered input-sm w-full" x-model="q.iflow" placeholder="filter…" @keydown.enter="search()" />
-        </div>
-        <div class="flex-1 min-w-48">
-          <label class="label py-0 pb-1"><span class="label-text text-xs">Search</span></label>
-          <input class="input input-bordered input-sm w-full" x-model="q.grep" placeholder="Search message or logger…" @keydown.enter="search()" />
-        </div>
-        <div>
-          <label class="label py-0 pb-1"><span class="label-text text-xs">From</span></label>
-          <input type="date" class="input input-bordered input-sm w-36" x-model="q.date_from" />
-        </div>
-        <div>
-          <label class="label py-0 pb-1"><span class="label-text text-xs">To</span></label>
-          <input type="date" class="input input-bordered input-sm w-36" x-model="q.date_to" />
-        </div>
+        </fieldset>
+        <fieldset class="fieldset gap-0 pb-0 flex-1 min-w-48">
+          <legend class="fieldset-legend py-0 pb-1 text-xs font-normal">IFlow</legend>
+          <input class="input input-sm w-full" x-model="q.iflow" placeholder="filter…" @keydown.enter="search()" />
+        </fieldset>
+        <fieldset class="fieldset gap-0 pb-0 flex-1 min-w-48">
+          <legend class="fieldset-legend py-0 pb-1 text-xs font-normal">Search</legend>
+          <input class="input input-sm w-full" x-model="q.grep" placeholder="Search message or logger…" @keydown.enter="search()" />
+        </fieldset>
+        <fieldset class="fieldset gap-0 pb-0">
+          <legend class="fieldset-legend py-0 pb-1 text-xs font-normal">From</legend>
+          <input type="date" class="input input-sm w-36" x-model="q.date_from" />
+        </fieldset>
+        <fieldset class="fieldset gap-0 pb-0">
+          <legend class="fieldset-legend py-0 pb-1 text-xs font-normal">To</legend>
+          <input type="date" class="input input-sm w-36" x-model="q.date_to" />
+        </fieldset>
         <button class="btn btn-primary btn-sm" @click="search()">🔍</button>
         <button class="btn btn-ghost btn-sm"   @click="resetSearch()">✕</button>
       </div>
@@ -384,11 +383,11 @@
   <div class="modal-box max-w-lg">
     <h3 class="font-bold text-lg mb-4" x-text="scheduleModal.editing ? 'Edit schedule' : 'New schedule'"></h3>
     <div class="space-y-3">
-      <div class="form-control">
-        <label class="label py-0 pb-1"><span class="label-text text-sm">Name</span></label>
-        <input type="text" class="input input-bordered input-sm" placeholder="e.g. PRD every 15 min"
+      <fieldset class="fieldset gap-0 pb-0">
+        <legend class="fieldset-legend py-0 pb-1 text-sm font-normal">Name</legend>
+        <input type="text" class="input input-sm w-full" placeholder="e.g. PRD every 15 min"
                x-model="scheduleModal.form.name" />
-      </div>
+      </fieldset>
       <div class="grid grid-cols-2 gap-4">
         <div>
           <p class="text-sm font-semibold mb-2">Tenants</p>
@@ -418,14 +417,14 @@
         </div>
       </div>
       <div class="grid grid-cols-2 gap-4">
-        <div class="form-control">
-          <label class="label py-0 pb-1"><span class="label-text text-sm">Time range per run (hours, 0 = all)</span></label>
-          <input type="number" min="0" class="input input-bordered input-sm" x-model="scheduleModal.form.hours" />
-        </div>
-        <div class="form-control">
-          <label class="label py-0 pb-1"><span class="label-text text-sm">Interval (minutes)</span></label>
-          <input type="number" min="1" class="input input-bordered input-sm" x-model="scheduleModal.form.interval_minutes" />
-        </div>
+        <fieldset class="fieldset gap-0 pb-0">
+          <legend class="fieldset-legend py-0 pb-1 text-sm font-normal">Time range per run (hours, 0 = all)</legend>
+          <input type="number" min="0" class="input input-sm w-full" x-model="scheduleModal.form.hours" />
+        </fieldset>
+        <fieldset class="fieldset gap-0 pb-0">
+          <legend class="fieldset-legend py-0 pb-1 text-sm font-normal">Interval (minutes)</legend>
+          <input type="number" min="1" class="input input-sm w-full" x-model="scheduleModal.form.interval_minutes" />
+        </fieldset>
       </div>
       <label class="flex items-center gap-2 cursor-pointer">
         <input type="checkbox" class="toggle toggle-sm toggle-success" x-model="scheduleModal.form.enabled" />
@@ -459,7 +458,7 @@
      @page-shown.window="onPageShown($event.detail)">
 
   <div class="flex gap-2 mb-4 items-center">
-    <select class="select select-bordered select-sm w-28" x-model="statsFilter" @change="loadStats()">
+    <select class="select select-sm w-28" x-model="statsFilter" @change="loadStats()">
       <option value="">All tenants</option>
       <template x-for="t in tenants" :key="t.id">
         <option :value="t.id" x-text="t.name"></option>
@@ -632,19 +631,19 @@
       <p class="text-xs text-base-content/50 mb-3">Deletes entries older than the given age, optionally for one tenant only.
         Downloaded files are kept.</p>
       <div class="flex flex-wrap gap-2 items-end">
-        <div class="form-control">
-          <label class="label py-0 pb-1"><span class="label-text text-xs">Tenant</span></label>
-          <select class="select select-bordered select-sm" x-model="cleanup.tenant">
+        <fieldset class="fieldset gap-0 pb-0">
+          <legend class="fieldset-legend py-0 pb-1 text-xs font-normal">Tenant</legend>
+          <select class="select select-sm" x-model="cleanup.tenant">
             <option value="all">All tenants</option>
             <template x-for="t in tenants" :key="t.id">
               <option :value="t.id" x-text="t.name"></option>
             </template>
           </select>
-        </div>
-        <div class="form-control">
-          <label class="label py-0 pb-1"><span class="label-text text-xs">Older than (days)</span></label>
-          <input type="number" min="1" class="input input-bordered input-sm w-28" x-model.number="cleanup.olderThanDays" />
-        </div>
+        </fieldset>
+        <fieldset class="fieldset gap-0 pb-0">
+          <legend class="fieldset-legend py-0 pb-1 text-xs font-normal">Older than (days)</legend>
+          <input type="number" min="1" class="input input-sm w-28" x-model.number="cleanup.olderThanDays" />
+        </fieldset>
         <button class="btn btn-sm btn-warning btn-outline" @click="confirmCleanupOpen=true">🧹 Delete old entries</button>
       </div>
     </div>
@@ -656,13 +655,13 @@
   <div class="modal-box max-w-lg">
     <h3 class="font-bold text-lg mb-4" x-text="tenantModal.editing ? 'Edit tenant' : 'Add tenant'"></h3>
     <div class="space-y-3">
-      <div x-show="!tenantModal.editing" class="form-control">
-        <label class="label py-0 pb-1"><span class="label-text text-sm">Service key (optional)</span></label>
-        <textarea class="textarea textarea-bordered textarea-sm font-mono text-xs" rows="3"
+      <fieldset x-show="!tenantModal.editing" class="fieldset gap-0 pb-0">
+        <legend class="fieldset-legend py-0 pb-1 text-sm font-normal">Service key (optional)</legend>
+        <textarea class="textarea textarea-sm h-[58px] min-h-[58px] w-full font-mono text-xs" rows="3"
                   placeholder='Paste the JSON service key of your Process Integration Runtime (plan "api") to fill in the fields below'
                   x-model="tenantModal.serviceKey" @input.debounce.300ms="applyServiceKey()"></textarea>
         <span x-show="tenantModal.serviceKeyError" class="text-error text-xs mt-1" x-text="tenantModal.serviceKeyError"></span>
-      </div>
+      </fieldset>
       <template x-for="[field,label,ph,type] in [
         ['id',            'ID (short, e.g. prd)',    'prd',              'text'],
         ['name',          'Display name',             'PRD',              'text'],
@@ -671,13 +670,13 @@
         ['client_id',     'Client ID',                'sb-…',             'text'],
         ['client_secret', 'Client Secret',            '',                 'password']
       ]" :key="field">
-        <div class="form-control">
-          <label class="label py-0 pb-1"><span class="label-text text-sm" x-text="label"></span></label>
-          <input :type="type" class="input input-bordered input-sm"
+        <fieldset class="fieldset gap-0 pb-0">
+          <legend class="fieldset-legend py-0 pb-1 text-sm font-normal" x-text="label"></legend>
+          <input :type="type" class="input input-sm w-full"
                  :placeholder="field==='client_secret' && tenantModal.editing ? 'Leave empty to keep the current secret' : ph"
                  :disabled="field==='id' && tenantModal.editing"
                  x-model="tenantModal.form[field]" />
-        </div>
+        </fieldset>
       </template>
     </div>
     <div class="modal-action">
