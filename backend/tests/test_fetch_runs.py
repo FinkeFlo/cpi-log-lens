@@ -186,3 +186,18 @@ def test_slow_sse_subscribers_lose_the_oldest_events(monkeypatch):
     for i in range(5):
         job.push({"type": "status", "msg": str(i)})
     assert [q.get_nowait()["msg"] for _ in range(q.qsize())] == ["2", "3", "4"]
+
+
+async def test_a_job_shows_as_ended_only_once_its_run_is_recorded(client, fake_cpi, monkeypatch):
+    real_update = fetch_runs_repo.update_run
+
+    async def slow_update(db, run_id, **fields):
+        await asyncio.sleep(0.2)
+        await real_update(db, run_id, **fields)
+
+    monkeypatch.setattr(fetch_runs_repo, "update_run", slow_update)
+    await client.post("/api/tenants", json=FAKE_TENANT)
+    fake_cpi.add("a.log", numbered_lines(1))
+    status = await fetch(client, **TRACE)
+    assert status["status"] == "done"
+    assert [r["status"] for r in await runs(client)] == ["done"]

@@ -66,11 +66,30 @@ class FetchJob:
     warnings: int = 0
     errors: int = 0
     last_error: str = ""
+    recorded: bool = False  # final state written to the run history
+    # Called with the final status before the job shows it (the service records the run).
+    on_finish: Callable[["FetchJob", str], Awaitable[None]] | None = None
     # Listeners waiting for new events (one queue per SSE subscriber)
     _listeners: list = field(default_factory=list)
 
     def push(self, event: dict):
         """Broadcast an event to all active SSE listeners."""
+        self._count(event)
+        self._broadcast(event)
+
+    async def finish(self, status: str, event: dict, *, status_msg: str = "", error: str = "") -> None:
+        """End the job: record it, then show the final status and send the final event,
+        so whoever sees the job ended also finds it in the run history."""
+        if error:
+            self.error_msg = error
+        self._count(event)
+        if self.on_finish is not None:
+            await self.on_finish(self, status)
+        self.status = status
+        self.status_msg = status_msg
+        self._broadcast(event)
+
+    def _count(self, event: dict) -> None:
         kind = event.get("type")
         if kind == "files_found":
             self.files_total += event["count"]
@@ -81,6 +100,9 @@ class FetchJob:
         elif kind == "error":
             self.errors += 1
             self.last_error = event.get("msg", "")
+
+    def _broadcast(self, event: dict) -> None:
+        kind = event.get("type")
         if kind in ("warn", "error", "done", "cancelled"):
             level = logging.INFO if kind in ("done", "cancelled") else logging.WARNING
             log.log(
@@ -154,7 +176,7 @@ class FetchService:
             if self.is_running():
                 assert self.job is not None
                 raise JobAlreadyRunning(self.job)
-            job = FetchJob(id=str(uuid.uuid4()), trigger=trigger)
+            job = FetchJob(id=str(uuid.uuid4()), trigger=trigger, on_finish=self._finished)
             await fetch_runs_repo.insert_run(self.db, job.id, trigger, asdict(params), datetime.now(UTC))
             self.job = job
             self._task = spawn(self._run(job, params))
@@ -167,9 +189,14 @@ class FetchService:
         finally:
             saver.cancel()
             await asyncio.gather(saver, return_exceptions=True)
-            # Also when the job task is cancelled (shutdown), the run gets its final state.
-            status = job.status if job.status != "running" else "interrupted"
-            await asyncio.shield(self._save(job, status=status, finished_at=datetime.now(UTC)))
+            if not job.recorded:
+                # Cut off (shutdown) or ended without finish(): record the final state anyway.
+                status = job.status if job.status != "running" else "interrupted"
+                await asyncio.shield(self._finished(job, status))
+
+    async def _finished(self, job: FetchJob, status: str) -> None:
+        await self._save(job, status=status, finished_at=datetime.now(UTC))
+        job.recorded = True
 
     async def _save_progress(self, job: FetchJob) -> None:
         while True:
@@ -245,9 +272,8 @@ async def run_fetch(db: Database, job: FetchJob, params: FetchParams) -> None:
             tenants = [t for tid in params.tenants if (t := await tenants_repo.get_tenant(db, tid.lower())) is not None]
 
         if not tenants:
-            job.status = "error"
-            job.error_msg = "No tenants configured."
-            job.push({"type": "error", "msg": job.error_msg})
+            msg = "No tenants configured."
+            await job.finish("error", {"type": "error", "msg": msg}, error=msg)
             return
 
         log_types = params.log_types or ["trace", "http"]
@@ -263,18 +289,12 @@ async def run_fetch(db: Database, job: FetchJob, params: FetchParams) -> None:
                     await _fetch_log_type(_TenantFetch(db, job, client, tenant, log_type), cutoff_ms)
 
         if job.cancel_requested:
-            job.status = "cancelled"
-            job.status_msg = "Cancelled"
-            job.push({"type": "cancelled", "imported": job.imported})
+            await job.finish("cancelled", {"type": "cancelled", "imported": job.imported}, status_msg="Cancelled")
         else:
-            job.status = "done"
-            job.status_msg = "Completed"
-            job.push({"type": "done", "imported": job.imported})
+            await job.finish("done", {"type": "done", "imported": job.imported}, status_msg="Completed")
 
     except Exception as e:
-        job.status = "error"
-        job.error_msg = str(e)
-        job.push({"type": "error", "msg": str(e)})
+        await job.finish("error", {"type": "error", "msg": str(e)}, error=str(e))
 
 
 @dataclass
