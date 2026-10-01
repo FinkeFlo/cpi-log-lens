@@ -61,7 +61,10 @@ async def update_tenant(tenant_id: str, body: TenantCreate, db: DbDep):
 @router.delete("/{tenant_id}")
 async def remove_tenant(tenant_id: str, db: DbDep, schedules: SchedulesDep, purge: bool = False):
     """Delete a tenant; schedules no longer include it. Its log entries, import
-    bookkeeping and downloaded files are kept unless `purge=true`."""
+    bookkeeping and downloaded files are kept unless `purge=true`. With purge, the
+    data of a tenant that was deleted earlier can be removed as well."""
+    if not purge and await tenants_repo.get_tenant(db, tenant_id) is None:
+        raise HTTPException(404, "Tenant not found")
     result = await tenant_service.delete_tenant(db, tenant_id, purge=purge)
     await schedules.reload()
     return {"ok": True, **result}
@@ -69,14 +72,16 @@ async def remove_tenant(tenant_id: str, db: DbDep, schedules: SchedulesDep, purg
 
 @router.post("/{tenant_id}/test")
 async def test_tenant(tenant_id: str, db: DbDep):
+    """Request an OAuth token with the tenant's credentials: 200 when it works,
+    502 with the reason when the token request fails."""
+    tenant = await tenants_repo.get_tenant(db, tenant_id)
+    if not tenant:
+        raise HTTPException(404, "Tenant not found")
+    if cpi.is_demo(tenant):
+        return {"ok": True, "demo": True}
     try:
-        tenant = await tenants_repo.get_tenant(db, tenant_id)
-        if not tenant:
-            raise HTTPException(404, "Tenant not found")
-        if cpi.is_demo(tenant):
-            return {"ok": True, "demo": True}
         async with cpi.client_for(tenant, timeout=30) as client:
             token = await client.get_token(follow_redirects=False)
-        return {"ok": bool(token), "token_preview": token[:12] + "…"}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        raise HTTPException(502, f"Token request failed: {e}") from None
+    return {"ok": True, "token_preview": token[:12] + "…"}

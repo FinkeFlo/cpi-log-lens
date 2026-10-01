@@ -164,8 +164,8 @@ async def test_a_second_start_while_running_is_refused(client, tenant):
     tenant.download_delay = 0.3
     first = (await client.post("/api/fetch", json=TRACE)).json()
     second = await client.post("/api/fetch", json=TRACE)
-    assert second.status_code == 200
-    assert second.json() == {"ok": False, "error": "A fetch is already running.", "job_id": first["job_id"]}
+    assert second.status_code == 409
+    assert second.json() == {"detail": "A fetch is already running.", "job_id": first["job_id"]}
     await wait_for_job(client)
 
 
@@ -187,7 +187,7 @@ async def test_cancel_stops_at_the_next_file(client, tenant, monkeypatch, settin
 
 async def test_status_and_cancel_without_a_job(client):
     assert (await client.get("/api/fetch/status")).json() == {"status": "idle"}
-    assert (await client.post("/api/fetch/cancel")).json() == {"ok": False, "error": "No fetch is running."}
+    assert (await client.post("/api/fetch/cancel")).status_code == 409
 
 
 def sse_events(text):

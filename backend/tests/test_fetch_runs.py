@@ -83,8 +83,8 @@ async def test_concurrent_starts_run_one_job(client, fake_cpi):
     fake_cpi.add("a.log", numbered_lines(1))
     fake_cpi.download_delay = 0.3
     answers = await asyncio.gather(*[client.post("/api/fetch", json=TRACE) for _ in range(5)])
-    started = [a.json() for a in answers if a.json()["ok"]]
-    refused = [a.json() for a in answers if not a.json()["ok"]]
+    started = [a.json() for a in answers if a.status_code == 200]
+    refused = [a.json() for a in answers if a.status_code == 409]
     assert len(started) == 1
     assert len(refused) == 4
     assert {r["job_id"] for r in refused} == {started[0]["job_id"]}

@@ -24,6 +24,6 @@ async def readyz(db: DbDep, fetch: FetchDep):
     try:
         await asyncio.wait_for(db.read(db.fetch_val, "SELECT 1"), 2)
     except Exception as e:
-        return JSONResponse({"ok": False, "error": type(e).__name__}, status_code=503)
+        return JSONResponse({"ok": False, "detail": f"database not ready ({type(e).__name__})"}, status_code=503)
     job = fetch.job
     return {"ok": True, "fetch_job": job.status if job else "idle"}

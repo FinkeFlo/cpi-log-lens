@@ -69,4 +69,6 @@ database; `repositories` know nothing about FastAPI or HTTP.
 - Never read DuckDB results with `fetchone()` and leave them open; use `Database.fetch_*`.
 - `/api/query` and `/api/query/schema` form a contract for external tools; keep them in sync with
   the filter semantics of `repositories/logs.query_logs`.
+- Errors are HTTP status codes with `{"detail": …}` (`HTTPException` or a handler in
+  `app/errors.py`); never 200 with an error flag.
 - UI and API texts are English. Don't commit credentials, service keys or real log data.
