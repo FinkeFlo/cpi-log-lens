@@ -32,7 +32,11 @@ def insert_rows(conn, rows: list[Row]) -> None:
         conn.unregister("_import_batch")
 
 
-def insert_unparsed(conn, tenant: str, log_type: str, filename: str, lines: list[UnparsedLine]) -> None:
+def replace_unparsed(conn, tenant: str, log_type: str, filename: str, lines: list[UnparsedLine]) -> None:
+    """Store the unparsable lines at the start of a file, replacing earlier ones of the same file."""
+    conn.execute(
+        "DELETE FROM unparsed_lines WHERE tenant = ? AND log_type = ? AND filename = ?", [tenant, log_type, filename]
+    )
     conn.executemany(
         """
         INSERT INTO unparsed_lines (tenant, log_type, filename, line_no, raw_text)
