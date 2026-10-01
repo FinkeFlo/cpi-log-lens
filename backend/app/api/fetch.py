@@ -17,10 +17,8 @@ router = APIRouter(prefix="/api", tags=["fetch"])
 
 
 async def _start(fetch: FetchService, body: FetchRequest, trigger: str) -> dict:
-    try:
-        job = await fetch.start(fetch_service.FetchParams(**body.model_dump()), trigger=trigger)
-    except fetch_service.JobAlreadyRunning as e:
-        return {"ok": False, "error": "A fetch is already running.", "job_id": e.job.id}
+    # A running job: JobAlreadyRunning -> 409 with the running job's id (app/errors.py).
+    job = await fetch.start(fetch_service.FetchParams(**body.model_dump()), trigger=trigger)
     return {"ok": True, "job_id": job.id}
 
 
@@ -55,7 +53,7 @@ async def fetch_cancel(fetch: FetchDep):
     stays consistent) instead of requiring a full container restart."""
     job = fetch.request_cancel()
     if job is None:
-        return {"ok": False, "error": "No fetch is running."}
+        raise HTTPException(409, "No fetch is running.")
     return {"ok": True, "job_id": job.id}
 
 

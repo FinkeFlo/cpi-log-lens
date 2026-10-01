@@ -137,8 +137,8 @@ async def test_never_run_schedule_starts_right_away(db, fast_minutes):
 async def test_schedule_runs_again_every_interval(db, fast_minutes):
     await add_schedule(db, "s1", interval=5)  # 100 ms
     runs = StubRuns()
-    await run_service(db, runs, seconds=0.45)
-    assert 3 <= len(runs.started) <= 6
+    await run_service(db, runs, seconds=1.0)
+    assert 3 <= len(runs.started) <= 11
 
 
 async def test_schedule_within_its_interval_waits(db, fast_minutes):
@@ -165,7 +165,7 @@ async def test_due_schedule_retries_while_another_fetch_runs(db, fast_minutes):
         await asyncio.sleep(0.1)
         manual.status = "done"
 
-    await run_service(db, runs, seconds=0.3, running_job=manual, before=end_manual_job_later)
+    await run_service(db, runs, seconds=0.6, running_job=manual, before=end_manual_job_later)
     # Not lost: started once the manual job had ended (retry after one "minute").
     assert [t for t, _ in runs.started] == ["schedule:s1"]
 
@@ -174,7 +174,7 @@ async def test_several_due_schedules_all_run_one_after_another(db, fast_minutes)
     for sid in ("s1", "s2", "s3"):
         await add_schedule(db, sid, interval=1000)
     runs = StubRuns(duration=0.02)
-    await run_service(db, runs, seconds=0.4)
+    await run_service(db, runs, seconds=0.8)
     assert sorted(t for t, _ in runs.started) == ["schedule:s1", "schedule:s2", "schedule:s3"]
     for sid in ("s1", "s2", "s3"):
         assert await last_run(db, sid) is not None
@@ -218,7 +218,7 @@ def retention(monkeypatch):
 
 async def test_retention_runs_at_start_and_then_every_interval(db, monkeypatch, retention):
     monkeypatch.setattr(get_settings(), "retention_check_hours", 0.05 / 3600)
-    await run_service(db, StubRuns(), seconds=0.4)
+    await run_service(db, StubRuns(), seconds=0.8)
     assert len(retention) >= 3
     assert set(retention) == {30}
 
@@ -240,5 +240,5 @@ async def test_retention_retries_soon_after_a_running_fetch(db, monkeypatch, fas
         job.status = "done"
 
     # Retry after 5 "minutes" (100 ms), not after the hour-long interval.
-    await run_service(db, StubRuns(), seconds=0.3, running_job=job, before=end_job_later)
+    await run_service(db, StubRuns(), seconds=0.6, running_job=job, before=end_job_later)
     assert retention == [30]

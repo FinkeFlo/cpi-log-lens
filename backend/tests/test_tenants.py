@@ -135,10 +135,15 @@ async def test_delete_removes_the_tenant_from_schedules(client):
     assert schedules == {"fake and qa": ["qa"], "all": ["all"]}
 
 
-async def test_delete_of_an_unknown_tenant_answers_ok(client):
-    # Current behaviour; see test_errors for the intended 404.
-    res = await client.delete("/api/tenants/nope")
+async def test_purge_of_a_tenant_deleted_earlier(client, fake_cpi):
+    await client.post("/api/tenants", json=FAKE_TENANT)
+    fake_cpi.add("a.log", numbered_lines(2))
+    await fetch(client, tenants=["fake"], log_types=["trace"], hours=0)
+    await client.delete("/api/tenants/fake")
+    assert (await client.delete("/api/tenants/fake")).status_code == 404
+    res = await client.delete("/api/tenants/fake", params={"purge": "true"})
     assert res.status_code == 200
+    assert res.json()["deleted_entries"] == 2
 
 
 async def test_connection_test_gets_a_token(client, fake_cpi):
@@ -152,9 +157,8 @@ async def test_connection_test_reports_a_failed_token_request(client, fake_cpi):
     fake_cpi.token_status = 401
     await client.post("/api/tenants", json=FAKE_TENANT)
     res = await client.post("/api/tenants/fake/test")
-    assert res.status_code == 200
-    assert res.json()["ok"] is False
-    assert "401" in res.json()["error"]
+    assert res.status_code == 502
+    assert "401" in res.json()["detail"]
     assert fake_cpi.requests == ["token"]  # 4xx is not retried
 
 

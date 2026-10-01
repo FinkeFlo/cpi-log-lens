@@ -178,6 +178,11 @@ Allow enough stop time (Compose: `stop_grace_period: 60s`; `docker run`: `--stop
 Two endpoints allow LLMs or scripts to query logs. Interactive API docs are at `/docs`.
 
 `GET /api/query/schema` describes the query API, available filters and configured tenants.
+Errors are HTTP status codes with a JSON body `{"detail": …}`: 404 unknown tenant, schedule, entry or
+run; 409 a fetch is already running (with its `job_id`) or none is running; 422 invalid input
+(`detail` lists the fields); 502 the CPI token request failed (connection test); 503 the database
+is busy (retry after the `Retry-After` seconds); 507 not enough disk space for a backup.
+
 `GET /api/fetch/runs` lists past fetch jobs (manual, demo or scheduled) with their status, times and
 counters; a job cut off by a stop of the app is marked `interrupted`.
 

@@ -59,6 +59,8 @@ async def update_schedule(schedule_id: str, body: ScheduleRequest, db: DbDep, sc
 
 @router.delete("/{schedule_id}")
 async def remove_schedule(schedule_id: str, db: DbDep, schedules: SchedulesDep):
+    if await schedules_repo.get_schedule(db, schedule_id) is None:
+        raise HTTPException(404, "Schedule not found")
     await schedules_repo.delete_schedule(db, schedule_id)
     await schedules.reload()
     return {"ok": True}
