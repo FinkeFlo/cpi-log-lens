@@ -9,6 +9,8 @@ import time
 import pytest
 
 from app.repositories import file_imports as file_imports_repo
+from app.services import fetch as fetch_service
+from app.services.tenants import ensure_demo_tenant
 from tests.support import FAKE_TENANT, app_db, fetch, numbered_lines, wait_for_job
 
 pytestmark = pytest.mark.anyio
@@ -135,6 +137,88 @@ async def test_list_errors_are_retried_then_reported(client, tenant):
     assert tenant.requests == ["token", "list", "list", "list"]
 
 
+async def test_status_reports_progress_per_tenant_and_log_type(client, tenant):
+    tenant.add("a.log", numbered_lines(3))
+    tenant.add("b.log", numbered_lines(2, start_minute=10))
+    tenant.add("h.log", numbered_lines(4), log_type="http")
+    status = await fetch(client, tenants=["fake"], log_types=["trace", "http"], hours=0)
+    assert status["status_msg"] == "Completed"
+    assert (status["files_total"], status["files_done"], status["warnings"], status["errors"]) == (3, 3, 0, 0)
+    assert status["problems"] == []
+    assert status["parts"] == [
+        {
+            "index": 0,
+            "tenant": "fake",
+            "tenant_name": "Fake",
+            "log_type": "trace",
+            "status": "done",
+            "files_total": 2,
+            "files_done": 2,
+            "imported": 5,
+            "warnings": 0,
+            "error": "",
+        },
+        {
+            "index": 1,
+            "tenant": "fake",
+            "tenant_name": "Fake",
+            "log_type": "http",
+            "status": "done",
+            "files_total": 1,
+            "files_done": 1,
+            "imported": 4,
+            "warnings": 0,
+            "error": "",
+        },
+    ]
+
+
+async def test_a_failing_tenant_is_reported_and_the_others_are_fetched(client, tenant):
+    await ensure_demo_tenant(app_db())
+    tenant.token_status = 401
+    status = await fetch(client, tenants=["fake", "demo"], log_types=["trace"], hours=0)
+    assert status["status"] == "done"
+    assert status["status_msg"] == "Completed with errors"
+    assert status["error_msg"] == ""
+    assert status["imported"] == 1803
+    assert [(p["tenant"], p["status"]) for p in status["parts"]] == [("fake", "failed"), ("demo", "done")]
+    assert status["parts"][0]["error"].startswith("Couldn't get an OAuth token for Fake")
+    assert status["parts"][1]["imported"] == 1803
+    assert status["errors"] == 1
+    [problem] = status["problems"]
+    assert (problem["level"], problem["tenant"], problem["tenant_name"], problem["log_type"]) == (
+        "error",
+        "fake",
+        "Fake",
+        "trace",
+    )
+    assert problem["msg"] == status["parts"][0]["error"]
+
+
+async def test_file_warnings_are_reported_with_their_part(client, tenant):
+    tenant.add("a.log", numbered_lines(2))
+    tenant.add("b.log", numbered_lines(2, start_minute=10))
+    tenant.download_status["b.log"] = [404]
+    status = await fetch(client, **TRACE)
+    assert status["status_msg"] == "Completed with warnings"
+    assert (status["warnings"], status["errors"]) == (1, 0)
+    [part] = status["parts"]
+    assert (part["status"], part["files_done"], part["imported"], part["warnings"]) == ("done", 2, 2, 1)
+    [problem] = status["problems"]
+    assert (problem["level"], problem["tenant"], problem["file"]) == ("warn", "fake", "b.log")
+    assert problem["msg"].startswith("Download failed for b.log")
+
+
+async def test_only_the_latest_problems_are_kept(client, tenant, monkeypatch):
+    monkeypatch.setattr(fetch_service, "MAX_PROBLEMS", 2)
+    for i in range(4):
+        tenant.add(f"f{i}.log", numbered_lines(1))
+        tenant.download_status[f"f{i}.log"] = [404]
+    status = await fetch(client, **TRACE)
+    assert status["warnings"] == 4
+    assert len(status["problems"]) == 2
+
+
 async def test_unknown_tenants_end_the_job_with_an_error(client, tenant):
     status = await fetch(client, tenants=["nope"], log_types=["trace"], hours=0)
     assert status["status"] == "error"
@@ -174,7 +258,7 @@ async def test_cancel_stops_at_the_next_file(client, tenant, monkeypatch, settin
     for i in range(5):
         tenant.add(f"f{i}.log", numbered_lines(1))
     tenant.download_delay = 0.1
-    await client.post("/api/fetch", json=TRACE)
+    await client.post("/api/fetch", json={**TRACE, "log_types": ["trace", "http"]})
     await asyncio.sleep(0.15)
     res = await client.post("/api/fetch/cancel")
     assert res.json()["ok"] is True
@@ -183,6 +267,9 @@ async def test_cancel_stops_at_the_next_file(client, tenant, monkeypatch, settin
     assert status["status_msg"] == "Cancelled"
     assert 1 <= status["imported"] < 5
     assert await total(client) == status["imported"]
+    assert [p["status"] for p in status["parts"]] == ["cancelled", "cancelled"]
+    assert status["parts"][0]["files_done"] < 5
+    assert status["parts"][1]["files_total"] is None
 
 
 async def test_status_and_cancel_without_a_job(client):
@@ -213,7 +300,27 @@ async def test_stream_of_a_running_job_sends_snapshot_progress_and_done(client, 
     assert events[-1]["imported"] == 5
     progress = [e for e in events if e["type"] == "progress"]
     assert {e["file"] for e in progress} <= {"a.log", "b.log"}
-    assert all(set(e) == {"type", "done", "total", "file", "new_rows", "imported"} for e in progress)
+    assert all(set(e) == {"type", "done", "total", "file", "new_rows", "imported", "part"} for e in progress)
+    assert all((e["part"]["tenant"], e["part"]["log_type"]) == ("fake", "trace") for e in progress)
+    assert events[-1] == {"type": "done", "imported": 5, "warnings": 0, "errors": 0}
+
+
+async def test_stream_goes_on_after_a_tenant_error(db):
+    release = asyncio.Event()
+
+    async def runner(db, job, params):
+        await release.wait()
+        job.push({"type": "tenant_error", "msg": "Couldn't get an OAuth token for A: 401"})
+        job.push({"type": "progress", "done": 1, "total": 1, "file": "b.log", "new_rows": 2, "imported": 2})
+        await job.finish("done", {"type": "done", "imported": 2})
+
+    service = fetch_service.FetchService(db, runner=runner)
+    await service.start(fetch_service.FetchParams(["all"], ["trace"], 0))
+    stream = service.event_stream()
+    chunks = [await anext(stream)]
+    release.set()
+    chunks += [chunk async for chunk in stream if chunk.startswith("data: ")]
+    assert [e["type"] for e in sse_events("".join(chunks))] == ["snapshot", "tenant_error", "progress", "done"]
 
 
 async def test_stream_of_a_finished_job_sends_only_the_snapshot(client, tenant):

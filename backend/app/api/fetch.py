@@ -38,7 +38,9 @@ async def fetch_logs(body: FetchRequest, fetch: FetchDep):
 
 @router.get("/fetch/status")
 async def fetch_status(fetch: FetchDep):
-    """Return current snapshot of the active job (for polling or initial state)."""
+    """Return current snapshot of the active job (for polling or initial state): overall
+    counters, the progress of each tenant and log type (`parts`) and the latest warnings and
+    per-tenant errors (`problems`)."""
     job = fetch.job
     if not job:
         return {"status": "idle"}
