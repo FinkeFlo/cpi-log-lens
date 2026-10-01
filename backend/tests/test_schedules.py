@@ -1,11 +1,11 @@
-"""Fetch schedules: CRUD API and when the scheduler starts a fetch."""
+"""Fetch schedules: CRUD API, when the scheduler starts a fetch, and retention."""
 
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app import tasks
+from app import main, tasks
 from app.config import get_settings
 from app.repositories import logs as logs_repo
 from app.repositories import schedules as schedules_repo
@@ -54,7 +54,32 @@ async def test_update_of_an_unknown_schedule_is_404(client):
     assert res.json() == {"detail": "Schedule not found"}
 
 
-# ── Due logic of the scheduler loop ──────────────────────────────────────────
+# ── When a schedule is due (pure function) ───────────────────────────────────
+
+NOW = datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("last_run_at", "expected"),
+    [
+        (None, NOW),  # never ran: right away
+        ("2026-01-15 11:50:00+00", NOW + timedelta(minutes=5)),  # 10 of 15 minutes passed
+        ("2026-01-15 11:45:00+00", NOW),  # exactly due
+        ("2026-01-15 09:00:00+00", NOW),  # overdue: right away, not several times
+        ("2026-01-15 13:50:00+02", NOW + timedelta(minutes=5)),  # other UTC offset
+        ("2026-01-15 11:50:00", NOW + timedelta(minutes=5)),  # no offset: UTC
+    ],
+)
+def test_next_run(last_run_at, expected):
+    assert scheduler.next_run(last_run_at, 15, NOW) == expected
+
+
+# ── Scheduler with APScheduler (one "minute" = 20 ms) ────────────────────────
+
+
+@pytest.fixture
+def fast_minutes(monkeypatch):
+    monkeypatch.setattr(scheduler, "MINUTE", 0.02)
 
 
 async def add_schedule(db, sid, *, enabled=True, interval=15, last_run_sql=None):
@@ -63,82 +88,123 @@ async def add_schedule(db, sid, *, enabled=True, interval=15, last_run_sql=None)
         await db.run(db.execute, f"UPDATE fetch_schedules SET last_run_at = {last_run_sql} WHERE id = ?", [sid])
 
 
-async def run_scheduler(db, monkeypatch, *, seconds=0.3, job_status="done", running_job=None):
-    """Run the scheduler loop with a fast tick and a stub fetch; returns the started requests."""
-    started = []
-
-    async def fake_run_fetch(db, job, params):
-        started.append(params)
-        job.status = job_status
-
-    fetch = fetch_service.FetchService(db, runner=fake_run_fetch)
-    fetch.job = running_job
-    monkeypatch.setattr(get_settings(), "schedule_check_seconds", 0.02)
-    task = asyncio.create_task(scheduler.schedule_loop(db, fetch))
-    await asyncio.sleep(seconds)
-    task.cancel()
-    await asyncio.gather(task, return_exceptions=True)
-    await asyncio.gather(*tasks.background_tasks, return_exceptions=True)
-    return started
-
-
 async def last_run(db, sid):
     schedule = await schedules_repo.get_schedule(db, sid)
     assert schedule is not None
     return schedule["last_run_at"]
 
 
-async def test_never_run_schedule_is_due(db, monkeypatch):
-    await add_schedule(db, "s1")
-    started = await run_scheduler(db, monkeypatch)
-    assert len(started) == 1
-    assert (started[0].tenants, started[0].log_types, started[0].hours) == (["all"], ["trace"], 2)
+class StubRuns:
+    """Stands in for the fetch: records what was started, ends after `duration` with `status`."""
+
+    def __init__(self, status="done", duration=0.0):
+        self.started: list = []
+        self.status = status
+        self.duration = duration
+
+    async def __call__(self, db, job, params):
+        self.started.append((job.trigger, params))
+        await asyncio.sleep(self.duration)
+        await job.finish(self.status, {"type": self.status})
+
+
+async def run_service(db, runner, *, seconds, running_job=None, before=None):
+    fetch = fetch_service.FetchService(db, runner=runner)
+    fetch.job = running_job
+    service = scheduler.ScheduleService(db, fetch)
+    await service.start()
+    try:
+        if before is not None:
+            await before(fetch)
+        await asyncio.sleep(seconds)
+    finally:
+        service.shutdown()
+        await asyncio.gather(*tasks.background_tasks, return_exceptions=True)
+    return service
+
+
+async def test_never_run_schedule_starts_right_away(db, fast_minutes):
+    await add_schedule(db, "s1", interval=100)
+    runs = StubRuns()
+    await run_service(db, runs, seconds=0.2)
+    assert [t for t, _ in runs.started] == ["schedule:s1"]
+    params = runs.started[0][1]
+    assert (params.tenants, params.log_types, params.hours) == (["all"], ["trace"], 2)
     # last_run_at is text with the local UTC offset, e.g. "2026-01-15 09:00:00.123+01".
     assert datetime.fromisoformat(await last_run(db, "s1")).tzinfo is not None
 
 
-async def test_schedule_run_within_its_interval_is_not_due(db, monkeypatch):
-    await add_schedule(db, "s1", last_run_sql="CURRENT_TIMESTAMP - INTERVAL 14 MINUTE")
-    assert await run_scheduler(db, monkeypatch) == []
+async def test_schedule_runs_again_every_interval(db, fast_minutes):
+    await add_schedule(db, "s1", interval=5)  # 100 ms
+    runs = StubRuns()
+    await run_service(db, runs, seconds=0.45)
+    assert 3 <= len(runs.started) <= 6
 
 
-async def test_schedule_is_due_once_its_interval_has_passed(db, monkeypatch):
-    await add_schedule(db, "s1", last_run_sql="CURRENT_TIMESTAMP - INTERVAL 16 MINUTE")
-    assert len(await run_scheduler(db, monkeypatch)) == 1
+async def test_schedule_within_its_interval_waits(db, fast_minutes):
+    await add_schedule(db, "s1", last_run_sql="CURRENT_TIMESTAMP")  # due in 15 "minutes" = 300 ms
+    runs = StubRuns()
+    await run_service(db, runs, seconds=0.15)
+    assert runs.started == []
 
 
-async def test_disabled_schedule_never_runs(db, monkeypatch):
+async def test_disabled_schedule_never_runs(db, fast_minutes):
     await add_schedule(db, "s1", enabled=False)
-    assert await run_scheduler(db, monkeypatch) == []
+    runs = StubRuns()
+    service = await run_service(db, runs, seconds=0.15)
+    assert runs.started == []
+    assert service.job_ids() == []
 
 
-async def test_due_schedule_waits_while_a_fetch_is_running(db, monkeypatch):
-    await add_schedule(db, "s1")
+async def test_due_schedule_retries_while_another_fetch_runs(db, fast_minutes):
+    await add_schedule(db, "s1", interval=100)
     manual = fetch_service.FetchJob(id="manual", status="running")
-    assert await run_scheduler(db, monkeypatch, running_job=manual) == []
-    assert await last_run(db, "s1") is None
+    runs = StubRuns()
+
+    async def end_manual_job_later(fetch):
+        await asyncio.sleep(0.1)
+        manual.status = "done"
+
+    await run_service(db, runs, seconds=0.3, running_job=manual, before=end_manual_job_later)
+    # Not lost: started once the manual job had ended (retry after one "minute").
+    assert [t for t, _ in runs.started] == ["schedule:s1"]
 
 
-async def test_several_due_schedules_all_run_one_after_another(db, monkeypatch):
+async def test_several_due_schedules_all_run_one_after_another(db, fast_minutes):
     for sid in ("s1", "s2", "s3"):
-        await add_schedule(db, sid)
-    started = await run_scheduler(db, monkeypatch)
-    assert len(started) == 3
+        await add_schedule(db, sid, interval=1000)
+    runs = StubRuns(duration=0.02)
+    await run_service(db, runs, seconds=0.4)
+    assert sorted(t for t, _ in runs.started) == ["schedule:s1", "schedule:s2", "schedule:s3"]
     for sid in ("s1", "s2", "s3"):
         assert await last_run(db, sid) is not None
 
 
-@pytest.mark.xfail(reason="ARC-13: last_run_at is set before the fetch runs, a failed run counts as done")
-async def test_failed_run_does_not_count_as_last_run(db, monkeypatch):
-    await add_schedule(db, "s1")
-    await run_scheduler(db, monkeypatch, job_status="error")
+async def test_failed_run_does_not_count_as_last_run(db, fast_minutes):
+    await add_schedule(db, "s1", interval=1000)
+    runs = StubRuns(status="error")
+    await run_service(db, runs, seconds=0.15)
+    assert len(runs.started) == 1
     assert await last_run(db, "s1") is None
 
 
-# ── Retention loop ───────────────────────────────────────────────────────────
+async def test_schedule_changes_reach_the_scheduler(client):
+    service = main.app.state.schedules
+    sid = (await client.post("/api/schedules", json=SCHEDULE)).json()["id"]
+    assert service.job_ids() == [f"schedule:{sid}"]
+    await client.put(f"/api/schedules/{sid}", json={**SCHEDULE, "enabled": False})
+    assert service.job_ids() == []
+    await client.put(f"/api/schedules/{sid}", json=SCHEDULE)
+    assert service.job_ids() == [f"schedule:{sid}"]
+    await client.delete(f"/api/schedules/{sid}")
+    assert service.job_ids() == []
 
 
-async def run_retention(db, monkeypatch, *, check_hours, seconds, job=None, finish_job_after=None):
+# ── Retention ────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def retention(monkeypatch):
     calls = []
 
     async def fake_cleanup(db, days, tenant=None):
@@ -147,34 +213,32 @@ async def run_retention(db, monkeypatch, *, check_hours, seconds, job=None, fini
 
     monkeypatch.setattr(logs_repo, "cleanup_old_logs", fake_cleanup)
     monkeypatch.setattr(get_settings(), "retention_days", 30)
-    monkeypatch.setattr(get_settings(), "retention_check_hours", check_hours)
-    fetch = fetch_service.FetchService(db)
-    fetch.job = job
-    task = asyncio.create_task(scheduler.retention_loop(db, fetch))
-    if finish_job_after is not None:
-        await asyncio.sleep(finish_job_after)
-        job.status = "done"
-        await asyncio.sleep(seconds - finish_job_after)
-    else:
-        await asyncio.sleep(seconds)
-    task.cancel()
-    await asyncio.gather(task, return_exceptions=True)
     return calls
 
 
-async def test_retention_runs_at_start_and_then_every_interval(db, monkeypatch):
-    calls = await run_retention(db, monkeypatch, check_hours=0.05 / 3600, seconds=0.4)
-    assert len(calls) >= 3
-    assert set(calls) == {30}
+async def test_retention_runs_at_start_and_then_every_interval(db, monkeypatch, retention):
+    monkeypatch.setattr(get_settings(), "retention_check_hours", 0.05 / 3600)
+    await run_service(db, StubRuns(), seconds=0.4)
+    assert len(retention) >= 3
+    assert set(retention) == {30}
 
 
-async def test_retention_skips_while_a_fetch_is_running(db, monkeypatch):
+async def test_retention_is_off_without_retention_days(db, monkeypatch, retention):
+    monkeypatch.setattr(get_settings(), "retention_days", 0)
+    service = await run_service(db, StubRuns(), seconds=0.1)
+    assert retention == []
+    assert service.job_ids() == []
+
+
+async def test_retention_retries_soon_after_a_running_fetch(db, monkeypatch, fast_minutes, retention):
+    monkeypatch.setattr(get_settings(), "retention_check_hours", 1)
     job = fetch_service.FetchJob(id="j", status="running")
-    assert await run_retention(db, monkeypatch, check_hours=0.1 / 3600, seconds=0.25, job=job) == []
 
+    async def end_job_later(fetch):
+        await asyncio.sleep(0.05)
+        assert retention == []  # skipped while the fetch runs
+        job.status = "done"
 
-@pytest.mark.xfail(reason="RES-12: with a fetch running, retention waits a whole interval instead of retrying soon")
-async def test_retention_retries_soon_after_the_fetch_finished(db, monkeypatch):
-    job = fetch_service.FetchJob(id="j", status="running")
-    calls = await run_retention(db, monkeypatch, check_hours=1, seconds=1.0, job=job, finish_job_after=0.1)
-    assert calls == [30]
+    # Retry after 5 "minutes" (100 ms), not after the hour-long interval.
+    await run_service(db, StubRuns(), seconds=0.3, running_job=job, before=end_job_later)
+    assert retention == [30]

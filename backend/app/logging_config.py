@@ -39,3 +39,5 @@ def setup_logging(level: str = "info", fmt: str = "text") -> None:
         uv.handlers[:] = []
         uv.propagate = True
     logging.getLogger("uvicorn.access").disabled = True
+    # APScheduler logs every job run at INFO; the app logs what matters itself.
+    logging.getLogger("apscheduler").setLevel(max(root.level, logging.WARNING))

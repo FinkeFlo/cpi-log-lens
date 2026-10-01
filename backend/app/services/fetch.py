@@ -67,6 +67,8 @@ class FetchJob:
     errors: int = 0
     last_error: str = ""
     recorded: bool = False  # final state written to the run history
+    # Set once the job has ended and its run is recorded.
+    ended: asyncio.Event = field(default_factory=asyncio.Event)
     # Called with the final status before the job shows it (the service records the run).
     on_finish: Callable[["FetchJob", str], Awaitable[None]] | None = None
     # Listeners waiting for new events (one queue per SSE subscriber)
@@ -189,10 +191,13 @@ class FetchService:
         finally:
             saver.cancel()
             await asyncio.gather(saver, return_exceptions=True)
-            if not job.recorded:
-                # Cut off (shutdown) or ended without finish(): record the final state anyway.
-                status = job.status if job.status != "running" else "interrupted"
-                await asyncio.shield(self._finished(job, status))
+            try:
+                if not job.recorded:
+                    # Cut off (shutdown) or ended without finish(): record the final state anyway.
+                    status = job.status if job.status != "running" else "interrupted"
+                    await asyncio.shield(self._finished(job, status))
+            finally:
+                job.ended.set()
 
     async def _finished(self, job: FetchJob, status: str) -> None:
         await self._save(job, status=status, finished_at=datetime.now(UTC))

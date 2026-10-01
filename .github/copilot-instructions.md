@@ -38,7 +38,8 @@ database; `repositories` know nothing about FastAPI or HTTP.
   write guard, request log), `deps.py` (`DbDep`: the database for a request).
 - `app/services/` — `fetch` (`FetchService` in `app.state.fetch`: one job at a time behind a lock,
   progress events for SSE, every run recorded in `fetch_runs`), `importer`
-  (parse a file, insert rows past the stored offset), `scheduler` (schedule and retention loops),
+  (parse a file, insert rows past the stored offset), `scheduler` (`ScheduleService`: schedules and
+  retention as APScheduler 3 jobs, reloaded after every schedule change),
   `tenants` (seeding from `TENANTS_CONFIG`, demo tenant), `stats` (cached statistics), `query`.
 - `app/repositories/` — `database.py` (`Database`: one writer via `run()` in a single writer thread,
   a bounded pool of read cursors via `read()` with pool and query timeouts and

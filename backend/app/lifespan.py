@@ -46,13 +46,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 name="loop-watchdog",
                 daemon=True,
             ).start()
-        if settings.retention_days > 0:
-            tasks.spawn(scheduler.retention_loop(db, fetch))
-        tasks.spawn(scheduler.schedule_loop(db, fetch))
+        schedules = scheduler.ScheduleService(db, fetch)
+        app.state.schedules = schedules
+        await schedules.start()
         yield
     finally:
         log.info("shutting down")
         watchdog_stop.set()
+        if getattr(app.state, "schedules", None) is not None:
+            app.state.schedules.shutdown()
         await fetch.shutdown()
         await tasks.cancel_all()
         await db.close()

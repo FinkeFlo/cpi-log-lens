@@ -72,7 +72,6 @@ unset; an invalid value stops the app at start with a message naming the variabl
 | `CORS_ORIGINS` | *(none)* | Extra browser origins allowed to call the API. The UI itself needs none. |
 | `MOCK` | `false` | Import the bundled sample logs for every tenant instead of calling CPI. |
 | `FETCH_CONCURRENCY` | `4` | Parallel file downloads per tenant and log type. |
-| `SCHEDULE_CHECK_SECONDS` | `60` | How often scheduled fetches are checked. |
 | `RETENTION_DAYS` | `0` | Delete entries older than N days automatically (`0` = keep everything). |
 | `RETENTION_CHECK_HOURS` | `24` | How often the retention job runs. |
 | `TENANTS_CONFIG` | `/config/tenants.jsonc` | Tenant seed file (Compose mounts `./config`). |
