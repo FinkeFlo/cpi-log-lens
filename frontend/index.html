@@ -146,23 +146,6 @@
      @page-shown.window="onPageShown($event.detail)">
 
   <h1 class="text-2xl font-bold mb-4">Browse logs</h1>
-  <!-- First run: no tenants yet -->
-  <div x-show="$store.tenants.loaded && tenants.length===0" class="card bg-base-100 shadow mb-4">
-    <div class="card-body">
-      <h2 class="card-title">Welcome to CPI Log Lens</h2>
-      <p class="text-sm text-muted">
-        Connect an SAP Cloud Integration tenant to fetch and search its logs,
-        or try the app first with bundled demo data.
-      </p>
-      <div class="card-actions mt-2">
-        <button class="btn btn-primary btn-sm" @click="connectTenant()">Connect a CPI tenant</button>
-        <button class="btn btn-ghost btn-sm" :disabled="demoStarting" @click="startDemo()">
-          <span x-show="demoStarting" class="loading loading-spinner loading-xs"></span>
-          Try demo data
-        </button>
-      </div>
-    </div>
-  </div>
 
   <!-- Filter bar -->
   <div class="card bg-base-100 shadow mb-4">
@@ -228,22 +211,105 @@
   </div>
 
   <!-- Info row -->
-  <div class="flex justify-between items-center mb-2 text-xs text-muted px-1">
-    <span>
-      <template x-if="logs.total > 0">
-        <span x-text="`${logs.total.toLocaleString('en-US')} entries`"></span>
-      </template>
-      <template x-if="logs.total === 0 && !loading">
-        <span>No logs yet. Open <svg class="inline w-3.5 h-3.5" aria-hidden="true" focusable="false"><use href="/icons.svg#download"></use></svg> Fetch to get started.</span>
-      </template>
-      <span x-show="loading" class="loading loading-spinner loading-xs"></span>
+  <div x-show="listState === 'results'" class="flex justify-between items-center mb-2 text-xs text-muted px-1">
+    <span class="flex items-center gap-2">
+      <span x-text="`${logs.total.toLocaleString('en-US')} entries`"></span>
+      <span x-show="loading" class="loading loading-spinner loading-xs" aria-hidden="true"></span>
+      <span x-show="loading" class="sr-only">Updating the list…</span>
     </span>
     <span x-show="logs.pages > 1" x-text="`Page ${logs.page} of ${logs.pages}`"></span>
   </div>
 
-  <!-- Table -->
-  <div class="card bg-base-100 shadow overflow-hidden">
-    <div class="overflow-x-auto">
+  <!-- A background refresh failed: the list above is the last one loaded -->
+  <template x-if="refreshError && listState === 'results'">
+    <div class="alert alert-warning alert-soft mb-2 text-sm" role="alert">
+      <svg class="w-4 h-4 shrink-0" aria-hidden="true" focusable="false"><use href="/icons.svg#triangle-alert"></use></svg>
+      <span><strong x-text="`${refreshError.title}.`"></strong> The list may be outdated.</span>
+      <button class="btn btn-ghost btn-xs" @click="retry()">Try again</button>
+    </div>
+  </template>
+
+  <!-- Results -->
+  <div class="card bg-base-100 shadow overflow-hidden" :aria-busy="loading ? 'true' : 'false'">
+    <template x-if="listState === 'loading'">
+      <div class="p-4 space-y-3" role="status">
+        <span class="sr-only">Loading log entries…</span>
+        <template x-for="i in 8" :key="i">
+          <div class="skeleton h-5 w-full" aria-hidden="true"></div>
+        </template>
+      </div>
+    </template>
+
+    <template x-if="listState === 'error'">
+      <div class="state-panel" :data-kind="listError.kind" role="alert">
+        <svg class="state-icon" aria-hidden="true" focusable="false"><use :href="`/icons.svg#${listError.icon}`"></use></svg>
+        <h2 x-text="listError.title"></h2>
+        <p x-text="listError.text"></p>
+        <p x-show="listError.detail" class="state-detail" x-text="listError.detail"></p>
+        <div class="state-actions">
+          <button class="btn btn-primary btn-sm" @click="retry()">
+            <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#rotate-ccw"></use></svg> Try again
+          </button>
+        </div>
+      </div>
+    </template>
+
+    <template x-if="listState === 'empty' && $store.tenants.loaded && tenants.length === 0">
+      <div class="state-panel">
+        <svg class="state-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#inbox"></use></svg>
+        <h2>Welcome to CPI Log Lens</h2>
+        <p>Connect an SAP Cloud Integration tenant to fetch and search its logs, or try the app first with bundled demo data.</p>
+        <div class="state-actions">
+          <button class="btn btn-primary btn-sm" @click="connectTenant()">Connect a CPI tenant</button>
+          <button class="btn btn-ghost btn-sm" :disabled="demoStarting || $store.fetchJob.status === 'running'" @click="startDemo()">
+            <span x-show="demoStarting" class="loading loading-spinner loading-xs"></span>
+            Try demo data
+          </button>
+        </div>
+      </div>
+    </template>
+
+    <template x-if="listState === 'empty' && !($store.tenants.loaded && tenants.length === 0)">
+      <div class="state-panel">
+        <svg class="state-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#inbox"></use></svg>
+        <h2>No log entries yet</h2>
+        <p x-show="$store.fetchJob.status !== 'running'">Fetch logs from your tenants to search them here.</p>
+        <p x-show="$store.fetchJob.status === 'running'">A fetch is running. New entries appear here as they are imported.</p>
+        <div class="state-actions">
+          <a class="btn btn-primary btn-sm" href="#fetch">
+            <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#download"></use></svg>
+            <span x-text="$store.fetchJob.status === 'running' ? 'View fetch progress' : 'Fetch logs'"></span>
+          </a>
+        </div>
+      </div>
+    </template>
+
+    <template x-if="listState === 'no-matches'">
+      <div class="state-panel">
+        <svg class="state-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#search-x"></use></svg>
+        <h2>No entries match these filters</h2>
+        <p x-show="!q.grep">Try a wider time range or fewer filters.</p>
+        <p x-show="q.grep">Text search looks at the selected time range only (the last 24 hours unless you set one). Try a wider range or a shorter search term.</p>
+        <div class="state-actions">
+          <button class="btn btn-primary btn-sm" @click="resetSearch()">
+            <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#filter-x"></use></svg> Clear filters
+          </button>
+        </div>
+      </div>
+    </template>
+
+    <template x-if="listState === 'invalid'">
+      <div class="state-panel">
+        <svg class="state-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#filter-x"></use></svg>
+        <h2>These filters can't be used</h2>
+        <p>Correct the filters above, or clear them to see all entries.</p>
+        <div class="state-actions">
+          <button class="btn btn-primary btn-sm" @click="resetSearch()">Clear filters</button>
+        </div>
+      </div>
+    </template>
+
+    <div x-show="listState === 'results'" class="overflow-x-auto" :class="loading && 'is-stale'">
       <table class="table table-xs table-zebra w-full log-table" aria-label="Log entries">
         <thead>
           <tr class="bg-base-300 text-xs">
@@ -298,16 +364,11 @@
             </tr>
           </tbody>
         </template>
-        <tbody>
-          <tr x-show="logs.items?.length === 0 && !loading">
-            <td colspan="6" class="text-center text-muted py-8">No matching entries</td>
-          </tr>
-        </tbody>
       </table>
     </div>
 
     <!-- Pagination -->
-    <div x-show="logs.pages > 1" class="flex justify-center p-3 border-t border-base-200">
+    <div x-show="listState === 'results' && logs.pages > 1" class="flex justify-center p-3 border-t border-base-200">
       <div class="join">
         <button class="join-item btn btn-sm tooltip tooltip-top" data-tip="Previous page"
                 aria-label="Previous page" title="Previous page" :disabled="logs.page<=1" @click="goPage(logs.page-1)">
@@ -335,7 +396,37 @@
     <div class="card-body">
       <h2 class="card-title mb-4"><svg class="w-5 h-5" aria-hidden="true" focusable="false"><use href="/icons.svg#download"></use></svg> Fetch now</h2>
 
-      <div class="grid grid-cols-1 sm:grid-cols-3 gap-6 mb-6">
+      <template x-if="!tenants.length && $store.tenants.error">
+        <div class="state-panel" :data-kind="$store.tenants.error.kind" role="alert">
+          <svg class="state-icon" aria-hidden="true" focusable="false"><use :href="`/icons.svg#${$store.tenants.error.icon}`"></use></svg>
+          <h3 class="font-semibold" x-text="$store.tenants.error.title"></h3>
+          <p x-text="$store.tenants.error.text"></p>
+          <p x-show="$store.tenants.error.detail" class="state-detail" x-text="$store.tenants.error.detail"></p>
+          <div class="state-actions">
+            <button class="btn btn-primary btn-sm" :disabled="$store.tenants.loading" @click="$store.tenants.load()">
+              <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#rotate-ccw"></use></svg> Try again
+            </button>
+          </div>
+        </div>
+      </template>
+      <template x-if="!$store.tenants.loaded && !$store.tenants.error">
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-6 mb-6" role="status">
+          <span class="sr-only">Loading tenants…</span>
+          <template x-for="i in 3" :key="i"><div class="skeleton h-28" aria-hidden="true"></div></template>
+        </div>
+      </template>
+      <template x-if="$store.tenants.loaded && !tenants.length">
+        <div class="state-panel">
+          <svg class="state-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#inbox"></use></svg>
+          <h3 class="font-semibold">No tenants yet</h3>
+          <p>Add an SAP Cloud Integration tenant to fetch its logs, or seed tenants from <code>config/tenants.jsonc</code>.</p>
+          <div class="state-actions">
+            <button class="btn btn-primary btn-sm" @click="addTenant()">Add tenant</button>
+          </div>
+        </div>
+      </template>
+
+      <div x-show="tenants.length > 0" class="grid grid-cols-1 sm:grid-cols-3 gap-6 mb-6">
         <fieldset>
           <legend class="text-sm font-semibold mb-2">Tenant</legend>
           <div class="flex flex-col gap-2">
@@ -412,8 +503,8 @@
         </div>
       </div>
 
-      <div class="flex flex-wrap gap-2 items-center">
-        <button class="btn btn-primary" :disabled="job.status==='running' || form.log_types.length===0 || form.tenants.length===0"
+      <div x-show="tenants.length > 0 || job.status !== 'idle'" class="flex flex-wrap gap-2 items-center">
+        <button x-show="tenants.length > 0" class="btn btn-primary" :disabled="job.status==='running' || form.log_types.length===0 || form.tenants.length===0"
                 @click="startFetch()">
           <span x-show="job.status!=='running'"><svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#play"></use></svg> Start fetch</span>
           <span x-show="job.status==='running'" class="flex items-center gap-2">
@@ -426,14 +517,11 @@
         <button x-show="job.status === 'done' || job.status === 'error' || job.status === 'cancelled'"
                 class="btn btn-ghost btn-sm"
                 @click="job.status = 'idle'">Reset</button>
-        <button class="btn btn-ghost btn-sm"
+        <button x-show="tenants.length > 0" class="btn btn-ghost btn-sm"
                 :disabled="form.log_types.length===0 || form.tenants.length===0"
                 @click="saveDefaultConfig()" title="Use this selection as the default next time">
           <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#save"></use></svg> Save as default
         </button>
-        <div x-show="tenants.length===0" class="alert alert-warning py-1 px-3 text-sm">
-          No tenants yet. Add one in <svg class="inline w-3.5 h-3.5" aria-hidden="true" focusable="false"><use href="/icons.svg#settings"></use></svg> Settings.
-        </div>
       </div>
     </div>
   </div>
@@ -443,9 +531,20 @@
     <div class="card-body">
       <div class="flex items-center justify-between mb-2">
         <h2 class="card-title"><svg class="w-5 h-5" aria-hidden="true" focusable="false"><use href="/icons.svg#calendar-clock"></use></svg> Scheduled fetches</h2>
-        <button class="btn btn-sm btn-primary" @click="openScheduleModal()">+ New schedule</button>
+        <button class="btn btn-sm btn-primary" :disabled="tenants.length === 0"
+                :title="tenants.length === 0 ? 'Add a tenant first' : null" @click="openScheduleModal()">+ New schedule</button>
       </div>
-      <p class="text-sm text-muted mb-2" x-show="schedules.length===0">
+      <template x-if="schedulesError">
+        <div class="alert alert-error alert-soft text-sm" role="alert">
+          <svg class="w-4 h-4 shrink-0" aria-hidden="true" focusable="false"><use :href="`/icons.svg#${schedulesError.icon}`"></use></svg>
+          <div>
+            <p class="font-semibold" x-text="schedulesError.title"></p>
+            <p x-text="schedulesError.kind === 'failed' ? schedulesError.detail : schedulesError.text"></p>
+          </div>
+          <button class="btn btn-ghost btn-xs" @click="loadSchedules()">Try again</button>
+        </div>
+      </template>
+      <p class="text-sm text-muted mb-2" x-show="schedulesLoaded && !schedulesError && schedules.length===0">
         No scheduled fetches yet. Create one to fetch, for example, the last hour of a tenant
         every 15 minutes.
       </p>
@@ -582,9 +681,67 @@
         <option :value="t.id" x-text="t.name"></option>
       </template>
     </select>
-    <span x-show="statsLoading" class="loading loading-spinner loading-sm"></span>
+    <span x-show="statsLoading && statsState === 'results'" class="loading loading-spinner loading-sm" aria-hidden="true"></span>
+    <span x-show="statsLoading && statsState === 'results'" class="sr-only">Updating statistics…</span>
   </div>
 
+  <template x-if="statsState === 'loading'">
+    <div role="status">
+      <span class="sr-only">Loading statistics…</span>
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4" aria-hidden="true">
+        <template x-for="i in 4" :key="i"><div class="skeleton h-24"></div></template>
+      </div>
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4" aria-hidden="true">
+        <div class="skeleton h-72"></div><div class="skeleton h-72"></div>
+      </div>
+    </div>
+  </template>
+
+  <template x-if="statsState === 'error'">
+    <div class="card bg-base-100 shadow">
+      <div class="state-panel" :data-kind="statsError.kind" role="alert">
+        <svg class="state-icon" aria-hidden="true" focusable="false"><use :href="`/icons.svg#${statsError.icon}`"></use></svg>
+        <h2 x-text="statsError.title"></h2>
+        <p x-text="statsError.text"></p>
+        <p x-show="statsError.detail" class="state-detail" x-text="statsError.detail"></p>
+        <div class="state-actions">
+          <button class="btn btn-primary btn-sm" @click="retry()">
+            <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#rotate-ccw"></use></svg> Try again
+          </button>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <template x-if="statsState === 'empty'">
+    <div class="card bg-base-100 shadow">
+      <div class="state-panel">
+        <svg class="state-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#inbox"></use></svg>
+        <h2>No statistics yet</h2>
+        <p>Statistics appear once log entries have been fetched and imported.</p>
+        <div class="state-actions">
+          <a class="btn btn-primary btn-sm" href="#fetch">
+            <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#download"></use></svg> Fetch logs
+          </a>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <template x-if="statsState === 'no-matches'">
+    <div class="card bg-base-100 shadow">
+      <div class="state-panel">
+        <svg class="state-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#search-x"></use></svg>
+        <h2 x-text="`No entries for ${$store.tenants.name(statsFilter)}`"></h2>
+        <p>This tenant has no imported log entries yet.</p>
+        <div class="state-actions">
+          <button class="btn btn-primary btn-sm" @click="showAllTenants()">Show all tenants</button>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <div x-show="statsState === 'results'" :class="statsLoading && 'is-stale'">
   <!-- Summary cards -->
   <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
     <div class="stat bg-base-100 rounded-box shadow py-3">
@@ -674,6 +831,7 @@
       </div>
     </div>
   </div>
+  </div>
 </div>
 
 <!-- ═══════════════════════════════ SETTINGS ═════════════════════════════════ -->
@@ -733,7 +891,20 @@
         </div>
       </template>
 
-      <div x-show="tenants.length===0" class="text-center text-muted py-6 text-sm">
+      <template x-if="$store.tenants.error">
+        <div class="alert alert-error alert-soft text-sm" role="alert">
+          <svg class="w-4 h-4 shrink-0" aria-hidden="true" focusable="false"><use :href="`/icons.svg#${$store.tenants.error.icon}`"></use></svg>
+          <div>
+            <p class="font-semibold" x-text="$store.tenants.error.title"></p>
+            <p x-text="$store.tenants.error.kind === 'failed' ? $store.tenants.error.detail : $store.tenants.error.text"></p>
+          </div>
+          <button class="btn btn-ghost btn-xs" :disabled="$store.tenants.loading" @click="$store.tenants.load()">Try again</button>
+        </div>
+      </template>
+      <div x-show="!$store.tenants.loaded && !$store.tenants.error" class="skeleton h-20" role="status">
+        <span class="sr-only">Loading tenants…</span>
+      </div>
+      <div x-show="$store.tenants.loaded && tenants.length===0" class="text-center text-muted py-6 text-sm">
         No tenants yet.<br>
         Add one here or in <code>config/tenants.jsonc</code>.
       </div>
@@ -753,13 +924,23 @@
   <div class="card bg-base-100 shadow">
     <div class="card-body">
       <h2 class="card-title text-base mb-3">Database</h2>
+      <template x-if="dbInfoError">
+        <div class="alert alert-error alert-soft text-sm mb-3" role="alert">
+          <svg class="w-4 h-4 shrink-0" aria-hidden="true" focusable="false"><use :href="`/icons.svg#${dbInfoError.icon}`"></use></svg>
+          <div>
+            <p class="font-semibold" x-text="dbInfoError.title"></p>
+            <p x-text="dbInfoError.kind === 'failed' ? dbInfoError.detail : dbInfoError.text"></p>
+          </div>
+          <button class="btn btn-ghost btn-xs" @click="loadDbInfo()">Try again</button>
+        </div>
+      </template>
       <div class="grid grid-cols-2 gap-y-1 text-sm mb-4">
         <span class="text-muted">Path</span>
         <span class="font-mono text-xs break-all" x-text="dbInfo.path || '–'"></span>
         <span class="text-muted">Size</span>
         <span class="font-mono" x-text="dbInfo.size_mb ? dbInfo.size_mb + ' MB' : '–'"></span>
         <span class="text-muted">Entries</span>
-        <span class="font-mono" x-text="(dbInfo.entries||0).toLocaleString('en-US')"></span>
+        <span class="font-mono" x-text="dbInfo.entries === undefined ? '–' : dbInfo.entries.toLocaleString('en-US')"></span>
       </div>
       <button class="btn btn-sm btn-error btn-outline" @click="confirmClearOpen=true"><svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#trash-2"></use></svg> Clear database</button>
 

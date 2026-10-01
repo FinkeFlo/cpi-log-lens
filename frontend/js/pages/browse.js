@@ -1,8 +1,13 @@
 // Browse page: URL-backed filters, page-based log results and the existing inline detail.
+// The result list shows one state at a time: loading, results, no data yet, no matches,
+// or an error (server unreachable, database busy, request failed).
 import { api } from '../api.js';
 import { browseHash, emptyFilters, parseBrowseHash, toUtcDateTime } from '../browse-url.js';
 import { emit, OPEN_TENANT_MODAL } from '../events.js';
 import { shortIflow } from '../format.js';
+import { describeError } from '../states.js';
+
+const emptyLogs = () => ({ items: [], total: 0, page: 1, pages: 1, page_size: 100 });
 
 const inputDate = value => {
   const date = new Date(value);
@@ -19,10 +24,14 @@ const validRange = q => !q.date_from || !q.date_to || dateMillis(q.date_from) <=
 
 export default () => ({
   q: emptyFilters(),
-  logs: { items: [], total: 0, page: 1, pages: 1, page_size: 100 },
+  logs: emptyLogs(),
   currentPage: 1,
   selected: null,
   loading: false,
+  loadedOnce: false, // a search has answered since the page was opened
+  listError: null, // describeError() of the last failed search; the list is empty then
+  refreshError: null, // a failed background refresh; the last loaded list stays
+  dbEmpty: false, // no entries at all (not just none for the filters)
   demoStarting: false,
   iflowOptions: [],
   urlError: '',
@@ -32,6 +41,20 @@ export default () => ({
 
   get tenants() {
     return this.$store.tenants.list;
+  },
+
+  get hasFilters() {
+    return Object.entries(this.q).some(([key, value]) =>
+      value && !(key === 'tenant' && value === 'all') && !(key === 'level' && value === 'ALL'));
+  },
+
+  // loading | results | empty (no entries at all) | no-matches | invalid (URL) | error
+  get listState() {
+    if (this.listError) return 'error';
+    if (this.logs.items.length) return 'results';
+    if (this.urlError && !this.loading) return 'invalid';
+    if (this.loading || !this.loadedOnce) return 'loading';
+    return this.dbEmpty ? 'empty' : 'no-matches';
   },
 
   init() {
@@ -53,7 +76,8 @@ export default () => ({
     this.urlError = error.message;
     this._requestId++;
     this.selected = null;
-    this.logs = { items: [], total: 0, page: 1, pages: 1, page_size: 100 };
+    this.logs = emptyLogs();
+    this.listError = null;
     this.loading = false;
     this.$store.toast.notify(this.urlError, 'error');
   },
@@ -86,8 +110,8 @@ export default () => ({
       const { items } = await api.logs.iflows(tenant);
       this._iflowCache.set(tenant, items);
       if ((this.q.tenant || 'all') === tenant) this.iflowOptions = items;
-    } catch (error) {
-      this.$store.toast.notify(`Couldn't load IFlow suggestions: ${error.message}`, 'error');
+    } catch {
+      // Only the suggestions are missing; the list shows its own error state.
     }
   },
 
@@ -117,7 +141,9 @@ export default () => ({
     this.filtersChanged();
   },
 
-  async search(page = this.currentPage, { restoreEntry = null, writeUrl = true } = {}) {
+  // background: a refresh the user did not ask for (new entries were imported); if it
+  // fails, the last loaded list stays and a notice says it may be outdated.
+  async search(page = this.currentPage, { restoreEntry = null, writeUrl = true, background = false } = {}) {
     this.urlError = '';
     if (!validRange(this.q)) {
       this.urlError = 'From must be earlier than or equal to To.';
@@ -138,7 +164,12 @@ export default () => ({
         date_to: toUtcDateTime(this.q.date_to, 'date_to'),
       });
       if (requestId !== this._requestId) return;
+      await this.checkEmpty(logs, requestId);
+      if (requestId !== this._requestId) return;
       this.logs = logs;
+      this.listError = null;
+      this.refreshError = null;
+      this.loadedOnce = true;
       if (restoreEntry !== null) {
         const row = logs.items.find(item => item.id === restoreEntry);
         if (!row) {
@@ -149,10 +180,40 @@ export default () => ({
         await this.openRow(row);
       }
     } catch (error) {
-      if (requestId === this._requestId) this.$store.toast.notify(`Couldn't load logs: ${error.message}`, 'error');
+      if (requestId !== this._requestId) return;
+      const state = describeError(error, 'log entries');
+      if (background && this.logs.items.length) {
+        this.refreshError = state;
+      } else {
+        this.listError = state;
+        this.logs = emptyLogs();
+      }
     } finally {
       if (requestId === this._requestId) this.loading = false;
     }
+  },
+
+  // No results: tell an empty database ("no data yet") from filters that match nothing.
+  async checkEmpty(logs, requestId) {
+    if (logs.total > 0) {
+      this.dbEmpty = false;
+    } else if (!this.hasFilters) {
+      this.dbEmpty = true;
+    } else {
+      try {
+        const info = await api.db.info();
+        if (requestId === this._requestId) this.dbEmpty = info.entries === 0;
+      } catch {
+        if (requestId === this._requestId) this.dbEmpty = false; // unknown: say "no matches"
+      }
+    }
+  },
+
+  // "Try again" of the error states: reload what failed.
+  retry() {
+    if (this.$store.tenants.error) this.$store.tenants.load();
+    if (!this.iflowOptions.length) this.loadIflows();
+    this.search(this.currentPage, { writeUrl: false });
   },
 
   resetSearch() {
@@ -185,7 +246,7 @@ export default () => ({
     this.currentPage = page;
     this.selected = null;
     this.writeUrl(page, null);
-    this.search(page, { writeUrl: false });
+    this.search(page, { writeUrl: false, background: true });
   },
 
   showIflow({ iflow, level = '' }) {

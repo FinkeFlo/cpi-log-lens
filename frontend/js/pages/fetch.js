@@ -1,6 +1,7 @@
 // Fetch page: the fetch form (with its saved default), progress of the job, and schedules.
 import { api } from '../api.js';
-import { LOGS_CHANGED, emit } from '../events.js';
+import { LOGS_CHANGED, OPEN_TENANT_MODAL, emit } from '../events.js';
+import { describeError } from '../states.js';
 
 const LOG_TYPES = ['trace', 'http'];
 
@@ -14,6 +15,8 @@ export default () => ({
   _wantAllTenants: false,
 
   schedules: [],
+  schedulesLoaded: false,
+  schedulesError: null, // describeError() of the last failed load
   scheduleModal: {
     open: false,
     editing: false,
@@ -49,7 +52,8 @@ export default () => ({
         this._wantAllTenants = cfg.tenants.includes('all');
       }
     } catch (e) {
-      console.error('loadDefaultFetchConfig:', e);
+      // Unreachable or busy: the tenant list right below shows that already.
+      if (e.kind === 'failed') this.$store.toast.notify(`Couldn't load the saved default selection: ${e.message}`, 'error');
     }
   },
 
@@ -97,12 +101,19 @@ export default () => ({
     emit(LOGS_CHANGED, { firstPage: true });
   },
 
+  addTenant() {
+    this.$store.route.navigate('settings');
+    emit(OPEN_TENANT_MODAL);
+  },
+
   // ── Schedules ──
   async loadSchedules() {
     try {
       this.schedules = await api.schedules.list();
+      this.schedulesLoaded = true;
+      this.schedulesError = null;
     } catch (e) {
-      console.error('loadSchedules:', e);
+      this.schedulesError = describeError(e, 'schedules');
     }
   },
 

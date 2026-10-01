@@ -57,8 +57,8 @@ export default {
       if (data.status === 'idle') return;
       this.applySnapshot(data);
       if (data.status === 'running') this.openStream();
-    } catch (e) {
-      console.error('_reconnectFetchStream:', e);
+    } catch {
+      // Server not reachable: the pages show that themselves; there is no job to show.
     }
   },
 

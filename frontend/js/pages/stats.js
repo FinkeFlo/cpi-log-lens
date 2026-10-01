@@ -2,6 +2,7 @@
 import { api } from '../api.js';
 import { BROWSE_IFLOW, emit } from '../events.js';
 import { shortIflow } from '../format.js';
+import { describeError } from '../states.js';
 
 // Chart.js instances, outside Alpine's reactivity.
 const charts = {};
@@ -11,9 +12,20 @@ export default () => ({
   iflowStats: [],
   statsFilter: '',
   statsLoading: false,
+  _requestId: 0,
+  statsLoaded: false,
+  statsError: null, // describeError() of the last failed load
 
   get tenants() {
     return this.$store.tenants.list;
+  },
+
+  // loading | results | empty (no entries at all) | no-matches (none for the tenant) | error
+  get statsState() {
+    if (this.statsError) return 'error';
+    if (!this.statsLoaded) return 'loading';
+    if (!this.stats.total) return this.statsFilter ? 'no-matches' : 'empty';
+    return 'results';
   },
 
   init() {
@@ -29,18 +41,31 @@ export default () => ({
   },
 
   async loadStats() {
+    const requestId = ++this._requestId;
     this.statsLoading = true;
     try {
-      this.stats = await api.stats.get(this.statsFilter);
-
-      this.iflowStats = this.stats.iflow_stats || [];
-
+      const stats = await api.stats.get(this.statsFilter);
+      if (requestId !== this._requestId) return;
+      this.stats = stats;
+      this.iflowStats = stats.iflow_stats || [];
+      this.statsLoaded = true;
+      this.statsError = null;
       this.$nextTick(() => this.renderCharts());
     } catch (e) {
-      this.$store.toast.notify(`Couldn't load statistics: ${e.message}`, 'error');
+      if (requestId === this._requestId) this.statsError = describeError(e, 'statistics');
     } finally {
-      this.statsLoading = false;
+      if (requestId === this._requestId) this.statsLoading = false;
     }
+  },
+
+  retry() {
+    if (this.$store.tenants.error) this.$store.tenants.load();
+    this.loadStats();
+  },
+
+  showAllTenants() {
+    this.statsFilter = '';
+    this.loadStats();
   },
 
   showIflow(iflow) {

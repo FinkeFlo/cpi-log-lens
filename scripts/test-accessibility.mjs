@@ -122,7 +122,8 @@ const browseSource = (await read('frontend/js/pages/browse.js'))
   .replace("'../api.js'", `'${apiStub}'`)
   .replace("'../browse-url.js'", `'${browseUrlStub}'`)
   .replace("'../events.js'", `'${browseEvents}'`)
-  .replace("'../format.js'", `'${formatStub}'`);
+  .replace("'../format.js'", `'${formatStub}'`)
+  .replace("'../states.js'", `'${moduleUrl(await read('frontend/js/states.js'))}'`);
 const { default: browsePage } = await import(moduleUrl(browseSource));
 const page = browsePage();
 page.$store = {

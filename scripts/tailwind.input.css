@@ -103,6 +103,24 @@
   .level-warn { --level-color: var(--level-warn); --level-background: var(--level-warn-bg); }
   .level-info { --level-color: var(--level-info); --level-background: var(--level-info-bg); }
   .level-debug { --level-color: var(--level-debug); --level-background: var(--level-debug-bg); }
+
+  /* Empty, no-match and error states: icon, title, explanation, actions. */
+  .state-panel {
+    display: flex; flex-direction: column; align-items: center; gap: 0.5rem;
+    padding: 2.5rem 1rem; text-align: center;
+  }
+  .state-panel > .state-icon { width: 2rem; height: 2rem; color: var(--lens-muted); }
+  .state-panel[data-kind="unreachable"] > .state-icon,
+  .state-panel[data-kind="failed"] > .state-icon { color: var(--color-error); }
+  .state-panel[data-kind="busy"] > .state-icon { color: var(--color-warning); }
+  .state-panel h2 { font-size: 1rem; font-weight: 600; }
+  .state-panel p { max-width: 36rem; font-size: 0.875rem; color: var(--lens-muted); }
+  .state-panel .state-detail {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.75rem; overflow-wrap: anywhere;
+  }
+  .state-panel .state-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.5rem; margin-top: 0.5rem; }
+  /* Results that are being replaced by a running request. */
+  .is-stale { opacity: 0.55; transition: opacity 0.2s; }
 }
 
 .badge.level-badge {
