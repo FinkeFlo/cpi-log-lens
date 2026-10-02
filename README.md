@@ -59,6 +59,13 @@ Alternatively, seed tenants from `config/tenants.jsonc` (see
 tenants that don't exist yet, so changes made in the UI stay; set `TENANTS_SEED_MODE=sync` to make
 the file the source of truth.
 
+**Scheduled fetches** (Fetch → New schedule) fetch the chosen tenants regularly, e.g. every 15 minutes
+the last hour. The time range of a run should be at least as long as the interval, otherwise log
+files changed between two runs are missed; the dialog warns about such gaps. The list shows when
+each schedule runs next and how its last run went, and **Run now** starts one right away.
+Schedules run while CPI Log Lens is running; a new schedule runs for the first time right after
+saving.
+
 ## Configuration
 
 Everything is optional. With Compose, put variables in a `.env` file next to `docker-compose.yml`

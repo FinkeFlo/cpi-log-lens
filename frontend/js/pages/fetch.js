@@ -1,9 +1,23 @@
 // Fetch page: the fetch form (with its saved default), progress of the job, and schedules.
 import { api } from '../api.js';
 import { LOGS_CHANGED, OPEN_TENANT_MODAL, emit } from '../events.js';
+import {
+  INTERVALS, PRESETS, RANGES, coverage, intervalLabel, lastRunSummary, nextRunText, presetLabel, rangeLabel,
+  relativeTime, suggestName, withValue,
+} from '../schedules.js';
 import { describeError } from '../states.js';
 
 const LOG_TYPES = ['trace', 'http'];
+// How often the schedule list is read again while the Fetch page is shown (next run, last result).
+const SCHEDULES_REFRESH_MS = 30_000;
+// A new enabled schedule starts its first run right after saving; then its progress is shown.
+const FIRST_RUN_CHECK_MS = 1000;
+
+// No tenant is preselected: a schedule fetches only the tenants chosen for it.
+const emptySchedule = () => ({
+  id: '', name: '', allTenants: false, tenants: [], log_types: [...LOG_TYPES],
+  hours: PRESETS[0].hours, interval_minutes: PRESETS[0].interval_minutes, enabled: true,
+});
 
 export default () => ({
   form: {
@@ -20,9 +34,13 @@ export default () => ({
   scheduleModal: {
     open: false,
     editing: false,
-    form: { id: '', name: '', tenants: [], log_types: [...LOG_TYPES], hours: 1, interval_minutes: 15, enabled: true },
+    submitted: false, // a save was tried: show what is missing
+    form: emptySchedule(),
   },
   confirmDeleteScheduleId: null,
+  startingScheduleId: null, // "Run now" request in flight
+  now: Date.now(), // for "in 14 min", refreshed with the list
+  presets: PRESETS,
 
   get job() {
     return this.$store.fetchJob;
@@ -37,6 +55,13 @@ export default () => ({
     // Resolve the selection whenever the tenant list is (re)loaded.
     this.$watch('$store.tenants.list', () => this.selectTenants());
     this.selectTenants();
+    // A finished fetch may have been a schedule's run: show its result.
+    this.$watch('$store.fetchJob.status', (status, previous) => {
+      if (previous === 'running' && status !== 'running') this.loadSchedules({ quiet: true });
+    });
+    setInterval(() => {
+      if (this.$store.route.page === 'fetch' && !document.hidden) this.loadSchedules({ quiet: true });
+    }, SCHEDULES_REFRESH_MS);
     await this.loadSchedules();
   },
 
@@ -107,50 +132,139 @@ export default () => ({
   },
 
   // ── Schedules ──
-  async loadSchedules() {
+  // quiet: a background refresh keeps the shown list when it fails.
+  async loadSchedules({ quiet = false } = {}) {
     try {
       this.schedules = await api.schedules.list();
       this.schedulesLoaded = true;
       this.schedulesError = null;
     } catch (e) {
-      this.schedulesError = describeError(e, 'schedules');
+      if (!quiet || !this.schedulesLoaded) this.schedulesError = describeError(e, 'schedules');
     }
+    this.now = Date.now();
   },
 
   openScheduleModal(schedule = null) {
-    this.scheduleModal.editing = !!schedule;
-    this.scheduleModal.form = schedule
-      ? { id: schedule.id, name: schedule.name,
-          tenants: schedule.tenants.includes('all') ? this.tenants.map(t => t.id) : [...schedule.tenants],
-          log_types: [...schedule.log_types], hours: schedule.hours,
-          interval_minutes: schedule.interval_minutes, enabled: schedule.enabled }
-      : { id: '', name: '', tenants: this.tenants.map(t => t.id), log_types: [...LOG_TYPES],
-          hours: 1, interval_minutes: 15, enabled: true };
-    this.scheduleModal.open = true;
+    const m = this.scheduleModal;
+    m.editing = !!schedule;
+    m.submitted = false;
+    if (schedule) {
+      const all = schedule.tenants.includes('all');
+      m.form = {
+        id: schedule.id, name: schedule.name, allTenants: all, tenants: all ? [] : [...schedule.tenants],
+        log_types: [...schedule.log_types], hours: schedule.hours,
+        interval_minutes: schedule.interval_minutes, enabled: schedule.enabled,
+      };
+    } else {
+      m.form = emptySchedule();
+    }
+    m.open = true;
+  },
+
+  // Tenant chips: "All tenants" (also ones added later) or the chosen ones.
+  setAllTenants(on) {
+    const f = this.scheduleModal.form;
+    f.allTenants = on;
+    if (on) f.tenants = [];
+  },
+
+  toggleScheduleTenant(id, on) {
+    const f = this.scheduleModal.form;
+    f.allTenants = false;
+    f.tenants = on ? [...f.tenants.filter(x => x !== id), id] : f.tenants.filter(x => x !== id);
+  },
+
+  applyPreset(p) {
+    this.scheduleModal.form.interval_minutes = p.interval_minutes;
+    this.scheduleModal.form.hours = p.hours;
+  },
+
+  isPreset(p) {
+    const f = this.scheduleModal.form;
+    return f.interval_minutes === p.interval_minutes && f.hours === p.hours;
+  },
+
+  presetLabel,
+  intervalLabel,
+  rangeLabel,
+
+  get intervalOptions() {
+    return withValue(INTERVALS, this.scheduleModal.form.interval_minutes);
+  },
+
+  get rangeOptions() {
+    return withValue(RANGES, this.scheduleModal.form.hours);
+  },
+
+  get scheduleCoverage() {
+    const f = this.scheduleModal.form;
+    return coverage(f.interval_minutes, f.hours);
+  },
+
+  get scheduleErrors() {
+    const f = this.scheduleModal.form;
+    return {
+      tenants: !f.allTenants && f.tenants.length === 0 ? 'Choose at least one tenant.' : '',
+      log_types: f.log_types.length === 0 ? 'Choose at least one log type.' : '',
+    };
+  },
+
+  get suggestedScheduleName() {
+    const f = this.scheduleModal.form;
+    const names = f.allTenants ? ['All tenants'] : this.tenants.filter(t => f.tenants.includes(t.id)).map(t => t.name);
+    return suggestName(names, f.interval_minutes);
   },
 
   async saveSchedule() {
-    const f = this.scheduleModal.form;
-    if (!f.name.trim() || f.tenants.length === 0 || f.log_types.length === 0) {
-      this.$store.toast.notify('Enter a name and select at least one tenant and log type.', 'error');
-      return;
-    }
+    const m = this.scheduleModal;
+    const f = m.form;
+    m.submitted = true;
+    if (this.scheduleErrors.tenants || this.scheduleErrors.log_types) return;
     const body = {
-      name: f.name.trim(),
-      tenants: this.tenantSelection(f.tenants),
+      name: f.name.trim() || this.suggestedScheduleName,
+      tenants: f.allTenants ? ['all'] : f.tenants,
       log_types: f.log_types,
-      hours: parseInt(f.hours),
-      interval_minutes: parseInt(f.interval_minutes),
+      hours: Number(f.hours),
+      interval_minutes: Number(f.interval_minutes),
       enabled: !!f.enabled,
     };
+    let saved;
     try {
-      await api.schedules.save(this.scheduleModal.editing ? f.id : null, body);
-      this.scheduleModal.open = false;
-      await this.loadSchedules();
-      this.$store.toast.notify('Schedule saved', 'success');
+      saved = await api.schedules.save(m.editing ? f.id : null, body);
     } catch (e) {
       this.$store.toast.notify(`Couldn't save schedule: ${e.message}`, 'error');
+      return;
     }
+    m.open = false;
+    await this.loadSchedules();
+    this.$store.toast.notify('Schedule saved', 'success');
+    if (!m.editing && body.enabled) setTimeout(() => this.followFirstRun(saved.id), FIRST_RUN_CHECK_MS);
+  },
+
+  // Show the progress of a new schedule's first run, which starts right after saving.
+  async followFirstRun(scheduleId) {
+    await this.loadSchedules({ quiet: true });
+    const run = this.schedules.find(s => s.id === scheduleId)?.last_run;
+    if (run?.status === 'running' && this.job.status !== 'running') this.job.follow(run.id);
+  },
+
+  async runScheduleNow(s) {
+    this.startingScheduleId = s.id;
+    try {
+      const data = await api.schedules.run(s.id);
+      this.job.follow(data.job_id);
+      this.$store.toast.notify(`Started "${s.name}"`, 'success');
+    } catch (e) {
+      if (e.status === 409) {
+        this.$store.toast.notify('A fetch is already running. Run the schedule again when it has finished.', 'error');
+        if (e.data?.job_id && this.job.status !== 'running') this.job.follow(e.data.job_id);
+      } else {
+        this.$store.toast.notify(`Couldn't start the schedule: ${e.message}`, 'error');
+      }
+    } finally {
+      this.startingScheduleId = null;
+    }
+    await this.loadSchedules({ quiet: true });
   },
 
   async toggleSchedule(s) {
@@ -174,6 +288,26 @@ export default () => ({
       this.$store.toast.notify(`Couldn't delete the schedule: ${e.message}`, 'error');
     }
     await this.loadSchedules();
+  },
+
+  scheduleTimingLabel(s) {
+    return `${intervalLabel(s.interval_minutes)} · ${rangeLabel(s.hours).toLowerCase()} · ${s.log_types.join(', ')}`;
+  },
+
+  nextRunLabel(s) {
+    return nextRunText(s, this.now);
+  },
+
+  lastRun(s) {
+    const summary = lastRunSummary(s);
+    return { ...summary, ago: relativeTime(summary.at, this.now) };
+  },
+
+  localTime(iso) {
+    if (!iso) return '';
+    return new Date(iso).toLocaleString('en-US', {
+      year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZoneName: 'short',
+    });
   },
 
   scheduleTenantLabel(s) {

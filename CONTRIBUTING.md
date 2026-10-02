@@ -58,8 +58,9 @@ sources and rebuilds it. To build it directly, run `scripts/build-css.sh`. Run
 `scripts/vendor-frontend.sh` only when vendoring or updating Alpine or Chart.js.
 Run `node scripts/test-browse-url.mjs` to check Browse URL round-tripping and invalid-state handling,
 the result states (no data yet, no matches, failed requests) and the log entry drawer,
-`node scripts/test-fetch-progress.mjs` to check fetch progress per tenant and log type, and
-`node scripts/test-connection-test.mjs` for the wording of connection test results.
+`node scripts/test-fetch-progress.mjs` to check fetch progress per tenant and log type,
+`node scripts/test-schedules.mjs` for the schedule durations, gap warning, next run and last result,
+and `node scripts/test-connection-test.mjs` for the wording of connection test results.
 Run `node scripts/test-accessibility.mjs` to check page links and titles, native-dialog focus
 handling, backdrop dismissal/focus restoration, mobile navigation naming, and keyboard activation
 of log details. CI also runs `scripts/test-rendered-accessibility.mjs` against its smoke-test

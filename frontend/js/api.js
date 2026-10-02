@@ -85,6 +85,7 @@ export const api = {
     save: (scheduleId, body) =>
       scheduleId ? request('PUT', `/schedules/${id(scheduleId)}`, { body }) : request('POST', '/schedules', { body }),
     remove: scheduleId => request('DELETE', `/schedules/${id(scheduleId)}`),
+    run: scheduleId => request('POST', `/schedules/${id(scheduleId)}/run`),
   },
   stats: {
     get: tenant => request('GET', '/stats', { query: { tenant } }),

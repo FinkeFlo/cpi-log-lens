@@ -63,6 +63,9 @@ jobs:
       - name: Fetch progress state
         working-directory: .
         run: node scripts/test-fetch-progress.mjs
+      - name: Schedule form and list
+        working-directory: .
+        run: node scripts/test-schedules.mjs
       - name: Connection test wording
         working-directory: .
         run: node scripts/test-connection-test.mjs
