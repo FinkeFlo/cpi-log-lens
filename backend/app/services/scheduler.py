@@ -107,23 +107,28 @@ class ScheduleService:
             if sched is None or not sched["enabled"]:
                 await self.reload()
                 return
-            params = fetch_service.FetchParams(
-                tenants=json.loads(sched["tenants"]),
-                log_types=json.loads(sched["log_types"]),
-                hours=sched["hours"],
-            )
             try:
-                job = await self.fetch.start(params, trigger=job_id)
+                await self._start(sched)
             except fetch_service.JobAlreadyRunning:
                 self._retry(job_id, BUSY_RETRY_MINUTES)
                 return
-            log.info(
-                f"schedule: started '{sched['name']}' "
-                f"(tenants={params.tenants}, log_types={params.log_types}, hours={params.hours})"
-            )
-            tasks.spawn(self._record_success(schedule_id, job))
         except Exception as e:
             log.exception(f"schedule {schedule_id}: could not start: {e}")
+
+    async def _start(self, sched: dict) -> fetch_service.FetchJob:
+        """Start the fetch of a schedule; JobAlreadyRunning if a fetch runs."""
+        params = fetch_service.FetchParams(
+            tenants=json.loads(sched["tenants"]),
+            log_types=json.loads(sched["log_types"]),
+            hours=sched["hours"],
+        )
+        job = await self.fetch.start(params, trigger=f"{_SCHEDULE_PREFIX}{sched['id']}")
+        log.info(
+            f"schedule: started '{sched['name']}' "
+            f"(tenants={params.tenants}, log_types={params.log_types}, hours={params.hours})"
+        )
+        tasks.spawn(self._record_success(sched["id"], job))
+        return job
 
     async def _record_success(self, schedule_id: str, job: fetch_service.FetchJob) -> None:
         await job.ended.wait()
