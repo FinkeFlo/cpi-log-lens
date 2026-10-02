@@ -19,6 +19,7 @@ for (const position of [
   NEWEST,
   { kind: 'cursor', value: 'o20261001T120000_9876' },
   { kind: 'cursor', value: 'n20261001T120000.250000_1' },
+  { kind: 'cursor', value: 'n20261001T120000_0' },
   { kind: 'at', value: '2026-10-01T08:00:00' },
   { kind: 'page', value: 4 },
 ]) {
@@ -53,6 +54,7 @@ for (const invalid of [
   '#browse?date_from=2026-10-02T00%3A00%3A00&date_to=2026-10-01T00%3A00%3A00',
   '#browse?cursor=x20261001T120000_1',
   '#browse?cursor=o2026-10-01_1',
+  '#browse?cursor=o20261001T120000_0',
   '#browse?at=yesterday',
   '#browse?page=2&cursor=o20261001T120000_1',
   '#browse?at=2026-10-01&cursor=o20261001T120000_1',

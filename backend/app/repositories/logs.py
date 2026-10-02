@@ -168,7 +168,9 @@ class Cursor:
             raise ValueError("cursor is invalid")
         stamp, entry_id = m.group(2), int(m.group(3))
         timestamp = datetime.strptime(stamp, "%Y%m%dT%H%M%S.%f" if "." in stamp else "%Y%m%dT%H%M%S")
-        if entry_id > MAX_ENTRY_ID:
+        # Entry ids start at 1, so an "o" cursor (always made from an entry) has one of
+        # at least 1; "n" cursors may have 0 (see boundary()).
+        if entry_id > MAX_ENTRY_ID or (m.group(1) == "o" and entry_id < 1):
             raise ValueError("cursor is invalid")
         kind: Literal["o", "n", "a"] = m.group(1)  # type: ignore[assignment]
         return cls(kind, timestamp, entry_id)
@@ -189,11 +191,7 @@ class Cursor:
         """The entries newer than the cursor's position: for "o" its entry and the newer
         ones, for "a" and "n" the entries newer than its entry. For an "o" or "a" page,
         these are exactly the entries newer than the page."""
-        if self.kind != "o":
-            return Cursor("n", self.timestamp, self.id)
-        if self.id > 0:
-            return Cursor("n", self.timestamp, self.id - 1)
-        return Cursor("n", self.timestamp - timedelta(microseconds=1), MAX_ENTRY_ID)
+        return Cursor("n", self.timestamp, self.id - 1 if self.kind == "o" else self.id)
 
     def halves(self) -> tuple[tuple[str, list], tuple[str, list]]:
         """condition() in two parts without an OR: the entries of the cursor's timestamp

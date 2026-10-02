@@ -7,7 +7,8 @@ export const emptyFilters = () => Object.fromEntries(FILTERS.map(key => [key, ''
 // (links from earlier versions).
 export const NEWEST = Object.freeze({ kind: 'newest' });
 const POSITIONS = ['cursor', 'at', 'page'];
-const CURSOR_RE = /^[ona]\d{8}T\d{6}(\.\d{1,6})?_\d{1,19}$/;
+// An "o" cursor is made from an entry, and entry ids start at 1.
+const CURSOR_RE = /^(?:o\d{8}T\d{6}(?:\.\d{1,6})?_[1-9]\d{0,18}|[na]\d{8}T\d{6}(?:\.\d{1,6})?_\d{1,19})$/;
 const END_OF_DAY = new Set(['date_to', 'at']); // a bare date means the end of that day
 
 // The API's cursor for the entries older ('o') or newer ('n') than an entry, or from the entry

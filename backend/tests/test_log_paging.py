@@ -38,7 +38,7 @@ async def ten(client, tmp_path):
 def test_the_entries_newer_than_a_position():
     ts = datetime(2026, 1, 15, 8, 0)
     assert Cursor("o", ts, 5).boundary() == Cursor("n", ts, 4)
-    assert Cursor("o", ts, 0).boundary() == Cursor("n", datetime(2026, 1, 15, 7, 59, 59, 999999), MAX_ENTRY_ID)
+    assert Cursor("o", ts, 1).boundary() == Cursor("n", ts, 0)
     assert Cursor("a", ts, 5).boundary() == Cursor("n", ts, 5)
     assert Cursor.at(ts).boundary() == Cursor("n", ts, MAX_ENTRY_ID)
     # the same entries as condition(), split into two parts without an OR
@@ -50,6 +50,7 @@ def test_the_entries_newer_than_a_position():
 def test_cursor_text_round_trip():
     for cursor in (
         Cursor("o", datetime(2026, 9, 30, 11, 59, 58), 12345),
+        Cursor("n", datetime(1, 1, 1), 0),
         Cursor("n", datetime(2026, 9, 30, 11, 59, 58, 120000), 1),
         Cursor("a", datetime(1, 1, 1), MAX_ENTRY_ID),
     ):
@@ -67,6 +68,8 @@ def test_cursor_text_round_trip():
         "o20260930T115958_9999999999999999999",
         "o2026-09-30T11:59:58_1",
         "o20260930T115958_1 ",
+        "o20260930T115958_0",
+        "o00010101T000000_0",
     ],
 )
 def test_invalid_cursor_text(text):
@@ -224,6 +227,7 @@ async def test_page_numbers_still_work_and_continue_with_cursors(ten):
         ({"at": "2026-01-15", "cursor": "o20260115T080000_1"}, "only one of"),
         ({"cursor": "nope"}, "cursor is invalid"),
         ({"cursor": "o20260231T080000_1"}, "cursor is invalid"),
+        ({"cursor": "o00010101T000000_0"}, "cursor is invalid"),
         ({"at": "yesterday"}, "at must be"),
     ],
 )
