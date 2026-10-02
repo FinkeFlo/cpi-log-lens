@@ -6,6 +6,7 @@ any files a test adds. Like the real API, $value streams the file decompressed.
 Status codes and a delay can be injected to exercise retries and errors."""
 
 import asyncio
+import base64
 import re
 import time
 from dataclasses import dataclass, field
@@ -37,6 +38,8 @@ class FakeFile:
 class FakeCpi:
     files: dict[str, FakeFile] = field(default_factory=dict)
     token_status: int = 200
+    # Client ID and secret the token endpoint accepts (401 for others); None: any.
+    credentials: tuple[str, str] | None = None
     list_status: int = 200
     # File name -> status per download attempt (200 once the list is used up).
     download_status: dict[str, list[int]] = field(default_factory=dict)
@@ -61,6 +64,10 @@ class FakeCpi:
         self.requests.append("token")
         if self.token_status != 200:
             return JSONResponse({"error": "unauthorized"}, status_code=self.token_status)
+        if self.credentials is not None:
+            expected = "Basic " + base64.b64encode(":".join(self.credentials).encode()).decode()
+            if request.headers.get("authorization") != expected:
+                return JSONResponse({"error": "unauthorized"}, status_code=401)
         return JSONResponse({"access_token": "fake-token", "expires_in": 3600})
 
     async def _odata(self, request: Request) -> Response:

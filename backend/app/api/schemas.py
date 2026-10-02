@@ -30,6 +30,17 @@ class TenantCreate(BaseModel):
         return v
 
 
+class ConnectionTestRequest(BaseModel):
+    """Connection details to test before saving. An empty or masked client_secret means
+    the stored secret of the saved tenant `id`."""
+
+    id: str | None = Field(default=None, pattern=TENANT_ID_PATTERN)
+    api_url: str = Field(pattern=r"^https?://\S+$", max_length=500)
+    oauth_url: str = Field(pattern=r"^https?://\S+$", max_length=500)
+    client_id: str = Field(min_length=1, max_length=500)
+    client_secret: str = Field(default="", max_length=2000)
+
+
 class FetchRequest(BaseModel):
     tenants: list[str] = Field(default=["all"], min_length=1)  # ["all"] or tenant ids
     log_types: list[LogType] = Field(default=["trace", "http"], min_length=1)

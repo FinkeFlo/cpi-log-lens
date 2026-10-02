@@ -146,11 +146,13 @@ async def test_purge_of_a_tenant_deleted_earlier(client, fake_cpi):
     assert res.json()["deleted_entries"] == 2
 
 
-async def test_connection_test_gets_a_token(client, fake_cpi):
+async def test_connection_test_gets_a_token_and_lists_log_files(client, fake_cpi):
+    fake_cpi.add("a.log", numbered_lines(2))
+    fake_cpi.add("h.log", numbered_lines(2), log_type="http")
     await client.post("/api/tenants", json=FAKE_TENANT)
     res = await client.post("/api/tenants/fake/test")
-    assert res.json() == {"ok": True, "token_preview": "fake-token…"}
-    assert fake_cpi.requests == ["token"]
+    assert res.json() == {"ok": True, "trace_files": 1, "token_preview": "fake-token…"}
+    assert fake_cpi.requests == ["token", "list"]
 
 
 async def test_connection_test_reports_a_failed_token_request(client, fake_cpi):
@@ -158,13 +160,93 @@ async def test_connection_test_reports_a_failed_token_request(client, fake_cpi):
     await client.post("/api/tenants", json=FAKE_TENANT)
     res = await client.post("/api/tenants/fake/test")
     assert res.status_code == 502
-    assert "401" in res.json()["detail"]
+    assert res.json() == {
+        "detail": "The OAuth server rejected the client ID or secret (HTTP 401). "
+        "Copy the client ID and secret from the service key again.",
+        "kind": "invalid_credentials",
+        "step": "token",
+        "message": "The OAuth server rejected the client ID or secret (HTTP 401).",
+        "hint": "Copy the client ID and secret from the service key again.",
+        "upstream_status": 401,
+    }
     assert fake_cpi.requests == ["token"]  # 4xx is not retried
+
+
+async def test_connection_test_reports_a_missing_role(client, fake_cpi):
+    fake_cpi.list_status = 403
+    await client.post("/api/tenants", json=FAKE_TENANT)
+    res = await client.post("/api/tenants/fake/test")
+    assert res.status_code == 502
+    body = res.json()
+    assert (body["kind"], body["step"], body["upstream_status"]) == ("missing_role", "api", 403)
+    assert body["message"] == "The credentials work, but they may not read log files (HTTP 403)."
+
+
+async def test_connection_test_makes_a_single_attempt(client, fake_cpi):
+    fake_cpi.token_status = 503
+    await client.post("/api/tenants", json=FAKE_TENANT)
+    res = await client.post("/api/tenants/fake/test")
+    assert res.json()["kind"] == "server_error"
+    assert fake_cpi.requests == ["token"]  # a fetch would retry; the test answers right away
 
 
 async def test_connection_test_of_the_demo_tenant_needs_no_request(client, fake_cpi):
     await tenants_repo.upsert_tenant(app_db(), "demo", "Demo", "demo://sample", "demo://sample", "d", "d")
     assert (await client.post("/api/tenants/demo/test")).json() == {"ok": True, "demo": True}
+    assert fake_cpi.requests == []
+
+
+async def test_connection_test_of_a_missing_tenant_is_404(client):
+    assert (await client.post("/api/tenants/nope/test")).status_code == 404
+
+
+# ── Testing connection details before saving ─────────────────────────────────
+
+DETAILS = {k: FAKE_TENANT[k] for k in ("api_url", "oauth_url", "client_id", "client_secret")}
+
+
+async def test_unsaved_details_are_tested_without_saving_them(client, fake_cpi):
+    fake_cpi.add("a.log", numbered_lines(2))
+    res = await client.post("/api/tenants/test", json=DETAILS)
+    assert res.status_code == 200
+    assert res.json() == {"ok": True, "trace_files": 1}  # no token material
+    assert fake_cpi.requests == ["token", "list"]
+    assert (await client.get("/api/tenants")).json() == []
+
+
+async def test_unsaved_details_report_readable_errors(client, fake_cpi):
+    fake_cpi.list_status = 403
+    res = await client.post("/api/tenants/test", json=DETAILS)
+    assert res.status_code == 502
+    assert res.json()["kind"] == "missing_role"
+    assert "secret" not in res.text
+
+
+async def test_unsaved_details_need_a_secret(client, fake_cpi):
+    for body in ({**DETAILS, "client_secret": ""}, {**DETAILS, "client_secret": "", "id": "unknown"}):
+        res = await client.post("/api/tenants/test", json=body)
+        assert res.status_code == 422
+        assert res.json() == {"detail": "Enter the client secret."}
+    assert fake_cpi.requests == []
+
+
+@pytest.mark.parametrize("secret", ["", MASK])
+async def test_saved_secret_is_used_with_the_saved_urls(client, fake_cpi, secret):
+    fake_cpi.credentials = ("client", "secret")
+    await client.post("/api/tenants", json=FAKE_TENANT)
+    res = await client.post("/api/tenants/test", json={**DETAILS, "id": "fake", "client_secret": secret})
+    assert res.json() == {"ok": True, "trace_files": 0}
+    res = await client.post("/api/tenants/test", json={**DETAILS, "id": "fake", "client_secret": "typo"})
+    assert res.json()["kind"] == "invalid_credentials"  # a secret that is entered is used
+
+
+@pytest.mark.parametrize("field", ["api_url", "oauth_url"])
+async def test_saved_secret_is_not_sent_to_changed_urls(client, fake_cpi, field):
+    await client.post("/api/tenants", json=FAKE_TENANT)
+    body = {**DETAILS, "id": "fake", "client_secret": "", field: "https://elsewhere.example/x"}
+    res = await client.post("/api/tenants/test", json=body)
+    assert res.status_code == 422
+    assert res.json()["detail"].startswith("Enter the client secret to test changed URLs")
     assert fake_cpi.requests == []
 
 

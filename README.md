@@ -45,8 +45,10 @@ service key of a *Process Integration Runtime* service instance (plan `api`) who
 reading log files; see the SAP documentation of the LogFiles API for the required role.
 
 In **Settings → Add tenant**, paste the service key JSON: API URL, OAuth URL, client ID and secret
-are filled in automatically. Give the tenant a short ID (lowercase, e.g. `prd`) and a display name,
-save, and use **Test connection**.
+are filled in automatically. Give the tenant a short ID (lowercase, e.g. `prd`) and a display name.
+**Test connection** checks the details before you save them: it requests a token and lists the
+trace log files, so it also finds a service key without the role to read log files, and it says in
+plain words what to fix (unknown host, rejected client ID or secret, missing role, …).
 
 Deleting a tenant removes it from scheduled fetches. Its imported entries and downloaded files are
 kept unless you choose to delete them too (`DELETE /api/tenants/<id>?purge=true`); kept data stays
@@ -168,7 +170,8 @@ Allow enough stop time (Compose: `stop_grace_period: 60s`; `docker run`: `--stop
 |---|---|
 | `400 Invalid host header` | You opened the app by a name that is not in `ALLOWED_HOSTS`. |
 | `403 cross-origin request refused` | A write request came from another web page; use the app's own UI or a script without an `Origin` header. |
-| Test connection fails with 401 | Wrong client ID or secret, or the service key lacks the role for the LogFiles API. |
+| Test connection: client ID or secret rejected (HTTP 401) | Copy client ID and secret from the service key again. |
+| Test connection: credentials work, but may not read log files (HTTP 403) | The service key lacks the role for the LogFiles API. |
 | Fetch reports "Import failed: … end-of-stream marker" | A downloaded file was incomplete; the next fetch retries it. |
 | Requests return 503 "database busy" | Many slow queries at once; narrow the time range or search term, or raise `QUERY_TIMEOUT_S`. |
 | `could not parse /config/tenants.jsonc` in the log | The seed file is not valid JSON with comments. |
@@ -180,8 +183,9 @@ Two endpoints allow LLMs or scripts to query logs. Interactive API docs are at `
 `GET /api/query/schema` describes the query API, available filters and configured tenants.
 Errors are HTTP status codes with a JSON body `{"detail": …}`: 404 unknown tenant, schedule, entry or
 run; 409 a fetch is already running (with its `job_id`) or none is running; 422 invalid input
-(`detail` lists the fields); 502 the CPI token request failed (connection test); 503 the database
-is busy (retry after the `Retry-After` seconds); 507 not enough disk space for a backup.
+(`detail` lists the fields); 502 a connection test failed (with `kind`, `step`, `message` and `hint`
+besides `detail`); 503 the database is busy (retry after the `Retry-After` seconds); 507 not enough
+disk space for a backup.
 
 `GET /api/fetch/runs` lists past fetch jobs (manual, demo or scheduled) with their status, times and
 counters; a job cut off by a stop of the app is marked `interrupted`.
