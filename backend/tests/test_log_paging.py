@@ -41,6 +41,10 @@ def test_the_entries_newer_than_a_position():
     assert Cursor("o", ts, 0).boundary() == Cursor("n", datetime(2026, 1, 15, 7, 59, 59, 999999), MAX_ENTRY_ID)
     assert Cursor("a", ts, 5).boundary() == Cursor("n", ts, 5)
     assert Cursor.at(ts).boundary() == Cursor("n", ts, MAX_ENTRY_ID)
+    # the same entries as condition(), split into two parts without an OR
+    assert Cursor("o", ts, 5).halves() == (("timestamp = ? AND id < ?", [ts, 5]), ("timestamp < ?", [ts]))
+    assert Cursor("a", ts, 5).halves() == (("timestamp = ? AND id <= ?", [ts, 5]), ("timestamp < ?", [ts]))
+    assert Cursor("n", ts, 5).halves() == (("timestamp = ? AND id > ?", [ts, 5]), ("timestamp > ?", [ts]))
 
 
 def test_cursor_text_round_trip():
@@ -142,6 +146,32 @@ async def test_cursor_pages_keep_the_filters(client, tmp_path):
     second = await get(client, level="ERROR", page_size=2, cursor=first["older_cursor"])
     assert messages(second) == ["m3", "m1"]
     assert (second["total"], second["offset"], second["older_cursor"]) == (4, 2, None)
+
+
+async def test_few_matches_among_many_entries_page_in_order(client, tmp_path):
+    # A cursor page is read as two queries (same second, other seconds) merged: entries of
+    # one second on both sides of a page boundary, and filters that match only some
+    # entries, keep their order.
+    lines = [
+        log_line(
+            ts=f"2026-01-15 08:{i // 6:02d}:00",
+            level="ERROR" if i % 3 == 0 else "INFO",
+            thread=f"1-Demo_{'Rare' if i % 2 == 0 else 'Common'}_Worker-1",
+            message=f"m{i}",
+        )
+        for i in range(120)
+    ]
+    await import_lines(tmp_path, lines)
+    expected = [f"m{i}" for i in reversed(range(120)) if i % 6 == 0]
+    body, seen = await get(client, iflow="Rare", level="ERROR", page_size=4), []
+    while True:
+        seen += messages(body)
+        if not body["older_cursor"]:
+            break
+        body = await get(client, iflow="Rare", level="ERROR", page_size=4, cursor=body["older_cursor"], count="false")
+    assert seen == expected
+    by_number = [await get(client, iflow="Rare", level="ERROR", page_size=4, page=n) for n in range(1, 7)]
+    assert [m for page in by_number for m in messages(page)] == expected
 
 
 async def test_jump_to_time_starts_at_the_newest_entry_at_or_before_it(ten):

@@ -195,6 +195,14 @@ class Cursor:
             return Cursor("n", self.timestamp, self.id - 1)
         return Cursor("n", self.timestamp - timedelta(microseconds=1), MAX_ENTRY_ID)
 
+    def halves(self) -> tuple[tuple[str, list], tuple[str, list]]:
+        """condition() in two parts without an OR: the entries of the cursor's timestamp
+        on its side of the id, and the entries of the timestamps on its side."""
+        if self.kind == "n":
+            return ("timestamp = ? AND id > ?", [self.timestamp, self.id]), ("timestamp > ?", [self.timestamp])
+        op = "<" if self.kind == "o" else "<="
+        return (f"timestamp = ? AND id {op} ?", [self.timestamp, self.id]), ("timestamp < ?", [self.timestamp])
+
     def condition(self) -> tuple[str, list]:
         """SQL condition for the entries on this cursor's side, and its parameters. The
         plain timestamp bound is redundant, but lets DuckDB skip whole row groups by
@@ -266,12 +274,20 @@ async def query_logs(
 
     # One entry more than a page tells whether there are more beyond it.
     def select(cur, side: Cursor | None, order: str, offset: int = 0) -> list[dict]:
-        cond, cond_params = side.condition() if side else (None, [])
-        return db.fetch_all(
-            cur,
-            f"SELECT {_LIST_COLUMNS} FROM logs {where(cond) if cond else where()} {order} LIMIT ? OFFSET ?",
-            [*params, *cond_params, page_size + 1, offset],
+        if side is None:
+            sql = f"SELECT {_LIST_COLUMNS} FROM logs {where()} {order} LIMIT ? OFFSET ?"
+            return db.fetch_all(cur, sql, [*params, page_size + 1, offset])
+        # A query per half of the cursor's condition, merged. With the OR of both halves in
+        # one query, DuckDB applied it only after reading every column of every entry that
+        # passed the other filters: over 100 ms per page for an IFlow and a level matching
+        # 14,000 of 20 million entries, against about 15 ms this way.
+        (same_second, same_params), (other_seconds, other_params) = side.halves()
+        sql = (
+            f"SELECT * FROM ((SELECT {_LIST_COLUMNS} FROM logs {where(same_second)} {order} LIMIT ?) "
+            f"UNION ALL (SELECT {_LIST_COLUMNS} FROM logs {where(other_seconds)} {order} LIMIT ?)) {order} LIMIT ?"
         )
+        limit = page_size + 1
+        return db.fetch_all(cur, sql, [*params, *same_params, limit, *params, *other_params, limit, limit])
 
     def read_page(cur) -> _Page:
         if cursor is not None and cursor.kind == "n":
