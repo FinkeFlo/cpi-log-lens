@@ -185,6 +185,9 @@ is busy (retry after the `Retry-After` seconds); 507 not enough disk space for a
 
 `GET /api/fetch/runs` lists past fetch jobs (manual, demo or scheduled) with their status, times and
 counters; a job cut off by a stop of the app is marked `interrupted`.
+`GET /api/fetch/status` shows the current or last job with one entry per tenant and log type in
+`parts` (status, files, imported entries, warnings, error) and the latest warnings and errors in
+`problems`. A tenant that fails does not stop the job: it ends `done` with `errors` above 0.
 
 `POST /api/query` searches log entries with structured filters and returns a natural-language
 `summary` plus the matching `items`:

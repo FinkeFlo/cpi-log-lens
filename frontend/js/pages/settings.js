@@ -1,6 +1,7 @@
 // Settings page: tenants (dialog, service key paste, connection test, delete) and the database.
 import { api } from '../api.js';
 import { LOGS_CHANGED, SCHEDULES_CHANGED, emit } from '../events.js';
+import { describeError } from '../states.js';
 
 const emptyTenant = () => ({ id: '', name: '', api_url: '', oauth_url: '', client_id: '', client_secret: '' });
 
@@ -14,6 +15,7 @@ export default () => ({
   },
   tenantDeleteModal: { open: false, tenantId: '', purgeLogs: false },
   dbInfo: {},
+  dbInfoError: null, // describeError() of the last failed load
   confirmClearOpen: false,
   confirmCleanupOpen: false,
   cleanup: { tenant: 'all', olderThanDays: 30, busy: false },
@@ -113,8 +115,9 @@ export default () => ({
   async loadDbInfo() {
     try {
       this.dbInfo = await api.db.info();
+      this.dbInfoError = null;
     } catch (e) {
-      console.error(e);
+      this.dbInfoError = describeError(e, 'database details');
     }
   },
 

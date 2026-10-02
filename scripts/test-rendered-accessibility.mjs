@@ -78,6 +78,15 @@ try {
 
   await openRoute('browse', 'Browse logs | CPI Log Lens');
   await audit('Browse');
+  const firstEntry = page.locator('table[aria-label="Log entries"] tbody tr button[data-entry-id]').first();
+  const { dialog: entryDialog, trigger: entryTrigger } = await openDialog(
+    firstEntry,
+    'dialog[aria-labelledby="log-detail-title"]',
+    'Browse / log entry drawer',
+  );
+  await entryDialog.getByText('Raw line', { exact: true }).waitFor();
+  await dismissWithEscape(entryDialog, entryTrigger);
+  console.log('Log entry drawer opens from its row, passes axe-core, and Escape restores focus to the row');
 
   await openRoute('fetch', 'Fetch logs | CPI Log Lens');
   await audit('Fetch');

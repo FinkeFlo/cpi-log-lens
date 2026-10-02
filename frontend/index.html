@@ -53,8 +53,6 @@
       .log-table tr.log-row td:last-child { grid-column: 1 / -1; }
       .log-table tr.log-row td:last-child > div { white-space: normal; overflow: visible; }
       .log-table tr.log-row td:first-child button { text-align: left; white-space: normal; }
-      .log-table tr.log-detail { display: block; }
-      .log-table tr.log-detail > td { display: block; width: auto; }
       .responsive-table { display: block; }
       .responsive-table thead { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
       .responsive-table tbody { display: block; }
@@ -120,49 +118,39 @@
       <div class="flex items-center justify-between gap-2 mb-1">
         <span class="text-xs text-muted truncate flex items-center gap-1">
           <svg x-show="$store.fetchJob.statusIcon === 'key-round'" class="w-3.5 h-3.5" aria-hidden="true" focusable="false"><use href="/icons.svg#key-round"></use></svg>
-          <span x-text="$store.fetchJob.statusMsg || 'Fetching logs…'"></span>
+          <span x-text="$store.fetchJob.connectionLost ? 'Lost the connection to the server. Reconnecting…' : ($store.fetchJob.statusMsg || 'Fetching logs…')"></span>
         </span>
-        <span class="text-xs text-muted flex-shrink-0" x-show="$store.fetchJob.total > 0"
-              x-text="`${$store.fetchJob.done} / ${$store.fetchJob.total}`"></span>
+        <span class="text-xs text-muted flex-shrink-0" x-show="$store.fetchJob.parts.length > 1"
+              x-text="`${$store.fetchJob.partsFinished} of ${$store.fetchJob.parts.length} done`"></span>
       </div>
-      <progress class="progress progress-primary w-full h-1.5"
-                :value="$store.fetchJob.done" :max="$store.fetchJob.total || 1"></progress>
+      <template x-if="$store.fetchJob.percent === null">
+        <progress class="progress progress-primary w-full h-1.5" aria-label="Overall fetch progress"></progress>
+      </template>
+      <template x-if="$store.fetchJob.percent !== null">
+        <progress class="progress progress-primary w-full h-1.5" aria-label="Overall fetch progress" max="100"
+                  :value="$store.fetchJob.percent"></progress>
+      </template>
     </div>
+    <span x-show="$store.fetchJob.errors + $store.fetchJob.warnings > 0"
+          class="badge badge-warning badge-soft badge-sm flex-shrink-0"
+          x-text="$store.fetchJob.errors ? `${$store.fetchJob.errors} failed` : `${$store.fetchJob.warnings} warnings`"></span>
     <span x-show="$store.fetchJob.imported > 0"
           class="badge badge-primary badge-sm flex-shrink-0"
           x-text="`+${$store.fetchJob.imported.toLocaleString('en-US')}`"></span>
     <button class="btn btn-ghost btn-xs text-error flex-shrink-0" @click="$store.fetchJob.cancel()"
             title="Cancel fetch"><svg class="w-3.5 h-3.5" aria-hidden="true" focusable="false"><use href="/icons.svg#x"></use></svg> Cancel</button>
-    <a class="btn btn-ghost btn-xs flex-shrink-0" href="#fetch">View progress <svg class="w-3.5 h-3.5" aria-hidden="true" focusable="false"><use href="/icons.svg#chevron-right"></use></svg></a>
+    <a x-show="$store.route.page !== 'fetch'" class="btn btn-ghost btn-xs flex-shrink-0" href="#fetch">View progress <svg class="w-3.5 h-3.5" aria-hidden="true" focusable="false"><use href="/icons.svg#chevron-right"></use></svg></a>
   </div>
 </div>
 
 <main id="main-content" tabindex="-1">
 <!-- ═══════════════════════════════ BROWSE ═══════════════════════════════════ -->
 <div id="browse-page" x-data="browsePage" x-show="$store.route.page==='browse'" class="page-content p-4 w-full"
-     @keydown.escape.window="closeRow()"
      @logs-changed.window="onLogsChanged($event.detail)"
      @browse-iflow.window="showIflow($event.detail)"
      @page-shown.window="onPageShown($event.detail)">
 
   <h1 class="text-2xl font-bold mb-4">Browse logs</h1>
-  <!-- First run: no tenants yet -->
-  <div x-show="$store.tenants.loaded && tenants.length===0" class="card bg-base-100 shadow mb-4">
-    <div class="card-body">
-      <h2 class="card-title">Welcome to CPI Log Lens</h2>
-      <p class="text-sm text-muted">
-        Connect an SAP Cloud Integration tenant to fetch and search its logs,
-        or try the app first with bundled demo data.
-      </p>
-      <div class="card-actions mt-2">
-        <button class="btn btn-primary btn-sm" @click="connectTenant()">Connect a CPI tenant</button>
-        <button class="btn btn-ghost btn-sm" :disabled="demoStarting" @click="startDemo()">
-          <span x-show="demoStarting" class="loading loading-spinner loading-xs"></span>
-          Try demo data
-        </button>
-      </div>
-    </div>
-  </div>
 
   <!-- Filter bar -->
   <div class="card bg-base-100 shadow mb-4">
@@ -228,22 +216,105 @@
   </div>
 
   <!-- Info row -->
-  <div class="flex justify-between items-center mb-2 text-xs text-muted px-1">
-    <span>
-      <template x-if="logs.total > 0">
-        <span x-text="`${logs.total.toLocaleString('en-US')} entries`"></span>
-      </template>
-      <template x-if="logs.total === 0 && !loading">
-        <span>No logs yet. Open <svg class="inline w-3.5 h-3.5" aria-hidden="true" focusable="false"><use href="/icons.svg#download"></use></svg> Fetch to get started.</span>
-      </template>
-      <span x-show="loading" class="loading loading-spinner loading-xs"></span>
+  <div x-show="listState === 'results'" class="flex justify-between items-center mb-2 text-xs text-muted px-1">
+    <span class="flex items-center gap-2">
+      <span x-text="`${logs.total.toLocaleString('en-US')} entries`"></span>
+      <span x-show="loading" class="loading loading-spinner loading-xs" aria-hidden="true"></span>
+      <span x-show="loading" class="sr-only">Updating the list…</span>
     </span>
     <span x-show="logs.pages > 1" x-text="`Page ${logs.page} of ${logs.pages}`"></span>
   </div>
 
-  <!-- Table -->
-  <div class="card bg-base-100 shadow overflow-hidden">
-    <div class="overflow-x-auto">
+  <!-- A background refresh failed: the list above is the last one loaded -->
+  <template x-if="refreshError && listState === 'results'">
+    <div class="alert alert-warning alert-soft mb-2 text-sm" role="alert">
+      <svg class="w-4 h-4 shrink-0" aria-hidden="true" focusable="false"><use href="/icons.svg#triangle-alert"></use></svg>
+      <span><strong x-text="`${refreshError.title}.`"></strong> The list may be outdated.</span>
+      <button class="btn btn-ghost btn-xs" @click="retry()">Try again</button>
+    </div>
+  </template>
+
+  <!-- Results -->
+  <div class="card bg-base-100 shadow overflow-hidden" :aria-busy="loading ? 'true' : 'false'">
+    <template x-if="listState === 'loading'">
+      <div class="p-4 space-y-3" role="status">
+        <span class="sr-only">Loading log entries…</span>
+        <template x-for="i in 8" :key="i">
+          <div class="skeleton h-5 w-full" aria-hidden="true"></div>
+        </template>
+      </div>
+    </template>
+
+    <template x-if="listState === 'error'">
+      <div class="state-panel" :data-kind="listError.kind" role="alert">
+        <svg class="state-icon" aria-hidden="true" focusable="false"><use :href="`/icons.svg#${listError.icon}`"></use></svg>
+        <h2 x-text="listError.title"></h2>
+        <p x-text="listError.text"></p>
+        <p x-show="listError.detail" class="state-detail" x-text="listError.detail"></p>
+        <div class="state-actions">
+          <button class="btn btn-primary btn-sm" @click="retry()">
+            <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#rotate-ccw"></use></svg> Try again
+          </button>
+        </div>
+      </div>
+    </template>
+
+    <template x-if="listState === 'empty' && $store.tenants.loaded && tenants.length === 0">
+      <div class="state-panel">
+        <svg class="state-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#inbox"></use></svg>
+        <h2>Welcome to CPI Log Lens</h2>
+        <p>Connect an SAP Cloud Integration tenant to fetch and search its logs, or try the app first with bundled demo data.</p>
+        <div class="state-actions">
+          <button class="btn btn-primary btn-sm" @click="connectTenant()">Connect a CPI tenant</button>
+          <button class="btn btn-ghost btn-sm" :disabled="demoStarting || $store.fetchJob.status === 'running'" @click="startDemo()">
+            <span x-show="demoStarting" class="loading loading-spinner loading-xs"></span>
+            Try demo data
+          </button>
+        </div>
+      </div>
+    </template>
+
+    <template x-if="listState === 'empty' && !($store.tenants.loaded && tenants.length === 0)">
+      <div class="state-panel">
+        <svg class="state-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#inbox"></use></svg>
+        <h2>No log entries yet</h2>
+        <p x-show="$store.fetchJob.status !== 'running'">Fetch logs from your tenants to search them here.</p>
+        <p x-show="$store.fetchJob.status === 'running'">A fetch is running. New entries appear here as they are imported.</p>
+        <div class="state-actions">
+          <a class="btn btn-primary btn-sm" href="#fetch">
+            <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#download"></use></svg>
+            <span x-text="$store.fetchJob.status === 'running' ? 'View fetch progress' : 'Fetch logs'"></span>
+          </a>
+        </div>
+      </div>
+    </template>
+
+    <template x-if="listState === 'no-matches'">
+      <div class="state-panel">
+        <svg class="state-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#search-x"></use></svg>
+        <h2>No entries match these filters</h2>
+        <p x-show="!q.grep">Try a wider time range or fewer filters.</p>
+        <p x-show="q.grep">Text search looks at the selected time range only (the last 24 hours unless you set one). Try a wider range or a shorter search term.</p>
+        <div class="state-actions">
+          <button class="btn btn-primary btn-sm" @click="resetSearch()">
+            <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#filter-x"></use></svg> Clear filters
+          </button>
+        </div>
+      </div>
+    </template>
+
+    <template x-if="listState === 'invalid'">
+      <div class="state-panel">
+        <svg class="state-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#filter-x"></use></svg>
+        <h2>These filters can't be used</h2>
+        <p>Correct the filters above, or clear them to see all entries.</p>
+        <div class="state-actions">
+          <button class="btn btn-primary btn-sm" @click="resetSearch()">Clear filters</button>
+        </div>
+      </div>
+    </template>
+
+    <div x-show="listState === 'results'" class="overflow-x-auto" :class="loading && 'is-stale'">
       <table class="table table-xs table-zebra w-full log-table" aria-label="Log entries">
         <thead>
           <tr class="bg-base-300 text-xs">
@@ -257,57 +328,32 @@
         </thead>
         <template x-for="row in logs.items" :key="row.id">
           <tbody>
-            <!-- Data row -->
+            <!-- Data row; the time button opens the entry in the drawer -->
             <tr class="log-row level-marker hover:bg-base-200 cursor-pointer"
-                :class="[selected?.id === row.id ? 'bg-base-200' : '', ['ERROR','WARN','INFO','DEBUG'].includes(row.level) ? 'level-'+row.level.toLowerCase() : '']">
+                :class="[detailOpen && detail?.id === row.id ? 'bg-base-200' : '', levelClass(row.level)]">
               <td data-label="Time" class="font-mono-xs whitespace-nowrap">
-                <button type="button" class="link link-hover text-left font-mono-xs"
-                        :aria-expanded="selected?.id === row.id"
+                <button type="button" class="link link-hover text-left font-mono-xs" aria-haspopup="dialog"
+                        :data-entry-id="row.id"
                         :aria-label="`Open log entry from ${row.timestamp || 'unknown time'}${row.iflow ? `, ${row.iflow}` : ''}`"
-                        @click.stop="toggleRow(row)" x-text="row.timestamp?.slice(0,19)"></button>
+                        @click.stop="showEntry(row)" x-text="row.timestamp?.slice(0,19)"></button>
               </td>
-              <td data-label="Tenant" @click="toggleRow(row)"><span class="badge badge-outline badge-xs" x-text="row.tenant?.toUpperCase()"></span></td>
-              <td data-label="Type" class="text-xs text-muted" @click="toggleRow(row)" x-text="row.log_type"></td>
-              <td data-label="Level" @click="toggleRow(row)">
+              <td data-label="Tenant" @click="showEntry(row)"><span class="badge badge-outline badge-xs" x-text="row.tenant?.toUpperCase()"></span></td>
+              <td data-label="Type" class="text-xs text-muted" @click="showEntry(row)" x-text="row.log_type"></td>
+              <td data-label="Level" @click="showEntry(row)">
                 <span class="badge badge-xs level-badge" x-text="row.level"></span>
               </td>
-              <td data-label="IFlow" class="font-mono-xs max-w-xs truncate" :title="row.iflow" @click="toggleRow(row)" x-text="shortIflow(row.iflow)"></td>
-              <td data-label="Message" class="text-xs text-muted max-w-0" @click="toggleRow(row)">
+              <td data-label="IFlow" class="font-mono-xs max-w-xs truncate" :title="row.iflow" @click="showEntry(row)" x-text="shortIflow(row.iflow)"></td>
+              <td data-label="Message" class="text-xs text-muted max-w-0" @click="showEntry(row)">
                 <div class="truncate" x-text="row.message"></div>
-              </td>
-            </tr>
-            <!-- Expanded detail row -->
-            <tr x-show="selected?.id === row.id" class="bg-base-200 log-detail">
-              <td colspan="6" class="p-0">
-                <div class="p-4 space-y-3 border-t border-base-300">
-                  <div class="grid grid-cols-[6rem_1fr] gap-x-4 gap-y-1 text-xs">
-                    <span class="text-muted font-semibold pt-0.5">IFlow</span>
-                    <span class="font-mono break-all" x-text="row.iflow"></span>
-                    <span class="text-muted font-semibold pt-0.5">Logger</span>
-                    <span class="font-mono break-all" x-text="row.logger"></span>
-                    <span class="text-muted font-semibold pt-0.5">Node</span>
-                    <span class="font-mono" x-text="`${row.ip}  #${row.node}`"></span>
-                  </div>
-                  <pre class="bg-base-300 rounded p-3 font-mono text-xs whitespace-pre-wrap break-all max-h-64 overflow-y-auto" x-text="row.message"></pre>
-                  <details x-show="row.raw_line" class="text-xs">
-                    <summary class="cursor-pointer text-muted font-semibold select-none">Raw line</summary>
-                    <pre class="bg-base-300 rounded p-3 font-mono whitespace-pre-wrap break-all max-h-64 overflow-y-auto mt-1" x-text="row.raw_line"></pre>
-                  </details>
-                </div>
               </td>
             </tr>
           </tbody>
         </template>
-        <tbody>
-          <tr x-show="logs.items?.length === 0 && !loading">
-            <td colspan="6" class="text-center text-muted py-8">No matching entries</td>
-          </tr>
-        </tbody>
       </table>
     </div>
 
     <!-- Pagination -->
-    <div x-show="logs.pages > 1" class="flex justify-center p-3 border-t border-base-200">
+    <div x-show="listState === 'results' && logs.pages > 1" class="flex justify-center p-3 border-t border-base-200">
       <div class="join">
         <button class="join-item btn btn-sm tooltip tooltip-top" data-tip="Previous page"
                 aria-label="Previous page" title="Previous page" :disabled="logs.page<=1" @click="goPage(logs.page-1)">
@@ -325,6 +371,94 @@
       </div>
     </div>
   </div>
+
+  <!-- ── Drawer: log entry ── -->
+  <dialog x-dialog="detailOpen" x-ref="detailDialog" class="modal modal-end" aria-labelledby="log-detail-title"
+          :data-return-focus="detail ? `[data-entry-id='${detail.id}']` : ''" @cancel.prevent="closeDetail()">
+    <div class="modal-box log-detail-box p-0 flex flex-col overflow-hidden">
+      <header class="flex items-start gap-2 p-4 border-b border-base-300">
+        <div class="flex-1 min-w-0">
+          <h2 id="log-detail-title" tabindex="-1" autofocus class="font-bold text-lg">Log entry</h2>
+          <p class="text-xs text-muted flex flex-wrap items-center gap-x-2 gap-y-1 mt-1">
+            <span x-show="detail?.level" class="badge badge-sm level-badge" :class="levelClass(detail?.level)" x-text="detail?.level"></span>
+            <span x-show="detail?.tenant" x-text="$store.tenants.name(detail?.tenant)"></span>
+            <span x-show="detail?.log_type" x-text="detail?.log_type"></span>
+            <span x-show="detail?.timestamp" class="font-mono" x-text="`${detail?.timestamp?.replace('T', ' ')} UTC`"></span>
+          </p>
+        </div>
+        <button type="button" class="btn btn-ghost btn-sm" @click="copy('link')"
+                :aria-label="copied === 'link' ? 'Link copied' : 'Copy link to this entry'">
+          <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use :href="copied === 'link' ? '/icons.svg#circle-check' : '/icons.svg#link'"></use></svg>
+          <span class="hidden sm:inline" x-text="copied === 'link' ? 'Copied' : 'Copy link'"></span>
+        </button>
+        <button type="button" class="btn btn-ghost btn-sm btn-square" aria-label="Close log entry" @click="closeDetail()">
+          <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#x"></use></svg>
+        </button>
+      </header>
+
+      <div class="flex-1 overflow-y-auto p-4 space-y-4">
+        <template x-if="detailError">
+          <div class="state-panel py-6" :data-kind="detailError.kind" role="alert">
+            <svg class="state-icon" aria-hidden="true" focusable="false"><use :href="`/icons.svg#${detailError.icon}`"></use></svg>
+            <h3 class="font-semibold" x-text="detailError.title"></h3>
+            <p x-text="detailError.text"></p>
+            <p x-show="detailError.detail" class="state-detail" x-text="detailError.detail"></p>
+            <div class="state-actions" x-show="detailError.kind !== 'missing'">
+              <button type="button" class="btn btn-primary btn-sm" @click="openEntry(detail.id)">Try again</button>
+            </div>
+          </div>
+        </template>
+
+        <dl x-show="detail?.timestamp" class="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-x-3 gap-y-1 text-sm">
+          <dt class="text-muted">IFlow</dt><dd class="font-mono text-xs break-all pt-0.5" x-text="detail?.iflow || '—'"></dd>
+          <dt class="text-muted">Logger</dt><dd class="font-mono text-xs break-all pt-0.5" x-text="detail?.logger || '—'"></dd>
+          <dt class="text-muted">IP address</dt><dd class="font-mono text-xs pt-0.5" x-text="detail?.ip || '—'"></dd>
+          <dt class="text-muted">Node</dt><dd class="font-mono text-xs pt-0.5" x-text="detail?.node || '—'"></dd>
+          <dt class="text-muted">Log file</dt><dd class="font-mono text-xs break-all pt-0.5" x-text="detail?.filename || '—'"></dd>
+          <dt class="text-muted">Entry ID</dt><dd class="font-mono text-xs pt-0.5" x-text="detail?.id"></dd>
+        </dl>
+
+        <section x-show="detail?.timestamp" aria-labelledby="log-detail-message">
+          <div class="flex items-center justify-between gap-2 mb-1">
+            <h3 id="log-detail-message" class="text-sm font-semibold">Message</h3>
+            <button type="button" class="btn btn-ghost btn-xs" :disabled="!detail?.message" @click="copy('message')">
+              <svg class="w-3.5 h-3.5" aria-hidden="true" focusable="false"><use :href="copied === 'message' ? '/icons.svg#circle-check' : '/icons.svg#copy'"></use></svg>
+              <span x-text="copied === 'message' ? 'Copied' : 'Copy message'"></span>
+            </button>
+          </div>
+          <pre class="bg-base-200 rounded-box p-3 font-mono text-xs whitespace-pre-wrap break-all max-h-[45vh] overflow-y-auto"
+               x-text="detail?.message || '—'"></pre>
+        </section>
+
+        <section x-show="!detailError" aria-labelledby="log-detail-raw">
+          <div class="flex items-center justify-between gap-2 mb-1">
+            <h3 id="log-detail-raw" class="text-sm font-semibold">Raw line</h3>
+            <button type="button" class="btn btn-ghost btn-xs" :disabled="!detail?.raw_line" @click="copy('raw')">
+              <svg class="w-3.5 h-3.5" aria-hidden="true" focusable="false"><use :href="copied === 'raw' ? '/icons.svg#circle-check' : '/icons.svg#copy'"></use></svg>
+              <span x-text="copied === 'raw' ? 'Copied' : 'Copy raw line'"></span>
+            </button>
+          </div>
+          <div x-show="detailLoading && detail?.raw_line === undefined" class="skeleton h-16" role="status">
+            <span class="sr-only">Loading the raw line…</span>
+          </div>
+          <pre x-show="detail?.raw_line" class="bg-base-200 rounded-box p-3 font-mono text-xs whitespace-pre-wrap break-all max-h-[30vh] overflow-y-auto"
+               x-text="detail?.raw_line"></pre>
+          <p x-show="!detailLoading && detail && !detail.raw_line" class="text-xs text-muted">No raw line stored for this entry.</p>
+        </section>
+        <p class="sr-only" role="status" aria-live="polite" x-text="copyStatus"></p>
+      </div>
+
+      <footer class="flex items-center gap-2 p-3 border-t border-base-300">
+        <button type="button" class="btn btn-sm" :disabled="!canStepNewer" @click="stepEntry(-1)">
+          <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#chevron-up"></use></svg> Previous
+        </button>
+        <span class="flex-1 text-center text-xs text-muted" x-text="detailPosition"></span>
+        <button type="button" class="btn btn-sm" :disabled="!canStepOlder" @click="stepEntry(1)">
+          Next <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#chevron-down"></use></svg>
+        </button>
+      </footer>
+    </div>
+  </dialog>
 </div>
 
 <!-- ═══════════════════════════════ FETCH ════════════════════════════════════ -->
@@ -335,7 +469,37 @@
     <div class="card-body">
       <h2 class="card-title mb-4"><svg class="w-5 h-5" aria-hidden="true" focusable="false"><use href="/icons.svg#download"></use></svg> Fetch now</h2>
 
-      <div class="grid grid-cols-1 sm:grid-cols-3 gap-6 mb-6">
+      <template x-if="!tenants.length && $store.tenants.error">
+        <div class="state-panel" :data-kind="$store.tenants.error.kind" role="alert">
+          <svg class="state-icon" aria-hidden="true" focusable="false"><use :href="`/icons.svg#${$store.tenants.error.icon}`"></use></svg>
+          <h3 class="font-semibold" x-text="$store.tenants.error.title"></h3>
+          <p x-text="$store.tenants.error.text"></p>
+          <p x-show="$store.tenants.error.detail" class="state-detail" x-text="$store.tenants.error.detail"></p>
+          <div class="state-actions">
+            <button class="btn btn-primary btn-sm" :disabled="$store.tenants.loading" @click="$store.tenants.load()">
+              <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#rotate-ccw"></use></svg> Try again
+            </button>
+          </div>
+        </div>
+      </template>
+      <template x-if="!$store.tenants.loaded && !$store.tenants.error">
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-6 mb-6" role="status">
+          <span class="sr-only">Loading tenants…</span>
+          <template x-for="i in 3" :key="i"><div class="skeleton h-28" aria-hidden="true"></div></template>
+        </div>
+      </template>
+      <template x-if="$store.tenants.loaded && !tenants.length">
+        <div class="state-panel">
+          <svg class="state-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#inbox"></use></svg>
+          <h3 class="font-semibold">No tenants yet</h3>
+          <p>Add an SAP Cloud Integration tenant to fetch its logs, or seed tenants from <code>config/tenants.jsonc</code>.</p>
+          <div class="state-actions">
+            <button class="btn btn-primary btn-sm" @click="addTenant()">Add tenant</button>
+          </div>
+        </div>
+      </template>
+
+      <div x-show="tenants.length > 0" class="grid grid-cols-1 sm:grid-cols-3 gap-6 mb-6">
         <fieldset>
           <legend class="text-sm font-semibold mb-2">Tenant</legend>
           <div class="flex flex-col gap-2">
@@ -375,21 +539,65 @@
         </fieldset>
       </div>
 
-      <!-- Progress -->
-      <div x-show="job.status !== 'idle'" class="mb-4 space-y-2">
-        <div class="flex justify-between text-sm">
-          <span class="flex items-center gap-1">
-            <svg x-show="job.statusIcon === 'key-round'" class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#key-round"></use></svg>
-            <span x-text="job.statusMsg"></span>
+      <!-- Progress: overall, per tenant and log type, warnings and errors, result -->
+      <div x-show="job.status !== 'idle'" class="mb-4 space-y-3">
+        <div class="flex justify-between gap-3 text-sm">
+          <span class="flex items-center gap-1 min-w-0">
+            <svg x-show="job.statusIcon === 'key-round'" class="w-4 h-4 shrink-0" aria-hidden="true" focusable="false"><use href="/icons.svg#key-round"></use></svg>
+            <span class="truncate" x-text="job.statusMsg"></span>
           </span>
-          <span x-show="job.total > 0" x-text="`${job.done} / ${job.total} files`"></span>
+          <span x-show="job.parts.length" class="shrink-0 text-muted"
+                x-text="`${job.partsFinished} of ${job.parts.length} done`"></span>
         </div>
-        <progress class="progress progress-primary w-full"
-                  :value="job.done" :max="job.total || 1"></progress>
-        <p x-show="job.currentFile" class="text-xs text-muted font-mono">
-          <span x-show="job.currentTenant" class="badge badge-ghost badge-xs mr-1" x-text="job.currentTenant"></span>
-          <span x-text="job.currentFile"></span>
-        </p>
+        <template x-if="job.status === 'running' && job.percent === null">
+          <progress class="progress progress-primary w-full" aria-label="Overall fetch progress"></progress>
+        </template>
+        <template x-if="job.status === 'running' && job.percent !== null">
+          <progress class="progress progress-primary w-full" aria-label="Overall fetch progress" max="100"
+                    :value="job.percent"></progress>
+        </template>
+
+        <ul x-show="job.parts.length" class="list bg-base-200 rounded-box" aria-label="Progress per tenant and log type">
+          <template x-for="part in job.parts" :key="part.index">
+            <li class="list-row items-start gap-3 py-2 px-3">
+              <span class="pt-0.5" :class="{ 'text-success': part.status === 'done', 'text-error': part.status === 'failed', 'text-muted': ['pending', 'cancelled', 'stopped'].includes(job.partStatus(part)) }">
+                <span x-show="job.partStatus(part) === 'running'" class="loading loading-spinner loading-xs text-primary" aria-hidden="true"></span>
+                <svg x-show="job.partStatus(part) !== 'running'" class="w-4 h-4" aria-hidden="true" focusable="false"><use :href="`/icons.svg#${job.partIcon(part)}`"></use></svg>
+              </span>
+              <div class="min-w-0">
+                <p class="text-sm font-medium">
+                  <span x-text="part.tenant_name"></span> · <span x-text="part.log_type"></span>
+                  <span class="sr-only" x-text="`: ${job.partStatus(part)}`"></span>
+                </p>
+                <p class="text-xs break-words" :class="part.status === 'failed' ? 'text-error' : 'text-muted'" x-text="job.partText(part)"></p>
+                <progress x-show="job.partStatus(part) === 'running' && part.files_total > 0" class="progress progress-primary w-full h-1 mt-1"
+                          :aria-label="`${part.tenant_name} ${part.log_type} progress`"
+                          :value="part.files_done" :max="part.files_total || 1"></progress>
+              </div>
+              <span x-show="part.warnings" class="badge badge-warning badge-soft badge-sm whitespace-nowrap"
+                    x-text="part.warnings === 1 ? '1 warning' : `${part.warnings} warnings`"></span>
+            </li>
+          </template>
+        </ul>
+
+        <!-- File warnings (failed parts show their error on their row above) -->
+        <details x-show="job.fileWarnings.length" class="bg-base-200 rounded-box px-3 py-2 text-sm" :open="job.status !== 'running'">
+          <summary class="cursor-pointer font-medium flex items-center gap-2">
+            <svg class="w-4 h-4 text-warning" aria-hidden="true" focusable="false"><use href="/icons.svg#triangle-alert"></use></svg>
+            <span x-text="job.warnings === 1 ? '1 warning' : `${job.warnings} warnings`"></span>
+          </summary>
+          <ul class="mt-2 space-y-2">
+            <template x-for="(problem, i) in job.fileWarnings" :key="i">
+              <li class="min-w-0">
+                <p class="text-xs font-medium break-all" x-text="job.problemSource(problem)"></p>
+                <p class="text-xs text-muted break-words" x-text="problem.msg"></p>
+              </li>
+            </template>
+          </ul>
+          <p x-show="job.warnings > job.fileWarnings.length" class="text-xs text-muted mt-2"
+             x-text="`Showing the latest ${job.fileWarnings.length}.`"></p>
+          <p class="text-xs text-muted mt-2">Files that could not be fetched or imported are tried again on the next fetch.</p>
+        </details>
 
         <!-- Live import counter while running -->
         <div x-show="job.status === 'running'" class="flex items-center gap-2 text-sm text-muted">
@@ -399,21 +607,54 @@
                 x-text="`+${job.imported.toLocaleString('en-US')} entries`"></span>
         </div>
 
-        <div x-show="job.status==='done'" class="alert alert-success">
-          <span><svg class="inline w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#circle-check"></use></svg> Imported <strong x-text="job.imported.toLocaleString('en-US')"></strong> new entries</span>
-          <button class="btn btn-sm btn-ghost ml-auto" @click="showLogs()">Browse <svg class="w-3.5 h-3.5" aria-hidden="true" focusable="false"><use href="/icons.svg#chevron-right"></use></svg></button>
-        </div>
-        <div x-show="job.status==='cancelled'" class="alert alert-warning">
-          <span><svg class="inline w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#square"></use></svg> Cancelled. <strong x-text="job.imported.toLocaleString('en-US')"></strong> entries were imported before cancelling.</span>
-          <button class="btn btn-sm btn-ghost ml-auto" @click="showLogs()">Browse <svg class="w-3.5 h-3.5" aria-hidden="true" focusable="false"><use href="/icons.svg#chevron-right"></use></svg></button>
-        </div>
-        <div x-show="job.status==='error'" class="alert alert-error">
-          <span x-text="job.errorMsg"></span>
+        <div role="status" aria-live="polite" class="space-y-2">
+          <div x-show="job.status === 'running' && job.connectionLost" class="alert alert-warning alert-soft text-sm">
+            <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#server-off"></use></svg>
+            <span>Lost the connection to the server. Reconnecting… The progress shown may be outdated.</span>
+          </div>
+          <div x-show="job.outcome === 'success'" class="alert alert-success">
+            <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#circle-check"></use></svg>
+            <span>Imported <strong x-text="job.imported.toLocaleString('en-US')"></strong> new entries.</span>
+            <button class="btn btn-sm btn-ghost ml-auto" @click="showLogs()">Browse <svg class="w-3.5 h-3.5" aria-hidden="true" focusable="false"><use href="/icons.svg#chevron-right"></use></svg></button>
+          </div>
+          <div x-show="job.outcome === 'up-to-date'" class="alert alert-success alert-soft">
+            <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#circle-check"></use></svg>
+            <span>Already up to date: there were no new entries.</span>
+          </div>
+          <div x-show="job.outcome === 'warnings'" class="alert alert-warning alert-soft">
+            <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#triangle-alert"></use></svg>
+            <span>
+              Completed with warnings. Imported <strong x-text="job.imported.toLocaleString('en-US')"></strong> new entries;
+              some log files could not be fetched or imported and are tried again next time.
+            </span>
+            <button class="btn btn-sm btn-ghost ml-auto" @click="showLogs()">Browse <svg class="w-3.5 h-3.5" aria-hidden="true" focusable="false"><use href="/icons.svg#chevron-right"></use></svg></button>
+          </div>
+          <div x-show="job.outcome === 'partial'" class="alert alert-warning alert-soft">
+            <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#triangle-alert"></use></svg>
+            <span>
+              Completed with problems: <strong x-text="`${job.failedParts.length} of ${job.parts.length}`"></strong>
+              tenant and log type combinations failed. Imported <strong x-text="job.imported.toLocaleString('en-US')"></strong>
+              new entries from the others.
+            </span>
+            <button class="btn btn-sm btn-ghost ml-auto" @click="showLogs()">Browse <svg class="w-3.5 h-3.5" aria-hidden="true" focusable="false"><use href="/icons.svg#chevron-right"></use></svg></button>
+          </div>
+          <div x-show="job.outcome === 'failed'" class="alert alert-error alert-soft">
+            <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#circle-x"></use></svg>
+            <span x-text="job.parts.length === 1 ? 'The fetch failed. See the error above.' : 'The fetch failed for every tenant and log type. See the errors above.'"></span>
+          </div>
+          <div x-show="job.outcome === 'cancelled'" class="alert alert-warning">
+            <span><svg class="inline w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#square"></use></svg> Cancelled. <strong x-text="job.imported.toLocaleString('en-US')"></strong> entries were imported before cancelling.</span>
+            <button class="btn btn-sm btn-ghost ml-auto" @click="showLogs()">Browse <svg class="w-3.5 h-3.5" aria-hidden="true" focusable="false"><use href="/icons.svg#chevron-right"></use></svg></button>
+          </div>
+          <div x-show="job.outcome === 'error'" class="alert alert-error">
+            <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#circle-x"></use></svg>
+            <span x-text="job.errorMsg"></span>
+          </div>
         </div>
       </div>
 
-      <div class="flex flex-wrap gap-2 items-center">
-        <button class="btn btn-primary" :disabled="job.status==='running' || form.log_types.length===0 || form.tenants.length===0"
+      <div x-show="tenants.length > 0 || job.status !== 'idle'" class="flex flex-wrap gap-2 items-center">
+        <button x-show="tenants.length > 0" class="btn btn-primary" :disabled="job.status==='running' || form.log_types.length===0 || form.tenants.length===0"
                 @click="startFetch()">
           <span x-show="job.status!=='running'"><svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#play"></use></svg> Start fetch</span>
           <span x-show="job.status==='running'" class="flex items-center gap-2">
@@ -425,15 +666,12 @@
                 @click="job.cancel()"><svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#x"></use></svg> Cancel</button>
         <button x-show="job.status === 'done' || job.status === 'error' || job.status === 'cancelled'"
                 class="btn btn-ghost btn-sm"
-                @click="job.status = 'idle'">Reset</button>
-        <button class="btn btn-ghost btn-sm"
+                @click="job.reset()">Reset</button>
+        <button x-show="tenants.length > 0" class="btn btn-ghost btn-sm"
                 :disabled="form.log_types.length===0 || form.tenants.length===0"
                 @click="saveDefaultConfig()" title="Use this selection as the default next time">
           <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#save"></use></svg> Save as default
         </button>
-        <div x-show="tenants.length===0" class="alert alert-warning py-1 px-3 text-sm">
-          No tenants yet. Add one in <svg class="inline w-3.5 h-3.5" aria-hidden="true" focusable="false"><use href="/icons.svg#settings"></use></svg> Settings.
-        </div>
       </div>
     </div>
   </div>
@@ -443,9 +681,20 @@
     <div class="card-body">
       <div class="flex items-center justify-between mb-2">
         <h2 class="card-title"><svg class="w-5 h-5" aria-hidden="true" focusable="false"><use href="/icons.svg#calendar-clock"></use></svg> Scheduled fetches</h2>
-        <button class="btn btn-sm btn-primary" @click="openScheduleModal()">+ New schedule</button>
+        <button class="btn btn-sm btn-primary" :disabled="tenants.length === 0"
+                :title="tenants.length === 0 ? 'Add a tenant first' : null" @click="openScheduleModal()">+ New schedule</button>
       </div>
-      <p class="text-sm text-muted mb-2" x-show="schedules.length===0">
+      <template x-if="schedulesError">
+        <div class="alert alert-error alert-soft text-sm" role="alert">
+          <svg class="w-4 h-4 shrink-0" aria-hidden="true" focusable="false"><use :href="`/icons.svg#${schedulesError.icon}`"></use></svg>
+          <div>
+            <p class="font-semibold" x-text="schedulesError.title"></p>
+            <p x-text="schedulesError.kind === 'failed' ? schedulesError.detail : schedulesError.text"></p>
+          </div>
+          <button class="btn btn-ghost btn-xs" @click="loadSchedules()">Try again</button>
+        </div>
+      </template>
+      <p class="text-sm text-muted mb-2" x-show="schedulesLoaded && !schedulesError && schedules.length===0">
         No scheduled fetches yet. Create one to fetch, for example, the last hour of a tenant
         every 15 minutes.
       </p>
@@ -582,9 +831,67 @@
         <option :value="t.id" x-text="t.name"></option>
       </template>
     </select>
-    <span x-show="statsLoading" class="loading loading-spinner loading-sm"></span>
+    <span x-show="statsLoading && statsState === 'results'" class="loading loading-spinner loading-sm" aria-hidden="true"></span>
+    <span x-show="statsLoading && statsState === 'results'" class="sr-only">Updating statistics…</span>
   </div>
 
+  <template x-if="statsState === 'loading'">
+    <div role="status">
+      <span class="sr-only">Loading statistics…</span>
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4" aria-hidden="true">
+        <template x-for="i in 4" :key="i"><div class="skeleton h-24"></div></template>
+      </div>
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4" aria-hidden="true">
+        <div class="skeleton h-72"></div><div class="skeleton h-72"></div>
+      </div>
+    </div>
+  </template>
+
+  <template x-if="statsState === 'error'">
+    <div class="card bg-base-100 shadow">
+      <div class="state-panel" :data-kind="statsError.kind" role="alert">
+        <svg class="state-icon" aria-hidden="true" focusable="false"><use :href="`/icons.svg#${statsError.icon}`"></use></svg>
+        <h2 x-text="statsError.title"></h2>
+        <p x-text="statsError.text"></p>
+        <p x-show="statsError.detail" class="state-detail" x-text="statsError.detail"></p>
+        <div class="state-actions">
+          <button class="btn btn-primary btn-sm" @click="retry()">
+            <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#rotate-ccw"></use></svg> Try again
+          </button>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <template x-if="statsState === 'empty'">
+    <div class="card bg-base-100 shadow">
+      <div class="state-panel">
+        <svg class="state-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#inbox"></use></svg>
+        <h2>No statistics yet</h2>
+        <p>Statistics appear once log entries have been fetched and imported.</p>
+        <div class="state-actions">
+          <a class="btn btn-primary btn-sm" href="#fetch">
+            <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#download"></use></svg> Fetch logs
+          </a>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <template x-if="statsState === 'no-matches'">
+    <div class="card bg-base-100 shadow">
+      <div class="state-panel">
+        <svg class="state-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#search-x"></use></svg>
+        <h2 x-text="`No entries for ${$store.tenants.name(statsFilter)}`"></h2>
+        <p>This tenant has no imported log entries yet.</p>
+        <div class="state-actions">
+          <button class="btn btn-primary btn-sm" @click="showAllTenants()">Show all tenants</button>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <div x-show="statsState === 'results'" :class="statsLoading && 'is-stale'">
   <!-- Summary cards -->
   <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
     <div class="stat bg-base-100 rounded-box shadow py-3">
@@ -674,6 +981,7 @@
       </div>
     </div>
   </div>
+  </div>
 </div>
 
 <!-- ═══════════════════════════════ SETTINGS ═════════════════════════════════ -->
@@ -733,7 +1041,20 @@
         </div>
       </template>
 
-      <div x-show="tenants.length===0" class="text-center text-muted py-6 text-sm">
+      <template x-if="$store.tenants.error">
+        <div class="alert alert-error alert-soft text-sm" role="alert">
+          <svg class="w-4 h-4 shrink-0" aria-hidden="true" focusable="false"><use :href="`/icons.svg#${$store.tenants.error.icon}`"></use></svg>
+          <div>
+            <p class="font-semibold" x-text="$store.tenants.error.title"></p>
+            <p x-text="$store.tenants.error.kind === 'failed' ? $store.tenants.error.detail : $store.tenants.error.text"></p>
+          </div>
+          <button class="btn btn-ghost btn-xs" :disabled="$store.tenants.loading" @click="$store.tenants.load()">Try again</button>
+        </div>
+      </template>
+      <div x-show="!$store.tenants.loaded && !$store.tenants.error" class="skeleton h-20" role="status">
+        <span class="sr-only">Loading tenants…</span>
+      </div>
+      <div x-show="$store.tenants.loaded && tenants.length===0" class="text-center text-muted py-6 text-sm">
         No tenants yet.<br>
         Add one here or in <code>config/tenants.jsonc</code>.
       </div>
@@ -753,13 +1074,23 @@
   <div class="card bg-base-100 shadow">
     <div class="card-body">
       <h2 class="card-title text-base mb-3">Database</h2>
+      <template x-if="dbInfoError">
+        <div class="alert alert-error alert-soft text-sm mb-3" role="alert">
+          <svg class="w-4 h-4 shrink-0" aria-hidden="true" focusable="false"><use :href="`/icons.svg#${dbInfoError.icon}`"></use></svg>
+          <div>
+            <p class="font-semibold" x-text="dbInfoError.title"></p>
+            <p x-text="dbInfoError.kind === 'failed' ? dbInfoError.detail : dbInfoError.text"></p>
+          </div>
+          <button class="btn btn-ghost btn-xs" @click="loadDbInfo()">Try again</button>
+        </div>
+      </template>
       <div class="grid grid-cols-2 gap-y-1 text-sm mb-4">
         <span class="text-muted">Path</span>
         <span class="font-mono text-xs break-all" x-text="dbInfo.path || '–'"></span>
         <span class="text-muted">Size</span>
         <span class="font-mono" x-text="dbInfo.size_mb ? dbInfo.size_mb + ' MB' : '–'"></span>
         <span class="text-muted">Entries</span>
-        <span class="font-mono" x-text="(dbInfo.entries||0).toLocaleString('en-US')"></span>
+        <span class="font-mono" x-text="dbInfo.entries === undefined ? '–' : dbInfo.entries.toLocaleString('en-US')"></span>
       </div>
       <button class="btn btn-sm btn-error btn-outline" @click="confirmClearOpen=true"><svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#trash-2"></use></svg> Clear database</button>
 
