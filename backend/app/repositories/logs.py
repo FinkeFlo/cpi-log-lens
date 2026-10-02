@@ -100,6 +100,46 @@ async def list_iflows(db: Database, tenant: str | None = None) -> list[str]:
     return await db.read(_run)
 
 
+def _list_conditions(
+    *,
+    tenant: str | None,
+    level: str | None,
+    iflow: str | None,
+    grep: str | None,
+    date_from: str | None,
+    date_to: str | None,
+) -> tuple[list[str], list]:
+    """WHERE conditions (joined with AND) and their parameters for the log list filters."""
+    conditions: list[str] = []
+    params: list = []
+    if tenant and tenant != "all":
+        conditions.append("tenant = ?")
+        params.append(tenant)
+    if level and level != "ALL":
+        conditions.append("upper(level) = ?")
+        params.append(level.upper())
+    if iflow:
+        conditions.append("iflow ILIKE ?")
+        params.append(f"%{iflow}%")
+    if grep:
+        conditions.append("(message ILIKE ? OR logger ILIKE ?)")
+        params.extend([f"%{grep}%", f"%{grep}%"])
+    if date_from:
+        conditions.append("timestamp >= CAST(? AS TIMESTAMP)")
+        params.append(date_from)
+    if date_to:
+        conditions.append("timestamp <= CAST(? AS TIMESTAMP)")
+        # date_to accepts either a bare date ("YYYY-MM-DD", as sent by the
+        # Browse UI's <input type="date">) or a full datetime ("YYYY-MM-DD
+        # HH:MM:SS", per the /api/query contract). A bare date is expanded
+        # to the end of that day; a full datetime is used as-is — blindly
+        # appending " 23:59:59" to an already-complete datetime produced
+        # an invalid TIMESTAMP string (e.g. "... 00:00:00 23:59:59") and a
+        # 500 error for every /api/query call that passed a full datetime.
+        params.append(date_to if len(date_to) > 10 else date_to + " 23:59:59")
+    return conditions, params
+
+
 async def query_logs(
     db: Database,
     *,
@@ -113,36 +153,11 @@ async def query_logs(
     page_size: int = 100,
 ) -> dict:
     date_from, date_to = effective_date_bounds(grep=grep, date_from=date_from, date_to=date_to)
+    conditions, params = _list_conditions(
+        tenant=tenant, level=level, iflow=iflow, grep=grep, date_from=date_from, date_to=date_to
+    )
 
     def _run(cur):
-        conditions, params = [], []
-
-        if tenant and tenant != "all":
-            conditions.append("tenant = ?")
-            params.append(tenant)
-        if level and level != "ALL":
-            conditions.append("upper(level) = ?")
-            params.append(level.upper())
-        if iflow:
-            conditions.append("iflow ILIKE ?")
-            params.append(f"%{iflow}%")
-        if grep:
-            conditions.append("(message ILIKE ? OR logger ILIKE ?)")
-            params.extend([f"%{grep}%", f"%{grep}%"])
-        if date_from:
-            conditions.append("timestamp >= CAST(? AS TIMESTAMP)")
-            params.append(date_from)
-        if date_to:
-            conditions.append("timestamp <= CAST(? AS TIMESTAMP)")
-            # date_to accepts either a bare date ("YYYY-MM-DD", as sent by the
-            # Browse UI's <input type="date">) or a full datetime ("YYYY-MM-DD
-            # HH:MM:SS", per the /api/query contract). A bare date is expanded
-            # to the end of that day; a full datetime is used as-is — blindly
-            # appending " 23:59:59" to an already-complete datetime produced
-            # an invalid TIMESTAMP string (e.g. "... 00:00:00 23:59:59") and a
-            # 500 error for every /api/query call that passed a full datetime.
-            params.append(date_to if len(date_to) > 10 else date_to + " 23:59:59")
-
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
         total = db.fetch_val(cur, f"SELECT COUNT(*) FROM logs {where}", params or None)
