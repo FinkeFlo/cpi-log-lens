@@ -108,9 +108,13 @@ async def test_older_and_newer_cursors_walk_the_whole_list(ten):
 async def test_newer_than_less_than_a_page_shows_the_newest_page(ten):
     second = await get(ten, page_size=4, cursor=(await get(ten, page_size=2))["older_cursor"])
     assert messages(second) == ["msg 7", "msg 6", "msg 5", "msg 4"]
-    newer = await get(ten, page_size=4, cursor=second["newer_cursor"])
-    assert messages(newer) == ["msg 9", "msg 8", "msg 7", "msg 6"]
-    assert (newer["offset"], newer["newer_cursor"]) == (0, None)
+    for count in ("true", "false"):
+        newer = await get(ten, page_size=4, cursor=second["newer_cursor"], count=count)
+        assert messages(newer) == ["msg 9", "msg 8", "msg 7", "msg 6"]
+        assert (newer["offset"], newer["newer_cursor"]) == (0, None)
+        # a cursor answer has no page number, also when it reaches the newest entries
+        assert (newer["page"], newer["pages"]) == (None, None)
+        assert newer["total"] == (10 if count == "true" else None)
 
 
 async def test_without_count_total_and_offset_are_left_out(ten):

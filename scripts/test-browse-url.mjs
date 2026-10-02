@@ -94,17 +94,14 @@ function fakeSearch(rows, query) {
     number = query.page || 1;
     start = (number - 1) * size;
   }
-  if (newest) {
-    number = 1;
-    start = 0;
-  }
+  if (newest) start = 0; // a cursor answer has no page number, but a known offset
   const items = rows.slice(start, start + size);
   const counted = query.count !== false;
   return {
     total: counted ? rows.length : null,
     page: number,
     page_size: size,
-    offset: items.length && (counted || number) ? start : null,
+    offset: items.length && (counted || number || newest) ? start : null,
     newer_cursor: start > 0 ? (items.length ? `n${compact(items[0].timestamp)}_${items[0].id}` : boundary) : null,
     older_cursor: start + size < rows.length ? `o${compact(items.at(-1).timestamp)}_${items.at(-1).id}` : null,
     items,

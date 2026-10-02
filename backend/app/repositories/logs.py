@@ -222,6 +222,7 @@ _OLDEST_FIRST = "ORDER BY timestamp ASC, id ASC"
 class _Page:
     items: list[dict]
     number: int | None  # page number, in page-number mode
+    offset: int | None  # entries newer than the page, if known without counting
     has_newer: bool | None  # None: not known without counting
     has_older: bool
 
@@ -292,22 +293,22 @@ async def query_logs(
             rows = select(cur, cursor, _OLDEST_FIRST)
             if len(rows) <= page_size:  # less than a page of newer entries: show the newest page
                 rows = select(cur, None, _NEWEST_FIRST)
-                return _Page(rows[:page_size], 1, False, len(rows) > page_size)
+                return _Page(rows[:page_size], None, 0, False, len(rows) > page_size)
             items = rows[:page_size][::-1]
             # The cursor's entry is older than the page, unless it is gone (or the cursor
             # came from an empty page and has no entry).
             has_older = cursor_entry_matches(cur, cursor) or exists(cur, _entry_cursor("o", items[-1]))
-            return _Page(items, None, True, has_older)
+            return _Page(items, None, None, True, has_older)
         if cursor is None:
             n = number or 1
             rows = select(cur, None, _NEWEST_FIRST, (n - 1) * page_size)
             items = rows[:page_size]
-            return _Page(items, n, n > 1 and bool(items), len(rows) > page_size)
+            return _Page(items, n, (n - 1) * page_size, n > 1 and bool(items), len(rows) > page_size)
         rows = select(cur, cursor, _NEWEST_FIRST)
         has_newer = None
         if not count:  # else the count tells
             has_newer = (cursor.kind == "o" and cursor_entry_matches(cur, cursor)) or exists(cur, cursor.boundary())
-        return _Page(rows[:page_size], None, has_newer, len(rows) > page_size)
+        return _Page(rows[:page_size], None, None, has_newer, len(rows) > page_size)
 
     def read_count(cur) -> tuple[int, int | None]:
         """Matching entries, and how many of them are newer than the cursor's page."""
@@ -337,10 +338,8 @@ async def query_logs(
         result = await db.read(read_page)
 
     items = result.items
-    offset = None
-    if items and result.number is not None:
-        offset = (result.number - 1) * page_size
-    elif items and newer is not None:
+    offset = result.offset if items else None
+    if offset is None and items and newer is not None:
         offset = max(0, newer - len(items)) if cursor is not None and cursor.kind == "n" else newer
     has_newer = result.has_newer if result.has_newer is not None else bool(newer)
     if not has_newer:
