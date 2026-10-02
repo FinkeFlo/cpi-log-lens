@@ -67,6 +67,8 @@
     @media (min-width: 768px) {
       .mobile-nav-toggle { display: none; }
       #primary-navigation { display: block !important; }
+      .log-scroll { max-height: max(20rem, calc(100dvh - 11rem)); overflow: auto; }
+      .log-table > thead > tr > th { position: sticky; top: 0; z-index: 1; background-color: var(--color-base-300); }
     }
   </style>
 </head>
@@ -343,7 +345,8 @@
       </div>
     </template>
 
-    <div x-show="listState === 'results'" x-ref="logScroll" class="overflow-x-auto" :class="loading && 'is-stale'">
+    <!-- On wider screens the list scrolls in its own box, so the header row stays visible -->
+    <div x-show="listState === 'results'" x-ref="logScroll" class="log-scroll overflow-x-auto" :class="loading && 'is-stale'">
       <table class="table table-xs table-zebra w-full log-table" aria-label="Log entries">
         <thead>
           <tr class="bg-base-300 text-xs">
