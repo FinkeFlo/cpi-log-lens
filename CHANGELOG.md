@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.3.0](https://github.com/FinkeFlo/cpi-log-lens/compare/v0.2.0...v0.3.0) (2026-10-02)
+
+
+### Features
+
+* **ui:** add product design system ([#37](https://github.com/FinkeFlo/cpi-log-lens/issues/37)) ([d5209f7](https://github.com/FinkeFlo/cpi-log-lens/commit/d5209f7b338ad0bd72e2d14676af5d5f5e62127b))
+* **ui:** add shareable browse filters ([#38](https://github.com/FinkeFlo/cpi-log-lens/issues/38)) ([0502f2c](https://github.com/FinkeFlo/cpi-log-lens/commit/0502f2c8209d392d79dbafe8f1c119b913fa42c8))
+* **ui:** add states, log detail drawer and per-tenant fetch progress ([#40](https://github.com/FinkeFlo/cpi-log-lens/issues/40)) ([8c6beb8](https://github.com/FinkeFlo/cpi-log-lens/commit/8c6beb83a3aae63b5c0720d4d706bb860915cfa0))
+* **ui:** easier schedules and connection test in the tenant dialog ([#41](https://github.com/FinkeFlo/cpi-log-lens/issues/41)) ([e495a62](https://github.com/FinkeFlo/cpi-log-lens/commit/e495a622d3522a6f6d3b75d697639dfe75774976))
+* **ui:** improve accessibility and mobile layout ([#39](https://github.com/FinkeFlo/cpi-log-lens/issues/39)) ([a9f0127](https://github.com/FinkeFlo/cpi-log-lens/commit/a9f0127723646b5a508ba7d49d999d83e110ac1b))
+* **ui:** page the log list with newer and older and jump to a time ([#42](https://github.com/FinkeFlo/cpi-log-lens/issues/42)) ([24b0a57](https://github.com/FinkeFlo/cpi-log-lens/commit/24b0a572c5d49fe797acf867c08827513b0ffc9e))
+
+
+### Bug Fixes
+
+* **ui:** correct stats counts ([#31](https://github.com/FinkeFlo/cpi-log-lens/issues/31)) ([eb01a5e](https://github.com/FinkeFlo/cpi-log-lens/commit/eb01a5e815d1eae432ee2c80a67109746e48d2fd))
+
+
+### Build and Dependencies
+
+* **ui:** compile Tailwind and daisyUI CSS ([#35](https://github.com/FinkeFlo/cpi-log-lens/issues/35)) ([44320d3](https://github.com/FinkeFlo/cpi-log-lens/commit/44320d34e4b587b09954418c5f6581a9c3d16777))
+
 ## [0.2.0](https://github.com/FinkeFlo/cpi-log-lens/compare/v0.1.1...v0.2.0) (2026-10-01)
 
 
