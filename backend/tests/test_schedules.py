@@ -111,6 +111,24 @@ async def test_last_run_shows_a_failure_in_plain_words(client, fake_cpi):
     assert run["error"].startswith("Couldn't get an OAuth token for Fake. The OAuth server rejected")
 
 
+async def test_last_run_tells_a_partial_from_a_full_failure(client, fake_cpi):
+    # One tenant fails, the other has no log files in the time range: partly failed,
+    # although no file was found at all.
+    await client.post("/api/tenants", json=FAKE_TENANT)
+    await client.post("/api/tenants", json={**FAKE_TENANT, "id": "broken", "oauth_url": "https://[::1/oauth"})
+    body = {**SCHEDULE, "tenants": ["broken", "fake"], "enabled": False}
+    sid = (await client.post("/api/schedules", json=body)).json()["id"]
+    await client.post(f"/api/schedules/{sid}/run")
+    await wait_for_job(client)
+    run = (await wait_for_last_run(client, sid))["last_run"]
+    assert (run["errors"], run["files_total"], run["parts"]) == (1, 0, 2)
+    # For "all", the parts are counted with the tenants configured now.
+    all_id = (await client.post("/api/schedules", json={**SCHEDULE, "enabled": False})).json()["id"]
+    await client.post(f"/api/schedules/{all_id}/run")
+    await wait_for_job(client)
+    assert (await wait_for_last_run(client, all_id))["last_run"]["parts"] == 2  # 2 tenants x trace
+
+
 async def test_run_now_of_an_unknown_schedule_is_404(client):
     res = await client.post("/api/schedules/nope/run")
     assert res.status_code == 404

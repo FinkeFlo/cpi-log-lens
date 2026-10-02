@@ -9,6 +9,7 @@ from app.api.deps import DbDep, SchedulesDep
 from app.api.schemas import ScheduleRequest
 from app.repositories import fetch_runs as fetch_runs_repo
 from app.repositories import schedules as schedules_repo
+from app.repositories import tenants as tenants_repo
 
 router = APIRouter(prefix="/api/schedules", tags=["schedules"])
 
@@ -27,20 +28,31 @@ _RUN_FIELDS = (
 )
 
 
+def _parts(params: dict, tenant_count: int) -> int:
+    """Tenant and log type combinations of a run. The run history keeps the requested
+    tenants; for "all", the tenants configured now are counted."""
+    tenants = params.get("tenants") or []
+    return (tenant_count if "all" in tenants else len(tenants)) * len(params.get("log_types") or [])
+
+
 @router.get("")
 async def list_schedules(db: DbDep, service: SchedulesDep):
     """The schedules with `next_run_at` (null while disabled) and `last_run`, the newest
     fetch they started (scheduled or "run now", null if none is recorded): status
-    (running, done, error, cancelled, interrupted), times, counters and the last error."""
+    (running, done, error, cancelled, interrupted), times, counters, the last error and
+    `parts`, its tenant and log type combinations (`errors` of them failed)."""
     schedules = await schedules_repo.get_schedules(db)
     next_runs = service.next_runs()
     runs = await fetch_runs_repo.latest_by_trigger(db, [f"schedule:{s['id']}" for s in schedules])
+    tenant_count = len(await tenants_repo.get_tenants(db)) if runs else 0
     for s in schedules:
         s["tenants"] = json.loads(s["tenants"])
         s["log_types"] = json.loads(s["log_types"])
         s["next_run_at"] = next_runs.get(s["id"]) if s["enabled"] else None
         run = runs.get(f"schedule:{s['id']}")
-        s["last_run"] = {k: run[k] for k in _RUN_FIELDS} if run else None
+        s["last_run"] = None
+        if run:
+            s["last_run"] = {**{k: run[k] for k in _RUN_FIELDS}, "parts": _parts(run["params"], tenant_count)}
     return schedules
 
 
