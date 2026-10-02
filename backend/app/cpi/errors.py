@@ -39,13 +39,20 @@ class CpiProblem:
 
 
 def _causes(exc: BaseException) -> list[BaseException]:
-    """The exception and the ones it was raised from (httpx wraps the socket and TLS errors)."""
-    chain: list[BaseException] = []
-    current: BaseException | None = exc
-    while current is not None and current not in chain:
-        chain.append(current)
-        current = current.__cause__ or current.__context__
-    return chain
+    """The exception and the ones it was raised from (httpx wraps the socket and TLS errors),
+    including the attempts of an exception group (one per address of a host)."""
+    seen: list[BaseException] = []
+    todo: list[BaseException] = [exc]
+    while todo:
+        current = todo.pop(0)
+        if any(current is e for e in seen):
+            continue
+        seen.append(current)
+        if isinstance(current, BaseExceptionGroup):
+            todo.extend(current.exceptions)
+        if (parent := current.__cause__ or current.__context__) is not None:
+            todo.append(parent)
+    return seen
 
 
 def _find(exc: BaseException, kind: type[BaseException]) -> BaseException | None:

@@ -92,6 +92,25 @@ async def test_refused_connection():
     assert problem.message == "Can't reach 127.0.0.1: the connection was refused."
 
 
+async def test_refused_connection_to_a_host_with_several_addresses():
+    # localhost may resolve to ::1 and 127.0.0.1; every attempt is refused.
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    url = f"http://localhost:{port}"
+    async with CpiClient(url, f"{url}/oauth/token", "id", "s", retries=1, timeout=5) as client:
+        with pytest.raises(httpx.ConnectError) as info:
+            await client.get_token()
+    assert describe(info.value, "token", url).message == "Can't reach localhost: the connection was refused."
+
+
+def test_refused_attempts_in_an_exception_group():
+    refused = [ConnectionRefusedError(61, "refused ::1"), ConnectionRefusedError(61, "refused 127.0.0.1")]
+    cause = raised_from(OSError("All connection attempts failed"), ExceptionGroup("attempts failed", refused))
+    error = raised_from(httpx.ConnectError("All connection attempts failed"), cause)
+    assert describe(error, "api", API_URL).message == "Can't reach tenant.example.test: the connection was refused."
+
+
 def test_untrusted_certificate():
     cause = ssl.SSLCertVerificationError(1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed")
     cause.verify_message = "self-signed certificate"
