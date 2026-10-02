@@ -135,6 +135,9 @@ async def test_list_errors_are_retried_then_reported(client, tenant):
     status = await fetch(client, **TRACE)
     assert status["status"] == "done"
     assert tenant.requests == ["token", "list", "list", "list"]
+    assert status["parts"][0]["error"] == (
+        "Couldn't list log files for Fake. The CPI API had an internal error (HTTP 500). Try again later."
+    )
 
 
 async def test_status_reports_progress_per_tenant_and_log_type(client, tenant):
@@ -182,7 +185,10 @@ async def test_a_failing_tenant_is_reported_and_the_others_are_fetched(client, t
     assert status["error_msg"] == ""
     assert status["imported"] == 1803
     assert [(p["tenant"], p["status"]) for p in status["parts"]] == [("fake", "failed"), ("demo", "done")]
-    assert status["parts"][0]["error"].startswith("Couldn't get an OAuth token for Fake")
+    assert status["parts"][0]["error"] == (
+        "Couldn't get an OAuth token for Fake. The OAuth server rejected the client ID or secret (HTTP 401). "
+        "Copy the client ID and secret from the service key again."
+    )
     assert status["parts"][1]["imported"] == 1803
     assert status["errors"] == 1
     [problem] = status["problems"]
