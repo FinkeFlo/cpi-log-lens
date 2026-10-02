@@ -313,6 +313,22 @@ assert.deepEqual(ids(paging), [997, 996, 995, 994, 993]);
 assert.equal(newPage('#browse').pageSize, 100, 'only the offered sizes are restored');
 storage.set('cpi-log-lens-page-size', '250');
 assert.equal(newPage('#browse').pageSize, 250);
+// Storage that throws (private mode, blocked site data): 100 rows, and a change still applies.
+const workingStorage = globalThis.localStorage;
+globalThis.localStorage = {
+  getItem: () => { throw new Error('storage is disabled'); },
+  setItem: () => { throw new Error('storage is disabled'); },
+};
+const noStorage = newPage('#browse', {});
+assert.equal(noStorage.pageSize, 100);
+noStorage.init();
+await settle();
+noStorage.pageSize = 250;
+noStorage.pageSizeChanged();
+await settle();
+assert.equal(lastLogsQuery().page_size, 250);
+assert.equal(noStorage.logs.items.length, 8);
+globalThis.localStorage = workingStorage;
 
 // Result states: no data yet, no matches, and the three kinds of failed requests.
 const noRows = query => ({ total: 0, page: 1, page_size: query.page_size, offset: null, newer_cursor: null, older_cursor: null, items: [] });
