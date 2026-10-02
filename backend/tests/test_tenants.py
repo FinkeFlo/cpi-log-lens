@@ -222,6 +222,12 @@ async def test_unsaved_details_report_readable_errors(client, fake_cpi):
     assert "secret" not in res.text
 
 
+async def test_unsaved_details_with_a_malformed_url_are_a_readable_502(client):
+    res = await client.post("/api/tenants/test", json={**DETAILS, "oauth_url": "https://[::1/oauth"})
+    assert res.status_code == 502
+    assert (res.json()["kind"], res.json()["message"]) == ("invalid_url", "The OAuth URL is not a valid URL.")
+
+
 async def test_unsaved_details_need_a_secret(client, fake_cpi):
     for body in ({**DETAILS, "client_secret": ""}, {**DETAILS, "client_secret": "", "id": "unknown"}):
         res = await client.post("/api/tenants/test", json=body)

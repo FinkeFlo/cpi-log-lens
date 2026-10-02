@@ -124,3 +124,33 @@ def test_answers_that_are_not_the_expected_json(step, message):
 def test_anything_else():
     problem = describe(RuntimeError("boom"), "api", API_URL)
     assert (problem.kind, problem.message) == ("failed", "Unexpected error (RuntimeError).")
+
+
+MALFORMED = "https://[::1/oauth"  # passes the tenant URL pattern, but is no valid URL
+
+
+async def test_malformed_url():
+    async with CpiClient(MALFORMED, MALFORMED, "id", "s", retries=1, timeout=5) as client:
+        with pytest.raises(Exception) as info:
+            await client.get_token()
+    problem = describe(info.value, "token", MALFORMED)
+    assert problem.kind == "invalid_url"
+    assert problem.message == "The OAuth URL is not a valid URL."
+
+
+class BrokenStatusError(httpx.HTTPStatusError):
+    """A status error whose response can't be read."""
+
+    def __init__(self) -> None:
+        Exception.__init__(self, "broken")
+
+    @property
+    def response(self):  # type: ignore[override]
+        raise RuntimeError("no response")
+
+
+def test_describing_never_fails():
+    # It runs while the caller handles the original error, so it must not raise a new one.
+    assert describe(httpx.ConnectTimeout(""), "api", MALFORMED).message == f"{MALFORMED} did not answer in time."
+    problem = describe(BrokenStatusError(), "token", TOKEN_URL)
+    assert (problem.kind, problem.message) == ("failed", "Unexpected error (BrokenStatusError).")

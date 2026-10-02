@@ -27,8 +27,8 @@ _USE_URL = {"token": _USE_TOKEN_URL, "api": _USE_API_URL}
 class CpiProblem:
     """Why a CPI request failed, for people."""
 
-    # unreachable | timeout | tls | invalid_credentials | token_rejected | missing_role | not_found |
-    # redirect | rate_limited | server_error | unexpected_response | failed
+    # unreachable | timeout | tls | invalid_url | invalid_credentials | token_rejected | missing_role |
+    # not_found | redirect | rate_limited | server_error | unexpected_response | failed
     kind: str
     message: str  # what failed, one sentence
     hint: str = ""  # what to check
@@ -52,11 +52,28 @@ def _find(exc: BaseException, kind: type[BaseException]) -> BaseException | None
     return next((e for e in _causes(exc) if isinstance(e, kind)), None)
 
 
+def _host(url: str) -> str:
+    """The host name of a URL, or the URL itself if it has none or can't be parsed."""
+    try:
+        return urlsplit(url).hostname or url
+    except ValueError:  # e.g. "https://[::1/x", which the tenant URL pattern lets through
+        return url
+
+
 def describe(exc: BaseException, step: Step, url: str) -> CpiProblem:
     """Describe an exception of a CPI request to `url` (the OAuth URL for the token step,
-    the API URL for API calls)."""
-    host = urlsplit(url).hostname or url
+    the API URL for API calls). Never raises: it runs while handling the original error."""
+    try:
+        return _describe(exc, step, url)
+    except Exception:
+        return CpiProblem("failed", f"Unexpected error ({type(exc).__name__}).", "The server log has the details.")
+
+
+def _describe(exc: BaseException, step: Step, url: str) -> CpiProblem:
+    host = _host(url)
     field = _FIELD[step]
+    if isinstance(exc, httpx.InvalidURL):
+        return CpiProblem("invalid_url", f"The {field} is not a valid URL.", _USE_URL[step])
     if isinstance(exc, httpx.HTTPStatusError):
         return _describe_status(exc.response.status_code, step, host)
     if isinstance(exc, httpx.TimeoutException):

@@ -201,6 +201,20 @@ async def test_a_failing_tenant_is_reported_and_the_others_are_fetched(client, t
     assert problem["msg"] == status["parts"][0]["error"]
 
 
+async def test_a_tenant_with_a_malformed_url_fails_alone(client, tenant):
+    malformed = "https://[::1/oauth"  # passes the URL pattern, but is no valid URL
+    res = await client.post("/api/tenants", json={**FAKE_TENANT, "id": "broken", "oauth_url": malformed})
+    assert res.status_code == 201
+    tenant.add("a.log", numbered_lines(2))
+    status = await fetch(client, tenants=["broken", "fake"], log_types=["trace"], hours=0)
+    assert (status["status"], status["imported"], status["errors"]) == ("done", 2, 1)
+    assert [(p["tenant"], p["status"]) for p in status["parts"]] == [("broken", "failed"), ("fake", "done")]
+    assert status["parts"][0]["error"] == (
+        "Couldn't get an OAuth token for Fake. The OAuth URL is not a valid URL. "
+        "Use the token URL from the service key (tokenurl), which usually ends with /oauth/token."
+    )
+
+
 async def test_file_warnings_are_reported_with_their_part(client, tenant):
     tenant.add("a.log", numbered_lines(2))
     tenant.add("b.log", numbered_lines(2, start_minute=10))
