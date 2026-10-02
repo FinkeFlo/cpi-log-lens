@@ -126,6 +126,15 @@ def check_datetime(value: str | None, field: str) -> str | None:
         raise HTTPException(422, f"{field} must be an ISO date or datetime") from None
 
 
+def to_datetime(value: str | None, *, end_of_day: bool = False) -> datetime:
+    """A value normalized by check_datetime() as a datetime; a bare date is the start of
+    that day, or with end_of_day its last microsecond."""
+    assert value is not None
+    if len(value) == 10:
+        return datetime.combine(date.fromisoformat(value), time.max if end_of_day else time.min)
+    return datetime.fromisoformat(value)
+
+
 def check_date_range(date_from: str | None, date_to: str | None) -> None:
     """Reject inverted ranges; a bare date_to keeps its existing end-of-day meaning."""
     if date_from is None or date_to is None:

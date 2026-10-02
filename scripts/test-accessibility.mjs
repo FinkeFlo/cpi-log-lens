@@ -128,7 +128,9 @@ const apiStub = moduleUrl(`
   export const api = { logs: { get: async id => ({ raw_line: 'raw ' + id }) } };
 `);
 const browseUrlStub = moduleUrl(`
+  export const NEWEST = { kind: 'newest' };
   export const browseHash = () => '#browse';
+  export const entryCursor = () => null;
   export const emptyFilters = () => ({ tenant: '', level: '', iflow: '', grep: '', date_from: '', date_to: '' });
   export const parseBrowseHash = () => null;
   export const toUtcDateTime = value => value;

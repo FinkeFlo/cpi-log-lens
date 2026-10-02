@@ -2,6 +2,24 @@ export const FILTERS = ['tenant', 'level', 'iflow', 'grep', 'date_from', 'date_t
 export const LEVELS = ['', 'ERROR', 'WARN', 'INFO', 'DEBUG', 'ALL'];
 export const emptyFilters = () => Object.fromEntries(FILTERS.map(key => [key, '']));
 
+// A position in the newest-first log list: the newest entries, a cursor of the API (after
+// Newer/Older; also built here from an entry), a time (Jump to time), or a page number
+// (links from earlier versions).
+export const NEWEST = Object.freeze({ kind: 'newest' });
+const POSITIONS = ['cursor', 'at', 'page'];
+// An "o" cursor is made from an entry, and entry ids start at 1.
+const CURSOR_RE = /^(?:o\d{8}T\d{6}(?:\.\d{1,6})?_[1-9]\d{0,18}|[na]\d{8}T\d{6}(?:\.\d{1,6})?_\d{1,19})$/;
+const END_OF_DAY = new Set(['date_to', 'at']); // a bare date means the end of that day
+
+// The API's cursor for the entries older ('o') or newer ('n') than an entry, or from the entry
+// on ('a'): kind, compact ISO timestamp, id (the Cursor format in app/repositories/logs.py).
+export function entryCursor(kind, entry) {
+  const stamp = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d{1,6})?$/.exec(entry?.timestamp || '');
+  if (!stamp || !Number.isSafeInteger(entry.id)) return null;
+  const [, year, month, day, hour, minute, second, fraction = ''] = stamp;
+  return `${kind}${year}${month}${day}T${hour}${minute}${second}${fraction}_${entry.id}`;
+}
+
 function invalid(message) {
   throw new TypeError(`Invalid Browse URL: ${message}`);
 }
@@ -11,7 +29,7 @@ function normalizeDate(value, key) {
     const parsed = new Date(`${value}T00:00:00Z`);
     if (Number(value.slice(0, 4)) === 0 || !Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value)
       invalid(`${key} must be a valid ISO date or datetime`);
-    return `${value}T${key === 'date_to' ? '23:59:59' : '00:00:00'}`;
+    return `${value}T${END_OF_DAY.has(key) ? '23:59:59' : '00:00:00'}`;
   }
   const match = value.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})(?::(\d{2})(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})?$/);
   if (!match) invalid(`${key} must be an ISO date or datetime`);
@@ -47,7 +65,7 @@ export function parseBrowseHash(hash) {
   if (page !== 'browse') return null;
 
   const params = new URLSearchParams(query);
-  const allowed = new Set([...FILTERS, 'page', 'entry']);
+  const allowed = new Set([...FILTERS, ...POSITIONS, 'entry']);
   for (const key of params.keys()) {
     if (!allowed.has(key)) invalid(`unknown parameter "${key}"`);
     if (params.getAll(key).length !== 1) invalid(`parameter "${key}" must appear once`);
@@ -65,16 +83,26 @@ export function parseBrowseHash(hash) {
   if (filters.date_from && filters.date_to && filters.date_from > filters.date_to)
     invalid('date_from must not be after date_to');
 
-  const pageValue = params.get('page') || '1';
-  if (!/^[1-9]\d*$/.test(pageValue) || Number(pageValue) > 1_000_000) invalid('page must be between 1 and 1000000');
+  if (POSITIONS.filter(key => params.has(key)).length > 1) invalid('use only one of cursor, at, and page');
+  let position = NEWEST;
+  if (params.has('cursor')) {
+    if (!CURSOR_RE.test(params.get('cursor'))) invalid('cursor is invalid');
+    position = { kind: 'cursor', value: params.get('cursor') };
+  } else if (params.has('at')) {
+    position = { kind: 'at', value: normalizeDate(params.get('at'), 'at') };
+  } else if (params.has('page')) {
+    const pageValue = params.get('page');
+    if (!/^[1-9]\d*$/.test(pageValue) || Number(pageValue) > 1_000_000) invalid('page must be between 1 and 1000000');
+    if (Number(pageValue) > 1) position = { kind: 'page', value: Number(pageValue) };
+  }
   const entryValue = params.get('entry');
   if (entryValue !== null && (!/^[1-9]\d*$/.test(entryValue) || !Number.isSafeInteger(Number(entryValue))))
     invalid('entry must be a positive integer');
 
-  return { filters, page: Number(pageValue), entry: entryValue === null ? null : Number(entryValue) };
+  return { filters, position, entry: entryValue === null ? null : Number(entryValue) };
 }
 
-export function browseHash({ filters, page = 1, entry = null }) {
+export function browseHash({ filters, position = NEWEST, entry = null }) {
   const params = new URLSearchParams();
   for (const key of FILTERS) {
     let value = filters[key] || '';
@@ -83,7 +111,9 @@ export function browseHash({ filters, page = 1, entry = null }) {
   }
   if (filters.date_from && filters.date_to && filters.date_from > filters.date_to)
     invalid('date_from must not be after date_to');
-  if (page > 1) params.set('page', String(page));
+  if (position.kind === 'cursor') params.set('cursor', position.value);
+  else if (position.kind === 'at') params.set('at', normalizeDate(position.value, 'at'));
+  else if (position.kind === 'page' && position.value > 1) params.set('page', String(position.value));
   if (entry !== null) params.set('entry', String(entry));
   const query = params.toString();
   const hash = `#browse${query ? `?${query}` : ''}`;

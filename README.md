@@ -221,11 +221,24 @@ curl -X POST http://localhost:8080/api/query \
 | `date_from` / `date_to` | string | ISO date or datetime; bounds are inclusive and a bare `date_to` includes the full day |
 | `limit` | int | Max entries returned (1–200, default 50) |
 
+`GET /api/logs` lists log entries newest first, with the same filters as query parameters and
+`page_size` (1–500, default 100). Each answer has `older_cursor` and `newer_cursor`: pass one as
+`cursor` to get the next older or newer page (null at either end); this is equally fast at any
+depth. `at` (ISO date or datetime) starts the list at the newest entry at or before that time; a
+bare date means the end of that day. `total` is the number of matching entries and `offset` the
+number of matching entries newer than the page. `count=false` saves a scan of all matching
+entries: `total` is then null, and `offset` too, except where it is known without counting (the
+newest page and pages by number). Page numbers (`page`, answered with `page` and `pages`) still
+work but get slower the deeper the page; answers to `cursor` and `at` have `page` and `pages` null.
+Use only one of `page`, `cursor` and `at`.
+
 Log timestamps are stored as timezone-naive CPI timestamps and interpreted as UTC for filtering.
 Timezone-less API datetimes are interpreted as UTC; offset-aware values are converted to UTC before
 comparison. Browse date-time controls and quick ranges use UTC; their timezone-less ISO values in
-the `#browse` URL mean the same instant in every browser. The URL also carries its filters, current
-page (`page`), and opened entry (`entry`).
+the `#browse` URL mean the same instant in every browser. The URL also carries its filters, its
+place in the list (`cursor` after Newer or Older, `at` after Jump to time) and the opened entry
+(`entry`); links with a page number (`page`) from earlier versions open that page. The number of
+rows per page is remembered per browser.
 
 ## Log format
 
