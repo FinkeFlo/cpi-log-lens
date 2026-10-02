@@ -24,7 +24,7 @@ async def get_logs(
     date_from: str | None = None,
     date_to: str | None = None,
     page: int | None = Query(None, ge=1, le=1_000_000),
-    cursor: str | None = Query(None, max_length=40),
+    cursor: str | None = Query(None, max_length=43),  # "o" + 22-character timestamp + "_" + 19 digits
     at: str | None = None,
     page_size: int = Query(100, ge=1, le=500),
     count: bool = True,

@@ -216,6 +216,13 @@ async def test_a_cursor_whose_entries_were_deleted_is_an_empty_page(ten):
     assert messages(await get(ten, page_size=3, cursor=empty["newer_cursor"])) == ["msg 5", "msg 4", "msg 3"]
 
 
+async def test_the_longest_cursor_is_accepted(ten):
+    longest = str(Cursor("a", datetime(2026, 1, 15, 8, 5, 0, 123456), MAX_ENTRY_ID))
+    assert len(longest) == 43
+    assert messages(await get(ten, page_size=1, cursor=longest)) == ["msg 5"]
+    assert (await ten.get("/api/logs", params={"cursor": longest + "0"})).status_code == 422
+
+
 async def test_page_numbers_still_work_and_continue_with_cursors(ten):
     second = await get(ten, page=2, page_size=3)
     assert messages(second) == ["msg 6", "msg 5", "msg 4"]
