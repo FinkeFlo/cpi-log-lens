@@ -68,6 +68,7 @@ export default () => ({
       m.form.client_id = o.clientid;
       m.form.client_secret = o.clientsecret;
       m.serviceKeyError = '';
+      this.resetConnectionTest(); // a result (or a test still running) is about the old values
     } catch (e) {
       m.serviceKeyError = 'Not a CPI service key: expected JSON with url, tokenurl, clientid and clientsecret.';
     }

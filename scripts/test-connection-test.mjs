@@ -35,4 +35,25 @@ assert.deepEqual(c.missingForTest(form, true), [], 'a saved tenant may keep its 
 assert.deepEqual(c.missingForTest(form, false), ['Client secret']);
 assert.deepEqual(c.missingForTest({ ...form, api_url: ' ', client_id: '' }, true), ['API URL', 'Client ID']);
 
-console.log('Connection test results, readable errors and missing fields passed');
+// Pasting a service key fills the fields after a short delay; a test result (or a test still
+// running) from before belongs to the old values and is dropped.
+const moduleUrl = text => `data:text/javascript;base64,${Buffer.from(text).toString('base64')}`;
+const settingsSource = (await readFile(new URL('../frontend/js/pages/settings.js', import.meta.url), 'utf8'))
+  .replace("'../api.js'", `'${moduleUrl('export const api = {};')}'`)
+  .replace("'../connection.js'", `'${moduleUrl(source.toString())}'`)
+  .replace("'../events.js'", `'${moduleUrl('export const LOGS_CHANGED = 1, SCHEDULES_CHANGED = 2; export function emit() {}')}'`)
+  .replace("'../states.js'", `'${moduleUrl('export function describeError() {}')}'`);
+const { default: settingsPage } = await import(moduleUrl(settingsSource));
+const page = settingsPage();
+page.openTenantModal();
+page.tenantModal.test = { busy: false, result: { ok: true, title: 'Connection works.', hint: '' } };
+const runBefore = page._testRun;
+page.tenantModal.serviceKey = JSON.stringify({ oauth: {
+  url: 'https://tenant.example.test/', tokenurl: 'https://auth.example.test/oauth/token', clientid: 'id', clientsecret: 's',
+} });
+page.applyServiceKey();
+assert.equal(page.tenantModal.form.api_url, 'https://tenant.example.test');
+assert.equal(page.tenantModal.test.result, null, 'the result of the old values is gone');
+assert.ok(page._testRun > runBefore, 'an answer to a test of the old values is dropped');
+
+console.log('Connection test results, readable errors, missing fields and service key paste passed');
