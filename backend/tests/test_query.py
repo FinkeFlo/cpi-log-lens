@@ -178,7 +178,16 @@ async def test_paging_bounds(client, params):
 
 async def test_empty_database(client):
     body = (await client.get("/api/logs")).json()
-    assert body == {"total": 0, "page": 1, "page_size": 100, "pages": 1, "items": []}
+    assert body == {
+        "total": 0,
+        "page": 1,
+        "page_size": 100,
+        "pages": 1,
+        "offset": None,
+        "newer_cursor": None,
+        "older_cursor": None,
+        "items": [],
+    }
 
 
 async def test_text_search_defaults_to_the_last_24_hours(client, tmp_path):

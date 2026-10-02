@@ -221,6 +221,15 @@ curl -X POST http://localhost:8080/api/query \
 | `date_from` / `date_to` | string | ISO date or datetime; bounds are inclusive and a bare `date_to` includes the full day |
 | `limit` | int | Max entries returned (1–200, default 50) |
 
+`GET /api/logs` lists log entries newest first, with the same filters as query parameters and
+`page_size` (1–500, default 100). Each answer has `older_cursor` and `newer_cursor`: pass one as
+`cursor` to get the next older or newer page (null at either end); this is equally fast at any
+depth. `at` (ISO date or datetime) starts the list at the newest entry at or before that time; a
+bare date means the end of that day. `total` is the number of matching entries and `offset` the
+number of matching entries newer than the page; `count=false` leaves both out (null) and saves a
+scan of all matching entries. Page numbers (`page`, answered with `page` and `pages`) still work
+but get slower the deeper the page. Use only one of `page`, `cursor` and `at`.
+
 Log timestamps are stored as timezone-naive CPI timestamps and interpreted as UTC for filtering.
 Timezone-less API datetimes are interpreted as UTC; offset-aware values are converted to UTC before
 comparison. Browse date-time controls and quick ranges use UTC; their timezone-less ISO values in

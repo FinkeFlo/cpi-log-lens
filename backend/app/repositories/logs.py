@@ -1,7 +1,11 @@
 """Log entries: bulk insert, list/detail queries, statistics and deletion."""
 
+import asyncio
+import re
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Literal
 
 import pyarrow as pa
 
@@ -140,6 +144,82 @@ def _list_conditions(
     return conditions, params
 
 
+# ── Log list positions ───────────────────────────────────────────────────────
+
+MAX_ENTRY_ID = 2**63 - 1  # largest BIGINT: a cursor with it stands for the end of its timestamp
+_CURSOR_RE = re.compile(r"([ona])(\d{8}T\d{6}(?:\.\d{1,6})?)_(\d{1,19})")
+
+
+@dataclass(frozen=True)
+class Cursor:
+    """A position in the newest-first log list, relative to the entry (timestamp, id):
+    "o" = the entries older than it, "n" = the entries newer than it, "a" = the entry
+    and the older ones. As text: the kind, the compact ISO timestamp and the id, e.g.
+    "o20260930T115958_12345". Shared Browse links contain cursors, so the format stays."""
+
+    kind: Literal["o", "n", "a"]
+    timestamp: datetime
+    id: int
+
+    @classmethod
+    def parse(cls, text: str) -> "Cursor":
+        m = _CURSOR_RE.fullmatch(text)
+        if not m:
+            raise ValueError("cursor is invalid")
+        stamp, entry_id = m.group(2), int(m.group(3))
+        timestamp = datetime.strptime(stamp, "%Y%m%dT%H%M%S.%f" if "." in stamp else "%Y%m%dT%H%M%S")
+        if entry_id > MAX_ENTRY_ID:
+            raise ValueError("cursor is invalid")
+        kind: Literal["o", "n", "a"] = m.group(1)  # type: ignore[assignment]
+        return cls(kind, timestamp, entry_id)
+
+    @classmethod
+    def at(cls, timestamp: datetime) -> "Cursor":
+        """The newest entry at or before `timestamp` and the older ones."""
+        return cls("a", timestamp, MAX_ENTRY_ID)
+
+    def __str__(self) -> str:
+        t = self.timestamp
+        text = f"{t.year:04d}{t.month:02d}{t.day:02d}T{t.hour:02d}{t.minute:02d}{t.second:02d}"
+        if t.microsecond:
+            text += f".{t.microsecond:06d}"
+        return f"{self.kind}{text}_{self.id}"
+
+    def boundary(self) -> "Cursor":
+        """The entries newer than the cursor's position: for "o" its entry and the newer
+        ones, for "a" and "n" the entries newer than its entry. For an "o" or "a" page,
+        these are exactly the entries newer than the page."""
+        if self.kind != "o":
+            return Cursor("n", self.timestamp, self.id)
+        if self.id > 0:
+            return Cursor("n", self.timestamp, self.id - 1)
+        return Cursor("n", self.timestamp - timedelta(microseconds=1), MAX_ENTRY_ID)
+
+    def condition(self) -> tuple[str, list]:
+        """SQL condition for the entries on this cursor's side, and its parameters. The
+        plain timestamp bound is redundant, but lets DuckDB skip whole row groups by
+        their min/max timestamp, which it can't do for the OR."""
+        if self.kind == "n":
+            return "timestamp >= ? AND (timestamp > ? OR id > ?)", [self.timestamp, self.timestamp, self.id]
+        op = "<" if self.kind == "o" else "<="
+        return f"timestamp <= ? AND (timestamp < ? OR id {op} ?)", [self.timestamp, self.timestamp, self.id]
+
+
+def _entry_cursor(kind: Literal["o", "n", "a"], row: dict) -> Cursor:
+    return Cursor(kind, row["timestamp"], row["id"])
+
+
+_OLDEST_FIRST = "ORDER BY timestamp ASC, id ASC"
+
+
+@dataclass
+class _Page:
+    items: list[dict]
+    number: int | None  # page number, in page-number mode
+    has_newer: bool | None  # None: not known without counting
+    has_older: bool
+
+
 async def query_logs(
     db: Database,
     *,
@@ -149,35 +229,122 @@ async def query_logs(
     grep: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
-    page: int = 1,
+    page: int | None = None,
+    cursor: Cursor | None = None,
     page_size: int = 100,
+    count: bool = True,
 ) -> dict:
+    """One page of the log list, newest first (by timestamp, then id).
+
+    The page is chosen by number (`page`, LIMIT/OFFSET from the newest entry: the
+    deeper, the slower) or by a `cursor` (keyset: equally fast at any depth); without
+    either, it is the newest page. Every answer has `newer_cursor` and `older_cursor`
+    for the neighbouring pages (null at the ends). `count` adds `total`, the number of
+    matching entries, and `offset`, the number of matching entries newer than the
+    page. Counting scans all matching entries, so it runs next to the page query on a
+    second read cursor, and stepping to the next page can leave it out.
+    """
     date_from, date_to = effective_date_bounds(grep=grep, date_from=date_from, date_to=date_to)
     conditions, params = _list_conditions(
         tenant=tenant, level=level, iflow=iflow, grep=grep, date_from=date_from, date_to=date_to
     )
+    number = (page or 1) if cursor is None else None  # page-number mode
+    boundary = cursor.boundary() if cursor is not None else None
 
-    def _run(cur):
-        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    def where(*extra: str) -> str:
+        parts = [*conditions, *extra]
+        return ("WHERE " + " AND ".join(parts)) if parts else ""
 
-        total = db.fetch_val(cur, f"SELECT COUNT(*) FROM logs {where}", params or None)
+    def exists(cur, side: Cursor) -> bool:
+        cond, cond_params = side.condition()
+        return db.fetch_val(cur, f"SELECT 1 FROM logs {where(cond)} LIMIT 1", [*params, *cond_params]) is not None
 
-        offset = (page - 1) * page_size
-        items = db.fetch_all(
+    def cursor_entry_matches(cur, c: Cursor) -> bool:
+        """Whether the cursor's own entry is still there and matches (an index lookup)."""
+        sql = f"SELECT 1 FROM logs {where('id = ?', 'timestamp = ?')}"
+        return db.fetch_val(cur, sql, [*params, c.id, c.timestamp]) is not None
+
+    # One entry more than a page tells whether there are more beyond it.
+    def select(cur, side: Cursor | None, order: str, offset: int = 0) -> list[dict]:
+        cond, cond_params = side.condition() if side else (None, [])
+        return db.fetch_all(
             cur,
-            f"SELECT {_LIST_COLUMNS} FROM logs {where} {_NEWEST_FIRST} LIMIT ? OFFSET ?",
-            [*params, page_size, offset],
+            f"SELECT {_LIST_COLUMNS} FROM logs {where(cond) if cond else where()} {order} LIMIT ? OFFSET ?",
+            [*params, *cond_params, page_size + 1, offset],
         )
 
-        return {
-            "total": total or 0,
-            "page": page,
-            "page_size": page_size,
-            "pages": max(1, ((total or 0) + page_size - 1) // page_size),
-            "items": items,
-        }
+    def read_page(cur) -> _Page:
+        if cursor is not None and cursor.kind == "n":
+            rows = select(cur, cursor, _OLDEST_FIRST)
+            if len(rows) <= page_size:  # less than a page of newer entries: show the newest page
+                rows = select(cur, None, _NEWEST_FIRST)
+                return _Page(rows[:page_size], 1, False, len(rows) > page_size)
+            items = rows[:page_size][::-1]
+            # The cursor's entry is older than the page, unless it is gone (or the cursor
+            # came from an empty page and has no entry).
+            has_older = cursor_entry_matches(cur, cursor) or exists(cur, _entry_cursor("o", items[-1]))
+            return _Page(items, None, True, has_older)
+        if cursor is None:
+            n = number or 1
+            rows = select(cur, None, _NEWEST_FIRST, (n - 1) * page_size)
+            items = rows[:page_size]
+            return _Page(items, n, n > 1 and bool(items), len(rows) > page_size)
+        rows = select(cur, cursor, _NEWEST_FIRST)
+        has_newer = None
+        if not count:  # else the count tells
+            has_newer = (cursor.kind == "o" and cursor_entry_matches(cur, cursor)) or exists(cur, cursor.boundary())
+        return _Page(rows[:page_size], None, has_newer, len(rows) > page_size)
 
-    return await db.read(_run)
+    def read_count(cur) -> tuple[int, int | None]:
+        """Matching entries, and how many of them are newer than the cursor's page."""
+        if boundary is None:
+            return db.fetch_val(cur, f"SELECT count(*) FROM logs {where()}", params or None) or 0, None
+        cond, cond_params = boundary.condition()
+        counts = db.fetch_one(
+            cur,
+            f"SELECT count(*) AS total, count(*) FILTER (WHERE {cond}) AS newer FROM logs {where()}",
+            [*cond_params, *params],
+        )
+        assert counts is not None
+        return counts["total"], counts["newer"]
+
+    total = newer = None
+    if count:
+        tasks = [asyncio.ensure_future(db.read(read_page)), asyncio.ensure_future(db.read(read_count))]
+        try:
+            result, (total, newer) = await asyncio.gather(*tasks)
+        except BaseException:
+            # One failed (or the request was cancelled): stop the other one, too.
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+    else:
+        result = await db.read(read_page)
+
+    items = result.items
+    offset = None
+    if items and result.number is not None:
+        offset = (result.number - 1) * page_size
+    elif items and newer is not None:
+        offset = max(0, newer - len(items)) if cursor is not None and cursor.kind == "n" else newer
+    has_newer = result.has_newer if result.has_newer is not None else bool(newer)
+    if not has_newer:
+        newer_cursor = None
+    elif items:
+        newer_cursor = str(_entry_cursor("n", items[0]))
+    else:
+        newer_cursor = str(boundary) if boundary else None
+    return {
+        "total": total,
+        "page": result.number,
+        "page_size": page_size,
+        "pages": max(1, (total + page_size - 1) // page_size) if result.number and total is not None else None,
+        "offset": offset,
+        "newer_cursor": newer_cursor,
+        "older_cursor": str(_entry_cursor("o", items[-1])) if result.has_older else None,
+        "items": items,
+    }
 
 
 async def get_log_entry(db: Database, entry_id: int) -> dict | None:
