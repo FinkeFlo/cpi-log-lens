@@ -90,6 +90,10 @@ export function nextRunText(schedule, now = Date.now()) {
   return relativeTime(schedule.next_run_at, now);
 }
 
+// Every tenant and log type of a run failed (`parts` comes with the run; without it, a run
+// that found no file at all counts as failed).
+const allPartsFailed = run => (run.parts ? run.errors >= run.parts : !run.files_total);
+
 const entries = n => `${count(n)} new ${n === 1 ? 'entry' : 'entries'}`;
 const warnings = n => `${count(n)} ${n === 1 ? 'warning' : 'warnings'}`;
 
@@ -111,7 +115,7 @@ export function lastRunSummary(schedule) {
     case 'running':
       return { tone: 'running', icon: '', label: 'Running', detail: '', at: run.started_at };
     case 'done':
-      if (run.errors && !run.files_total) return { tone: 'error', icon: 'circle-x', label: 'Failed', detail: run.error || '', at };
+      if (run.errors && allPartsFailed(run)) return { tone: 'error', icon: 'circle-x', label: 'Failed', detail: run.error || '', at };
       if (run.errors) return { tone: 'warning', icon: 'triangle-alert', label: partly, detail: run.error || '', at };
       if (run.warnings) return { tone: 'warning', icon: 'triangle-alert', label: `${imported} · ${warnings(run.warnings)}`, detail: '', at };
       return { tone: 'success', icon: 'circle-check', label: imported, detail: '', at };

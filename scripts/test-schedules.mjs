@@ -60,7 +60,7 @@ assert.equal(s.nextRunText({ enabled: true, next_run_at: at(-1) }, now), 'Due no
 const run = changes => ({
   last_run_at: null,
   last_run: { id: 'r', status: 'done', started_at: at(-12), finished_at: at(-11), files_total: 4, rows_imported: 1204,
-    warnings: 0, errors: 0, error: null, ...changes },
+    warnings: 0, errors: 0, error: null, parts: 2, ...changes },
 });
 const pick = summary => [summary.tone, summary.label, summary.detail];
 assert.deepEqual(pick(s.lastRunSummary(run({}))), ['success', '1,204 new entries', '']);
@@ -70,7 +70,10 @@ assert.deepEqual(pick(s.lastRunSummary(run({ warnings: 2 }))), ['warning', '1,20
 assert.deepEqual(pick(s.lastRunSummary(run({ errors: 1, error: 'Couldn’t get an OAuth token for QAS.' }))),
   ['warning', 'Partly failed · 1,204 new entries', 'Couldn’t get an OAuth token for QAS.']);
 assert.equal(s.lastRunSummary(run({ errors: 1, rows_imported: 0 })).label, 'Partly failed');
-assert.deepEqual(pick(s.lastRunSummary(run({ errors: 1, files_total: 0, rows_imported: 0, error: 'Rejected.' }))),
+// Failed only when every tenant and log type failed; a part without files in the time range worked.
+assert.equal(s.lastRunSummary(run({ errors: 1, files_total: 0, rows_imported: 0 })).label, 'Partly failed');
+assert.equal(s.lastRunSummary(run({ errors: 1, files_total: 0, parts: undefined })).label, 'Failed', 'without parts');
+assert.deepEqual(pick(s.lastRunSummary(run({ errors: 2, files_total: 0, rows_imported: 0, error: 'Rejected.' }))),
   ['error', 'Failed', 'Rejected.']);
 assert.deepEqual(pick(s.lastRunSummary(run({ status: 'error', error: 'No tenants configured.' }))),
   ['error', 'Failed', 'No tenants configured.']);
