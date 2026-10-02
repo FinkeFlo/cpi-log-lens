@@ -702,19 +702,34 @@
         <table class="table table-sm responsive-table" aria-label="Scheduled fetches">
           <thead>
             <tr>
-              <th scope="col">Name</th><th scope="col">Tenants</th><th scope="col">Log types</th><th scope="col">Time range</th>
-              <th scope="col">Interval</th><th scope="col">Last run</th><th scope="col">Enabled</th><th scope="col">Actions</th>
+              <th scope="col">Schedule</th><th scope="col">Tenants</th><th scope="col">Next run</th>
+              <th scope="col">Last result</th><th scope="col">Enabled</th><th scope="col">Actions</th>
             </tr>
           </thead>
           <tbody>
             <template x-for="s in schedules" :key="s.id">
               <tr>
-                <td data-label="Name" x-text="s.name"></td>
+                <td data-label="Schedule" class="min-w-44">
+                  <p class="font-medium break-words" x-text="s.name"></p>
+                  <p class="text-xs text-muted" x-text="scheduleTimingLabel(s)"></p>
+                </td>
                 <td data-label="Tenants" class="text-xs" x-text="scheduleTenantLabel(s)"></td>
-                <td data-label="Log types" class="text-xs" x-text="s.log_types.join(', ')"></td>
-                <td data-label="Time range" class="text-xs" x-text="s.hours === 0 ? 'All' : `${s.hours}h`"></td>
-                <td data-label="Interval" class="text-xs" x-text="`${s.interval_minutes} min`"></td>
-                <td data-label="Last run" class="text-xs text-muted" x-text="s.last_run_at || '—'"></td>
+                <td data-label="Next run" class="text-xs whitespace-nowrap" :class="!s.enabled && 'text-muted'">
+                  <time :datetime="s.next_run_at" :title="localTime(s.next_run_at)" x-text="nextRunLabel(s)"></time>
+                </td>
+                <td data-label="Last result" class="text-xs min-w-48">
+                  <div class="flex items-center gap-1"
+                       :class="{ 'text-success': lastRun(s).tone === 'success', 'text-warning': lastRun(s).tone === 'warning',
+                                 'text-error': lastRun(s).tone === 'error', 'text-muted': lastRun(s).tone === 'muted' }">
+                    <span x-show="lastRun(s).tone === 'running'" class="loading loading-spinner loading-xs text-primary" aria-hidden="true"></span>
+                    <svg x-show="lastRun(s).icon" class="w-3.5 h-3.5 shrink-0" aria-hidden="true" focusable="false"><use :href="`/icons.svg#${lastRun(s).icon}`"></use></svg>
+                    <span class="font-medium" x-text="lastRun(s).label"></span>
+                  </div>
+                  <time x-show="lastRun(s).ago" class="text-muted" :datetime="lastRun(s).at" :title="localTime(lastRun(s).at)"
+                        x-text="lastRun(s).ago"></time>
+                  <p x-show="lastRun(s).detail" class="text-muted break-words line-clamp-3" :title="lastRun(s).detail"
+                     x-text="lastRun(s).detail"></p>
+                </td>
                 <td data-label="Enabled">
                   <input type="checkbox" class="toggle toggle-sm toggle-success"
                          :aria-label="`Enable schedule ${s.name}`"
@@ -722,6 +737,12 @@
                 </td>
                 <td data-label="Actions" class="whitespace-nowrap">
                   <div class="flex gap-1">
+                    <button class="btn btn-ghost btn-xs" :disabled="job.status === 'running' || startingScheduleId !== null"
+                            :title="job.status === 'running' ? 'A fetch is running' : null" @click="runScheduleNow(s)">
+                      <span x-show="startingScheduleId === s.id" class="loading loading-spinner loading-xs" aria-hidden="true"></span>
+                      <svg x-show="startingScheduleId !== s.id" class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#play"></use></svg>
+                      Run now
+                    </button>
                     <button class="btn btn-ghost btn-xs tooltip tooltip-top" data-tip="Edit schedule"
                             aria-label="Edit schedule" title="Edit schedule" @click="openScheduleModal(s)">
                       <svg class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#pencil"></use></svg>
@@ -737,6 +758,7 @@
           </tbody>
         </table>
       </div>
+      <p class="text-xs text-muted mt-2" x-show="schedules.length>0">Schedules run while CPI Log Lens is running.</p>
     </div>
   </div>
 </div>
@@ -747,54 +769,88 @@
   <div class="modal-box max-w-lg">
     <h2 id="schedule-dialog-title" tabindex="-1" autofocus class="font-bold text-lg mb-4"
         x-text="scheduleModal.editing ? 'Edit schedule' : 'New schedule'"></h2>
-    <div class="space-y-3">
-      <fieldset class="fieldset gap-0 pb-0">
-        <label class="fieldset-legend py-0 pb-1 text-sm font-normal" for="schedule-name">Name</label>
-        <input type="text" class="input input-sm w-full" placeholder="e.g. PRD every 15 min"
-               id="schedule-name" x-model="scheduleModal.form.name" />
+    <div class="space-y-4">
+      <fieldset aria-describedby="schedule-tenants-error">
+        <legend class="text-sm font-semibold mb-2">Tenants</legend>
+        <div class="flex flex-wrap gap-2">
+          <template x-for="t in tenants" :key="t.id">
+            <input type="checkbox" class="btn btn-sm" :aria-label="t.name"
+                   :checked="!scheduleModal.form.allTenants && scheduleModal.form.tenants.includes(t.id)"
+                   @change="toggleScheduleTenant(t.id, $event.target.checked)" />
+          </template>
+          <input type="checkbox" class="btn btn-sm btn-outline" aria-label="All tenants"
+                 :checked="scheduleModal.form.allTenants" @change="setAllTenants($event.target.checked)" />
+        </div>
+        <p class="text-xs text-muted mt-1" x-show="scheduleModal.form.allTenants">Includes tenants added later.</p>
+        <p id="schedule-tenants-error" class="text-error text-xs mt-1"
+           x-show="scheduleModal.submitted && scheduleErrors.tenants" x-text="scheduleModal.submitted ? scheduleErrors.tenants : ''"></p>
       </fieldset>
-      <div class="grid grid-cols-2 gap-4 schedule-grid">
-        <fieldset>
-          <legend class="text-sm font-semibold mb-2">Tenants</legend>
-          <div class="flex flex-col gap-1 max-h-32 overflow-y-auto">
-            <template x-for="t in tenants" :key="t.id">
-              <label class="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" class="checkbox checkbox-xs checkbox-primary"
-                  :checked="scheduleModal.form.tenants.includes(t.id)"
-                  @change="scheduleModal.form.tenants.includes(t.id) ? scheduleModal.form.tenants = scheduleModal.form.tenants.filter(x => x !== t.id) : scheduleModal.form.tenants.push(t.id)" />
-                <span class="text-sm" x-text="t.name"></span>
-              </label>
-            </template>
+
+      <fieldset>
+        <legend class="text-sm font-semibold mb-2">How often and how far back</legend>
+        <div class="flex flex-wrap gap-2 mb-3">
+          <template x-for="p in presets" :key="presetLabel(p)">
+            <input type="radio" name="schedule-preset" class="btn btn-sm" :aria-label="presetLabel(p)"
+                   :checked="isPreset(p)" @change="applyPreset(p)" />
+          </template>
+        </div>
+        <div class="grid grid-cols-2 gap-4 schedule-grid">
+          <div>
+            <label class="text-sm block mb-1" for="schedule-interval">Run</label>
+            <select id="schedule-interval" class="select select-sm w-full" x-model.number="scheduleModal.form.interval_minutes">
+              <template x-for="m in intervalOptions" :key="m">
+                <option :value="m" :selected="m === scheduleModal.form.interval_minutes" x-text="intervalLabel(m).toLowerCase()"></option>
+              </template>
+            </select>
           </div>
-        </fieldset>
-        <fieldset>
-          <legend class="text-sm font-semibold mb-2">Log types</legend>
-          <div class="flex flex-col gap-1">
-            <template x-for="[val,label] in [['trace','trace'],['http','http']]" :key="val">
-              <label class="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" class="checkbox checkbox-xs checkbox-primary"
-                  :checked="scheduleModal.form.log_types.includes(val)"
-                  @change="scheduleModal.form.log_types.includes(val) ? scheduleModal.form.log_types = scheduleModal.form.log_types.filter(x => x !== val) : scheduleModal.form.log_types.push(val)" />
-                <span class="text-sm" x-text="label"></span>
-              </label>
-            </template>
+          <div>
+            <label class="text-sm block mb-1" for="schedule-hours">Fetch each time</label>
+            <select id="schedule-hours" class="select select-sm w-full" x-model.number="scheduleModal.form.hours">
+              <template x-for="h in rangeOptions" :key="h">
+                <option :value="h" :selected="h === scheduleModal.form.hours" x-text="rangeLabel(h).toLowerCase()"></option>
+              </template>
+            </select>
           </div>
-        </fieldset>
+        </div>
+        <div role="status" aria-live="polite" class="mt-2">
+          <div x-show="['gap', 'edge'].includes(scheduleCoverage.level)" class="alert alert-warning alert-soft text-sm items-start">
+            <svg class="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" focusable="false"><use href="/icons.svg#triangle-alert"></use></svg>
+            <span x-text="['gap', 'edge'].includes(scheduleCoverage.level) ? scheduleCoverage.text : ''"></span>
+          </div>
+          <p x-show="!['gap', 'edge'].includes(scheduleCoverage.level)" class="text-xs text-muted"
+             x-text="['gap', 'edge'].includes(scheduleCoverage.level) ? '' : scheduleCoverage.text"></p>
+        </div>
+      </fieldset>
+
+      <fieldset aria-describedby="schedule-log-types-error">
+        <legend class="text-sm font-semibold mb-2">Log types</legend>
+        <div class="flex gap-4">
+          <template x-for="val in ['trace', 'http']" :key="val">
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" class="checkbox checkbox-sm checkbox-primary" :value="val" x-model="scheduleModal.form.log_types" />
+              <span class="text-sm" x-text="val"></span>
+            </label>
+          </template>
+        </div>
+        <p id="schedule-log-types-error" class="text-error text-xs mt-1"
+           x-show="scheduleModal.submitted && scheduleErrors.log_types" x-text="scheduleModal.submitted ? scheduleErrors.log_types : ''"></p>
+      </fieldset>
+
+      <div class="grid grid-cols-2 gap-4 items-end schedule-grid">
+        <div>
+          <label class="text-sm block mb-1" for="schedule-name">Name <span class="text-muted">(optional)</span></label>
+          <input type="text" class="input input-sm w-full" id="schedule-name" maxlength="100"
+                 :placeholder="suggestedScheduleName" x-model="scheduleModal.form.name" />
+        </div>
+        <label class="flex items-center gap-2 cursor-pointer pb-1">
+          <input type="checkbox" class="toggle toggle-sm toggle-success" x-model="scheduleModal.form.enabled" />
+          <span class="text-sm">Enabled</span>
+        </label>
       </div>
-      <div class="grid grid-cols-2 gap-4 schedule-grid">
-        <fieldset class="fieldset gap-0 pb-0">
-          <label class="fieldset-legend py-0 pb-1 text-sm font-normal" for="schedule-hours">Time range per run (hours, 0 = all)</label>
-          <input id="schedule-hours" type="number" min="0" class="input input-sm w-full" x-model="scheduleModal.form.hours" />
-        </fieldset>
-        <fieldset class="fieldset gap-0 pb-0">
-          <label class="fieldset-legend py-0 pb-1 text-sm font-normal" for="schedule-interval">Interval (minutes)</label>
-          <input id="schedule-interval" type="number" min="1" class="input input-sm w-full" x-model="scheduleModal.form.interval_minutes" />
-        </fieldset>
-      </div>
-      <label class="flex items-center gap-2 cursor-pointer">
-        <input type="checkbox" class="toggle toggle-sm toggle-success" x-model="scheduleModal.form.enabled" />
-        <span class="text-sm">Enabled</span>
-      </label>
+      <p class="text-xs text-muted">
+        Schedules run while CPI Log Lens is running.
+        <span x-show="!scheduleModal.editing && scheduleModal.form.enabled">The first run starts right after saving.</span>
+      </p>
     </div>
     <div class="modal-action">
       <button class="btn btn-primary btn-sm" @click="saveSchedule()">Save schedule</button>
@@ -1020,7 +1076,10 @@
               <span class="text-xs text-muted" x-text="t.id"></span>
             </div>
             <div class="flex gap-1">
-              <button class="btn btn-xs btn-ghost" @click="testTenant(t)">Test connection</button>
+              <button class="btn btn-xs btn-ghost" :disabled="!!t._testing" @click="testTenant(t)">
+                <span x-show="t._testing" class="loading loading-spinner loading-xs" aria-hidden="true"></span>
+                <span x-text="t._testing ? 'Testing…' : 'Test connection'"></span>
+              </button>
               <button class="btn btn-xs btn-ghost" @click="openTenantModal(t)">Edit</button>
               <button class="btn btn-xs btn-ghost text-error" @click="confirmDeleteTenant(t.id)">Delete</button>
             </div>
@@ -1031,11 +1090,14 @@
             <p><span class="text-muted w-20 inline-block">Client ID</span>
                <span x-text="t.client_id?.slice(0,30)"></span><span x-show="t.client_id?.length>30">…</span></p>
           </div>
-          <div x-show="t._testResult" class="mt-2">
-            <div :class="`alert py-1 px-2 text-xs ${t._testOk?'alert-success':'alert-error'}`">
-              <svg x-show="t._testOk" class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#circle-check"></use></svg>
-              <svg x-show="!t._testOk" class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#circle-x"></use></svg>
-              <span x-text="t._testResult"></span>
+          <div role="status" aria-live="polite">
+            <span x-show="t._testing" class="sr-only">Testing the connection…</span>
+            <div x-show="t._test" class="alert alert-soft items-start mt-2 py-2 px-3 text-xs" :class="t._test?.ok ? 'alert-success' : 'alert-error'">
+              <svg class="w-4 h-4 shrink-0" aria-hidden="true" focusable="false"><use :href="`/icons.svg#${t._test?.ok ? 'circle-check' : 'circle-x'}`"></use></svg>
+              <div class="min-w-0">
+                <p class="font-semibold break-words" x-text="t._test?.title"></p>
+                <p x-show="t._test?.hint" class="break-words" x-text="t._test?.hint"></p>
+              </div>
             </div>
           </div>
         </div>
@@ -1125,7 +1187,8 @@
   <div class="modal-box max-w-lg">
     <h2 id="tenant-dialog-title" tabindex="-1" autofocus class="font-bold text-lg mb-4"
         x-text="tenantModal.editing ? 'Edit tenant' : 'Add tenant'"></h2>
-    <div class="space-y-3">
+    <!-- Any edit makes a connection test result outdated. -->
+    <div class="space-y-3" @input="resetConnectionTest()">
       <fieldset x-show="!tenantModal.editing" class="fieldset gap-0 pb-0">
         <label class="fieldset-legend py-0 pb-1 text-sm font-normal" for="tenant-service-key">Service key (optional)</label>
         <textarea class="textarea textarea-sm h-[58px] min-h-[58px] w-full font-mono text-xs" rows="3"
@@ -1151,7 +1214,22 @@
         </fieldset>
       </template>
     </div>
-    <div class="modal-action">
+    <div class="mt-4" role="status" aria-live="polite">
+      <span x-show="tenantModal.test.busy" class="sr-only">Testing the connection…</span>
+      <div x-show="tenantModal.test.result" class="alert alert-soft items-start text-sm"
+           :class="tenantModal.test.result?.ok ? 'alert-success' : 'alert-error'">
+        <svg class="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" focusable="false"><use :href="`/icons.svg#${tenantModal.test.result?.ok ? 'circle-check' : 'circle-x'}`"></use></svg>
+        <div class="min-w-0">
+          <p class="font-semibold break-words" x-text="tenantModal.test.result?.title"></p>
+          <p x-show="tenantModal.test.result?.hint" class="break-words" x-text="tenantModal.test.result?.hint"></p>
+        </div>
+      </div>
+    </div>
+    <div class="modal-action flex-wrap">
+      <button type="button" class="btn btn-outline btn-sm mr-auto" :disabled="tenantModal.test.busy" @click="testConnection()">
+        <span x-show="tenantModal.test.busy" class="loading loading-spinner loading-xs" aria-hidden="true"></span>
+        <span x-text="tenantModal.test.busy ? 'Testing…' : 'Test connection'"></span>
+      </button>
       <button class="btn btn-primary btn-sm" @click="saveTenant()">Save tenant</button>
       <button class="btn btn-ghost btn-sm"   @click="tenantModal.open=false">Cancel</button>
     </div>

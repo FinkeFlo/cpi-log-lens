@@ -42,8 +42,9 @@ async def test_failed_connection_test_is_502(client, fake_cpi):
     await client.post("/api/tenants", json=FAKE_TENANT)
     res = await client.post("/api/tenants/fake/test")
     assert res.status_code == 502
-    assert res.json()["detail"].startswith("Token request failed: ")
-    assert "401" in res.json()["detail"]
+    body = res.json()
+    assert body["detail"].startswith("The OAuth server rejected the client ID or secret (HTTP 401).")
+    assert (body["kind"], body["step"], body["upstream_status"]) == ("invalid_credentials", "token", 401)
 
 
 @pytest.mark.parametrize(

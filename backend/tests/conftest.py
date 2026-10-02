@@ -82,9 +82,9 @@ def fake_cpi(monkeypatch):
     fake = FakeCpi()
     real_client_for = cpi.client_for
 
-    def client_for(tenant, *, timeout=None):
+    def client_for(tenant, *, timeout=None, retries=None):
         if get_settings().mock or cpi.is_demo(tenant):
-            return real_client_for(tenant, timeout=timeout)
+            return real_client_for(tenant, timeout=timeout, retries=retries)
         transport = httpx.ASGITransport(app=fake.app)
         return CpiClient(
             tenant["api_url"],
@@ -93,6 +93,7 @@ def fake_cpi(monkeypatch):
             tenant["client_secret"],
             transport=transport,
             retry_backoff=0,
+            **({} if retries is None else {"retries": retries}),
         )
 
     monkeypatch.setattr(cpi, "client_for", client_for)

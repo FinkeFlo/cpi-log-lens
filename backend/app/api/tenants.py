@@ -1,10 +1,11 @@
 """Tenants (CPI connections)."""
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 
 from app import cpi
 from app.api.deps import DbDep, SchedulesDep
-from app.api.schemas import TenantCreate
+from app.api.schemas import ConnectionTestRequest, TenantCreate
 from app.repositories import tenants as tenants_repo
 from app.services import tenants as tenant_service
 
@@ -70,18 +71,58 @@ async def remove_tenant(tenant_id: str, db: DbDep, schedules: SchedulesDep, purg
     return {"ok": True, **result}
 
 
+async def _check(tenant: dict) -> tenant_service.ConnectionCheck | JSONResponse:
+    """The connection check, or its failure as a 502 answer: `detail` (message and hint),
+    `kind`, `step` (token or api), `message`, `hint` and the CPI side's `upstream_status`."""
+    try:
+        return await tenant_service.check_connection(tenant)
+    except tenant_service.ConnectionCheckFailed as e:
+        p = e.problem
+        return JSONResponse(
+            {
+                "detail": p.text(),
+                "kind": p.kind,
+                "step": e.step,
+                "message": p.message,
+                "hint": p.hint,
+                "upstream_status": p.status,
+            },
+            status_code=502,
+        )
+
+
+@router.post("/test")
+async def test_connection_details(body: ConnectionTestRequest, db: DbDep):
+    """Test connection details before saving them, like the test of a saved tenant.
+    Without a client secret (empty or masked), the stored secret of tenant `id` is
+    used, but only with that tenant's saved URLs."""
+    tenant = body.model_dump()
+    if not body.client_secret or set(body.client_secret) == {"•"}:
+        stored = await tenants_repo.get_tenant(db, body.id) if body.id else None
+        if stored is None:
+            raise HTTPException(422, "Enter the client secret.")
+        if (stored["api_url"], stored["oauth_url"]) != (body.api_url, body.oauth_url):
+            raise HTTPException(
+                422, "Enter the client secret to test changed URLs: the saved secret is only sent to the saved URLs."
+            )
+        tenant["client_secret"] = stored["client_secret"]
+    result = await _check(tenant)
+    if isinstance(result, JSONResponse):
+        return result
+    return {"ok": True, "trace_files": result.trace_files}
+
+
 @router.post("/{tenant_id}/test")
 async def test_tenant(tenant_id: str, db: DbDep):
-    """Request an OAuth token with the tenant's credentials: 200 when it works,
-    502 with the reason when the token request fails."""
+    """Test a saved tenant's connection: request an OAuth token, then list the trace
+    log files (which needs a role that may read log files). 200 with the number of
+    trace log files when both work, 502 with a readable reason when not."""
     tenant = await tenants_repo.get_tenant(db, tenant_id)
     if not tenant:
         raise HTTPException(404, "Tenant not found")
     if cpi.is_demo(tenant):
         return {"ok": True, "demo": True}
-    try:
-        async with cpi.client_for(tenant, timeout=30) as client:
-            token = await client.get_token(follow_redirects=False)
-    except Exception as e:
-        raise HTTPException(502, f"Token request failed: {e}") from None
-    return {"ok": True, "token_preview": token[:12] + "…"}
+    result = await _check(tenant)
+    if isinstance(result, JSONResponse):
+        return result
+    return {"ok": True, "trace_files": result.trace_files, "token_preview": result.token[:12] + "…"}

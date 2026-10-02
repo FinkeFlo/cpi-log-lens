@@ -7,10 +7,12 @@ import pytest
 
 from app import main, tasks
 from app.config import get_settings
+from app.repositories import fetch_runs as fetch_runs_repo
 from app.repositories import logs as logs_repo
 from app.repositories import schedules as schedules_repo
 from app.services import fetch as fetch_service
 from app.services import scheduler
+from tests.support import FAKE_TENANT, app_db, numbered_lines, wait_for_job
 
 pytestmark = pytest.mark.anyio
 
@@ -52,6 +54,121 @@ async def test_update_of_an_unknown_schedule_is_404(client):
     res = await client.put("/api/schedules/nope", json=SCHEDULE)
     assert res.status_code == 404
     assert res.json() == {"detail": "Schedule not found"}
+
+
+# ── Next run, last result and "run now" ──────────────────────────────────────
+
+
+async def listed(client, sid):
+    [s] = [s for s in (await client.get("/api/schedules")).json() if s["id"] == sid]
+    return s
+
+
+async def wait_for_last_run(client, sid, max_seconds=10.0):
+    """The schedule once its last run has ended and a success has been recorded."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max_seconds
+    while True:
+        s = await listed(client, sid)
+        run = s["last_run"]
+        if run and run["status"] != "running" and (run["status"] != "done" or s["last_run_at"]):
+            return s
+        if loop.time() > deadline:
+            raise AssertionError(f"schedule run did not end: {s}")
+        await asyncio.sleep(0.02)
+
+
+async def test_run_now_starts_the_fetch_and_lists_its_result(client, fake_cpi):
+    await client.post("/api/tenants", json=FAKE_TENANT)
+    fake_cpi.add("a.log", numbered_lines(3))
+    sid = (await client.post("/api/schedules", json={**SCHEDULE, "tenants": ["fake"], "enabled": False})).json()["id"]
+    s = await listed(client, sid)
+    assert (s["next_run_at"], s["last_run"], s["last_run_at"]) == (None, None, None)
+
+    res = await client.post(f"/api/schedules/{sid}/run")
+    assert res.status_code == 200
+    job_id = res.json()["job_id"]
+    assert res.json() == {"ok": True, "job_id": job_id}
+    await wait_for_job(client)
+    s = await wait_for_last_run(client, sid)
+    run = s["last_run"]
+    assert (run["id"], run["status"], run["files_total"], run["rows_imported"]) == (job_id, "done", 1, 3)
+    assert (run["warnings"], run["errors"], run["error"]) == (0, 0, None)
+    assert datetime.fromisoformat(run["finished_at"]).tzinfo is not None
+    assert s["last_run_at"] is not None  # a success counts as the schedule's last run
+    assert s["next_run_at"] is None  # still disabled
+    assert (await client.get("/api/fetch/runs")).json()[0]["trigger"] == f"schedule:{sid}"
+
+
+async def test_last_run_shows_a_failure_in_plain_words(client, fake_cpi):
+    await client.post("/api/tenants", json=FAKE_TENANT)
+    fake_cpi.token_status = 401
+    sid = (await client.post("/api/schedules", json={**SCHEDULE, "tenants": ["fake"], "enabled": False})).json()["id"]
+    await client.post(f"/api/schedules/{sid}/run")
+    await wait_for_job(client)
+    run = (await wait_for_last_run(client, sid))["last_run"]
+    assert (run["status"], run["errors"]) == ("done", 1)
+    assert run["error"].startswith("Couldn't get an OAuth token for Fake. The OAuth server rejected")
+
+
+async def test_last_run_tells_a_partial_from_a_full_failure(client, fake_cpi):
+    # One tenant fails, the other has no log files in the time range: partly failed,
+    # although no file was found at all.
+    await client.post("/api/tenants", json=FAKE_TENANT)
+    await client.post("/api/tenants", json={**FAKE_TENANT, "id": "broken", "oauth_url": "https://[::1/oauth"})
+    body = {**SCHEDULE, "tenants": ["broken", "fake"], "enabled": False}
+    sid = (await client.post("/api/schedules", json=body)).json()["id"]
+    await client.post(f"/api/schedules/{sid}/run")
+    await wait_for_job(client)
+    run = (await wait_for_last_run(client, sid))["last_run"]
+    assert (run["errors"], run["files_total"], run["parts"]) == (1, 0, 2)
+    # For "all", the parts are counted with the tenants configured now.
+    all_id = (await client.post("/api/schedules", json={**SCHEDULE, "enabled": False})).json()["id"]
+    await client.post(f"/api/schedules/{all_id}/run")
+    await wait_for_job(client)
+    assert (await wait_for_last_run(client, all_id))["last_run"]["parts"] == 2  # 2 tenants x trace
+
+
+async def test_run_now_of_an_unknown_schedule_is_404(client):
+    res = await client.post("/api/schedules/nope/run")
+    assert res.status_code == 404
+    assert res.json() == {"detail": "Schedule not found"}
+
+
+async def test_run_now_while_a_fetch_runs_is_409(client, fake_cpi):
+    await client.post("/api/tenants", json=FAKE_TENANT)
+    fake_cpi.add("a.log", numbered_lines(1))
+    fake_cpi.download_delay = 0.3
+    sid = (await client.post("/api/schedules", json={**SCHEDULE, "tenants": ["fake"], "enabled": False})).json()["id"]
+    manual = (await client.post("/api/fetch", json={"tenants": ["fake"], "log_types": ["trace"], "hours": 0})).json()
+    res = await client.post(f"/api/schedules/{sid}/run")
+    assert res.status_code == 409
+    assert res.json() == {"detail": "A fetch is already running.", "job_id": manual["job_id"]}
+    await wait_for_job(client)
+    assert (await listed(client, sid))["last_run"] is None
+
+
+async def test_enabled_schedules_list_their_next_run(client):
+    sid = (await client.post("/api/schedules", json={**SCHEDULE, "enabled": False})).json()["id"]
+    db = app_db()
+    await db.run(db.execute, "UPDATE fetch_schedules SET last_run_at = CURRENT_TIMESTAMP WHERE id = ?", [sid])
+    await client.put(f"/api/schedules/{sid}", json=SCHEDULE)  # enabled, ran just now: next in 15 minutes
+    s = await listed(client, sid)
+    next_run = datetime.fromisoformat(s["next_run_at"])
+    last = datetime.fromisoformat(s["last_run_at"])
+    assert next_run.tzinfo is not None
+    assert abs(next_run - (last + timedelta(minutes=15))) < timedelta(seconds=2)
+    await client.put(f"/api/schedules/{sid}", json={**SCHEDULE, "enabled": False})
+    assert (await listed(client, sid))["next_run_at"] is None
+
+
+async def test_latest_run_per_trigger(db):
+    start = datetime(2026, 1, 15, 8, 0, tzinfo=UTC)
+    for i, trigger in enumerate(["schedule:a", "schedule:b", "schedule:a", "manual"]):
+        await fetch_runs_repo.insert_run(db, f"r{i}", trigger, {}, start + timedelta(minutes=i))
+    latest = await fetch_runs_repo.latest_by_trigger(db, ["schedule:a", "schedule:b", "schedule:c"])
+    assert {t: r["id"] for t, r in latest.items()} == {"schedule:a": "r2", "schedule:b": "r1"}
+    assert await fetch_runs_repo.latest_by_trigger(db, []) == {}
 
 
 # ── When a schedule is due (pure function) ───────────────────────────────────
@@ -146,6 +263,20 @@ async def test_schedule_within_its_interval_waits(db, fast_minutes):
     runs = StubRuns()
     await run_service(db, runs, seconds=0.15)
     assert runs.started == []
+
+
+async def test_next_runs_of_the_enabled_schedules(db):
+    await add_schedule(db, "s1", last_run_sql="CURRENT_TIMESTAMP")
+    await add_schedule(db, "off", enabled=False)
+    service = scheduler.ScheduleService(db, fetch_service.FetchService(db, runner=StubRuns()))
+    await service.start()
+    try:
+        next_runs = service.next_runs()
+    finally:
+        service.shutdown()
+    assert list(next_runs) == ["s1"]
+    due_in = next_runs["s1"] - datetime.now(UTC)
+    assert timedelta(minutes=14) < due_in <= timedelta(minutes=15)
 
 
 async def test_disabled_schedule_never_runs(db, fast_minutes):

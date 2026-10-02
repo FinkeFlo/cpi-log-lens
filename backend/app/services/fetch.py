@@ -14,6 +14,7 @@ from pathlib import Path
 
 from app import cpi
 from app.config import get_settings
+from app.cpi import errors as cpi_errors
 from app.cpi.client import CpiClient, RemoteLogFile
 from app.repositories import fetch_runs as fetch_runs_repo
 from app.repositories import file_imports as file_imports_repo
@@ -434,8 +435,12 @@ class _TenantFetch:
         part = self.job.update_part(self.part, warnings=self.warnings)
         self.job.push({"type": "warn", "msg": msg, "file": file, "part": part})
 
-    def fail(self, msg: str) -> None:
-        """This tenant and log type cannot be fetched; the job goes on with the next part."""
+    def fail(self, what: str, exc: Exception, step: cpi_errors.Step) -> None:
+        """This tenant and log type cannot be fetched; the job goes on with the next part.
+        The UI gets a readable reason, the log the original error."""
+        url = self.client.oauth_url if step == "token" else self.client.api_url
+        msg = f"{what} {cpi_errors.describe(exc, step, url).text()}"
+        log.warning("fetch job %s: %s %s: %r", self.job.id[:8], self.tenant_id, self.log_type, exc)
         part = self.job.update_part(self.part, status="failed", error=msg)
         self.job.push({"type": "tenant_error", "msg": msg, "part": part})
 
@@ -449,12 +454,12 @@ async def _fetch_log_type(ctx: _TenantFetch, cutoff_ms: int) -> None:
     try:
         await ctx.client.get_token()
     except Exception as e:
-        ctx.fail(f"Couldn't get an OAuth token for {name}: {e}")
+        ctx.fail(f"Couldn't get an OAuth token for {name}.", e, "token")
         return
     try:
         files = await ctx.client.list_files(ctx.log_type)
     except Exception as e:
-        ctx.fail(f"Couldn't list log files for {name}: {e}")
+        ctx.fail(f"Couldn't list log files for {name}.", e, "api")
         return
     if cutoff_ms > 0:
         files = [f for f in files if f.last_modified_ms > cutoff_ms]

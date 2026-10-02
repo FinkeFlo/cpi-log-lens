@@ -1,13 +1,17 @@
-"""Tenant seeding from TENANTS_CONFIG and the demo tenant."""
+"""Tenant seeding from TENANTS_CONFIG, the demo tenant, deleting tenants and the connection test."""
 
 import asyncio
 import logging
 import shutil
+from dataclasses import dataclass
 
+import httpx
 import json5
 
+from app import cpi
 from app.config import get_settings
 from app.cpi import DEMO_URL
+from app.cpi import errors as cpi_errors
 from app.repositories import tenants as tenants_repo
 from app.repositories.database import Database
 from app.services import stats
@@ -77,3 +81,41 @@ async def delete_tenant(db: Database, tenant_id: str, *, purge: bool = False) ->
         result["schedules_deleted"],
     )
     return result
+
+
+# The connection test makes one attempt per request with short timeouts, so a wrong
+# host is reported within seconds instead of after the retries a fetch makes.
+CONNECTION_TEST_TIMEOUT = httpx.Timeout(20.0, connect=10.0)
+
+
+@dataclass(frozen=True)
+class ConnectionCheck:
+    token: str
+    trace_files: int  # trace log files the API lists
+
+
+class ConnectionCheckFailed(Exception):
+    """A connection test failed; `problem` says why in plain words."""
+
+    def __init__(self, step: cpi_errors.Step, problem: cpi_errors.CpiProblem) -> None:
+        super().__init__(problem.text())
+        self.step = step
+        self.problem = problem
+
+
+async def check_connection(tenant: dict) -> ConnectionCheck:
+    """Check connection details the way a fetch uses them: request an OAuth token
+    (without following redirects), then list the trace log files, which needs a role
+    that may read log files. Raises ConnectionCheckFailed with a readable reason; the
+    original error goes to the log."""
+    step: cpi_errors.Step = "token"
+    async with cpi.client_for(tenant, timeout=CONNECTION_TEST_TIMEOUT, retries=1) as client:
+        try:
+            token = await client.get_token(follow_redirects=False)
+            step = "api"
+            files = await client.list_files("trace")
+        except Exception as e:
+            url = client.oauth_url if step == "token" else client.api_url
+            log.info("connection test of %s failed at the %s request: %r", tenant.get("id") or "new tenant", step, e)
+            raise ConnectionCheckFailed(step, cpi_errors.describe(e, step, url)) from e
+    return ConnectionCheck(token=token, trace_files=len(files))

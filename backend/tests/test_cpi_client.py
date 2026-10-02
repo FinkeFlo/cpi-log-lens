@@ -86,6 +86,15 @@ async def test_server_errors_are_retried_up_to_three_times(tmp_path):
     assert fake.requests.count("list") == 1 + 3
 
 
+async def test_attempts_per_request_can_be_limited():
+    fake = FakeCpi(token_status=503)
+    transport = httpx.ASGITransport(app=fake.app)
+    async with CpiClient(FAKE_URL, f"{FAKE_URL}/oauth/token", "id", "s", transport=transport, retries=1) as client:
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.get_token()
+    assert fake.requests == ["token"]
+
+
 async def test_failed_download_leaves_no_file(tmp_path):
     fake = FakeCpi()
     fake.add("a.log", numbered_lines(1))
