@@ -55,6 +55,10 @@ def replace_unparsed(conn, tenant: str, log_type: str, filename: str, lines: lis
 # roughly doubled the data each list query had to scan and transfer.
 _LIST_COLUMNS = "id, tenant, log_type, filename, timestamp, level, logger, iflow, message, ip, node, imported_at"
 TEXT_SEARCH_DEFAULT_HOURS = 24
+# CPI timestamps have whole seconds, so many entries share one. The id breaks the tie:
+# without it, entries with the same timestamp came back in any order, and a page boundary
+# between them could show an entry twice or skip it.
+_NEWEST_FIRST = "ORDER BY timestamp DESC, id DESC"
 
 
 def effective_date_bounds(
@@ -146,7 +150,7 @@ async def query_logs(
         offset = (page - 1) * page_size
         items = db.fetch_all(
             cur,
-            f"SELECT {_LIST_COLUMNS} FROM logs {where} ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+            f"SELECT {_LIST_COLUMNS} FROM logs {where} {_NEWEST_FIRST} LIMIT ? OFFSET ?",
             [*params, page_size, offset],
         )
 

@@ -212,3 +212,13 @@ async def test_iflow_suggestion_is_not_truncated(seeded, tmp_path):
 
     response = await seeded.get("/api/logs/iflows", params={"tenant": "a"})
     assert exact_name in response.json()["items"]
+
+
+async def test_entries_with_the_same_timestamp_are_paged_by_id(client, tmp_path):
+    db = app_db()
+    path = write_log(tmp_path / "same.log", [log_line(ts="2026-01-15 08:00:00", message=f"m{i}") for i in range(7)])
+    await importer.import_log_file(db, "a", "trace", path, path.name, 0)
+    pages = [(await client.get("/api/logs", params={"page": p, "page_size": 3})).json()["items"] for p in (1, 2, 3)]
+    ids = [item["id"] for page in pages for item in page]
+    assert ids == sorted(ids, reverse=True)
+    assert len(set(ids)) == 7
