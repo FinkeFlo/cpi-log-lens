@@ -226,9 +226,11 @@ curl -X POST http://localhost:8080/api/query \
 `cursor` to get the next older or newer page (null at either end); this is equally fast at any
 depth. `at` (ISO date or datetime) starts the list at the newest entry at or before that time; a
 bare date means the end of that day. `total` is the number of matching entries and `offset` the
-number of matching entries newer than the page; `count=false` leaves both out (null) and saves a
-scan of all matching entries. Page numbers (`page`, answered with `page` and `pages`) still work
-but get slower the deeper the page. Use only one of `page`, `cursor` and `at`.
+number of matching entries newer than the page. `count=false` saves a scan of all matching
+entries: `total` is then null, and `offset` too, except where it is known without counting (the
+newest page and pages by number). Page numbers (`page`, answered with `page` and `pages`) still
+work but get slower the deeper the page; answers to `cursor` and `at` have `page` and `pages` null.
+Use only one of `page`, `cursor` and `at`.
 
 Log timestamps are stored as timezone-naive CPI timestamps and interpreted as UTC for filtering.
 Timezone-less API datetimes are interpreted as UTC; offset-aware values are converted to UTC before
