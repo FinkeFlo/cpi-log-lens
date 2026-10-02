@@ -147,7 +147,7 @@ def _list_conditions(
 # ── Log list positions ───────────────────────────────────────────────────────
 
 MAX_ENTRY_ID = 2**63 - 1  # largest BIGINT: a cursor with it stands for the end of its timestamp
-_CURSOR_RE = re.compile(r"([ona])(\d{8}T\d{6}(?:\.\d{1,6})?)_(\d{1,19})")
+_CURSOR_RE = re.compile(r"([ona])([0-9]{8}T[0-9]{6}(?:\.[0-9]{1,6})?)_([0-9]{1,19})")  # ASCII digits only
 
 
 @dataclass(frozen=True)

@@ -70,6 +70,8 @@ def test_cursor_text_round_trip():
         "o20260930T115958_1 ",
         "o20260930T115958_0",
         "o00010101T000000_0",
+        "o\uff12\uff10261002T081800_1",  # fullwidth digits
+        "o20261002T081800_\u0661",  # Arabic-Indic digit one
     ],
 )
 def test_invalid_cursor_text(text):
@@ -228,6 +230,7 @@ async def test_page_numbers_still_work_and_continue_with_cursors(ten):
         ({"cursor": "nope"}, "cursor is invalid"),
         ({"cursor": "o20260231T080000_1"}, "cursor is invalid"),
         ({"cursor": "o00010101T000000_0"}, "cursor is invalid"),
+        ({"cursor": "o\uff12\uff10261002T081800_1"}, "cursor is invalid"),
         ({"at": "yesterday"}, "at must be"),
     ],
 )
