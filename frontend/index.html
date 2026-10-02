@@ -1020,7 +1020,10 @@
               <span class="text-xs text-muted" x-text="t.id"></span>
             </div>
             <div class="flex gap-1">
-              <button class="btn btn-xs btn-ghost" @click="testTenant(t)">Test connection</button>
+              <button class="btn btn-xs btn-ghost" :disabled="!!t._testing" @click="testTenant(t)">
+                <span x-show="t._testing" class="loading loading-spinner loading-xs" aria-hidden="true"></span>
+                <span x-text="t._testing ? 'Testing…' : 'Test connection'"></span>
+              </button>
               <button class="btn btn-xs btn-ghost" @click="openTenantModal(t)">Edit</button>
               <button class="btn btn-xs btn-ghost text-error" @click="confirmDeleteTenant(t.id)">Delete</button>
             </div>
@@ -1031,11 +1034,14 @@
             <p><span class="text-muted w-20 inline-block">Client ID</span>
                <span x-text="t.client_id?.slice(0,30)"></span><span x-show="t.client_id?.length>30">…</span></p>
           </div>
-          <div x-show="t._testResult" class="mt-2">
-            <div :class="`alert py-1 px-2 text-xs ${t._testOk?'alert-success':'alert-error'}`">
-              <svg x-show="t._testOk" class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#circle-check"></use></svg>
-              <svg x-show="!t._testOk" class="w-4 h-4" aria-hidden="true" focusable="false"><use href="/icons.svg#circle-x"></use></svg>
-              <span x-text="t._testResult"></span>
+          <div role="status" aria-live="polite">
+            <span x-show="t._testing" class="sr-only">Testing the connection…</span>
+            <div x-show="t._test" class="alert alert-soft items-start mt-2 py-2 px-3 text-xs" :class="t._test?.ok ? 'alert-success' : 'alert-error'">
+              <svg class="w-4 h-4 shrink-0" aria-hidden="true" focusable="false"><use :href="`/icons.svg#${t._test?.ok ? 'circle-check' : 'circle-x'}`"></use></svg>
+              <div class="min-w-0">
+                <p class="font-semibold break-words" x-text="t._test?.title"></p>
+                <p x-show="t._test?.hint" class="break-words" x-text="t._test?.hint"></p>
+              </div>
             </div>
           </div>
         </div>
@@ -1125,7 +1131,8 @@
   <div class="modal-box max-w-lg">
     <h2 id="tenant-dialog-title" tabindex="-1" autofocus class="font-bold text-lg mb-4"
         x-text="tenantModal.editing ? 'Edit tenant' : 'Add tenant'"></h2>
-    <div class="space-y-3">
+    <!-- Any edit makes a connection test result outdated. -->
+    <div class="space-y-3" @input="resetConnectionTest()">
       <fieldset x-show="!tenantModal.editing" class="fieldset gap-0 pb-0">
         <label class="fieldset-legend py-0 pb-1 text-sm font-normal" for="tenant-service-key">Service key (optional)</label>
         <textarea class="textarea textarea-sm h-[58px] min-h-[58px] w-full font-mono text-xs" rows="3"
@@ -1151,7 +1158,22 @@
         </fieldset>
       </template>
     </div>
-    <div class="modal-action">
+    <div class="mt-4" role="status" aria-live="polite">
+      <span x-show="tenantModal.test.busy" class="sr-only">Testing the connection…</span>
+      <div x-show="tenantModal.test.result" class="alert alert-soft items-start text-sm"
+           :class="tenantModal.test.result?.ok ? 'alert-success' : 'alert-error'">
+        <svg class="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" focusable="false"><use :href="`/icons.svg#${tenantModal.test.result?.ok ? 'circle-check' : 'circle-x'}`"></use></svg>
+        <div class="min-w-0">
+          <p class="font-semibold break-words" x-text="tenantModal.test.result?.title"></p>
+          <p x-show="tenantModal.test.result?.hint" class="break-words" x-text="tenantModal.test.result?.hint"></p>
+        </div>
+      </div>
+    </div>
+    <div class="modal-action flex-wrap">
+      <button type="button" class="btn btn-outline btn-sm mr-auto" :disabled="tenantModal.test.busy" @click="testConnection()">
+        <span x-show="tenantModal.test.busy" class="loading loading-spinner loading-xs" aria-hidden="true"></span>
+        <span x-text="tenantModal.test.busy ? 'Testing…' : 'Test connection'"></span>
+      </button>
       <button class="btn btn-primary btn-sm" @click="saveTenant()">Save tenant</button>
       <button class="btn btn-ghost btn-sm"   @click="tenantModal.open=false">Cancel</button>
     </div>

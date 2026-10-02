@@ -3,11 +3,12 @@
 // that never reached the server throws an ApiError with status 0.
 
 export class ApiError extends Error {
-  constructor(status, detail, { retryAfter = null } = {}) {
+  constructor(status, detail, { retryAfter = null, data = null } = {}) {
     super(ApiError.message(status, detail));
     this.status = status;
     this.detail = detail;
     this.retryAfter = retryAfter; // seconds, from the Retry-After header of a 503
+    this.data = data; // the whole JSON answer, for errors with more fields than detail
   }
 
   // unreachable: no answer (server stopped, network down) · busy: 503, the database
@@ -47,7 +48,7 @@ async function request(method, path, { query, body } = {}) {
   const data = res.status === 204 ? null : await res.json().catch(() => null);
   if (!res.ok) {
     const retryAfter = Number.parseInt(res.headers.get('Retry-After'), 10);
-    throw new ApiError(res.status, data?.detail, { retryAfter: Number.isFinite(retryAfter) ? retryAfter : null });
+    throw new ApiError(res.status, data?.detail, { retryAfter: Number.isFinite(retryAfter) ? retryAfter : null, data });
   }
   return data;
 }
@@ -61,6 +62,8 @@ export const api = {
       isNew ? request('POST', '/tenants', { body: tenant }) : request('PUT', `/tenants/${id(tenant.id)}`, { body: tenant }),
     remove: (tenantId, purge) => request('DELETE', `/tenants/${id(tenantId)}`, { query: { purge } }),
     test: tenantId => request('POST', `/tenants/${id(tenantId)}/test`),
+    // Unsaved connection details; without client_secret, the saved one of `id`.
+    testDetails: details => request('POST', '/tenants/test', { body: details }),
   },
   logs: {
     search: query => request('GET', '/logs', { query }),

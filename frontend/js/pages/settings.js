@@ -1,9 +1,11 @@
 // Settings page: tenants (dialog, service key paste, connection test, delete) and the database.
 import { api } from '../api.js';
+import { connectionTestError, connectionTestResult, missingForTest } from '../connection.js';
 import { LOGS_CHANGED, SCHEDULES_CHANGED, emit } from '../events.js';
 import { describeError } from '../states.js';
 
 const emptyTenant = () => ({ id: '', name: '', api_url: '', oauth_url: '', client_id: '', client_secret: '' });
+const idleTest = () => ({ busy: false, result: null }); // result: { ok, title, hint }
 
 export default () => ({
   tenantModal: {
@@ -12,7 +14,9 @@ export default () => ({
     form: emptyTenant(),
     serviceKey: '',
     serviceKeyError: '',
+    test: idleTest(),
   },
+  _testRun: 0, // counts connection tests in the dialog; an answer to an older one is dropped
   tenantDeleteModal: { open: false, tenantId: '', purgeLogs: false },
   dbInfo: {},
   dbInfoError: null, // describeError() of the last failed load
@@ -39,6 +43,7 @@ export default () => ({
     this.tenantModal.form = tenant ? { ...tenant, client_secret: '' } : emptyTenant();
     this.tenantModal.serviceKey = '';
     this.tenantModal.serviceKeyError = '';
+    this.resetConnectionTest();
     this.tenantModal.open = true;
   },
 
@@ -79,14 +84,42 @@ export default () => ({
     }
   },
 
-  async testTenant(t) {
+  // Test the details in the dialog without saving them. Editing them drops the result.
+  async testConnection() {
+    const m = this.tenantModal;
+    const missing = missingForTest(m.form, m.editing);
+    if (missing.length) {
+      m.test = { busy: false, result: { ok: false, title: 'Fill in the connection details first.', hint: `Missing: ${missing.join(', ')}.` } };
+      return;
+    }
+    const run = ++this._testRun;
+    m.test = { busy: true, result: null };
+    const f = m.form;
+    const details = { api_url: f.api_url, oauth_url: f.oauth_url, client_id: f.client_id, client_secret: f.client_secret };
+    if (m.editing) details.id = f.id; // an empty secret means the saved one
+    let result;
     try {
-      await api.tenants.test(t.id);
-      t._testOk = true;
-      t._testResult = 'Connection successful';
+      result = connectionTestResult(await api.tenants.testDetails(details));
     } catch (e) {
-      t._testOk = false;
-      t._testResult = `Connection failed: ${e.message}`;
+      result = connectionTestError(e);
+    }
+    if (run === this._testRun) m.test = { busy: false, result };
+  },
+
+  resetConnectionTest() {
+    this._testRun++;
+    this.tenantModal.test = idleTest();
+  },
+
+  async testTenant(t) {
+    t._testing = true;
+    t._test = null;
+    try {
+      t._test = connectionTestResult(await api.tenants.test(t.id));
+    } catch (e) {
+      t._test = connectionTestError(e);
+    } finally {
+      t._testing = false;
     }
   },
 

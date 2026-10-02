@@ -63,6 +63,9 @@ jobs:
       - name: Fetch progress state
         working-directory: .
         run: node scripts/test-fetch-progress.mjs
+      - name: Connection test wording
+        working-directory: .
+        run: node scripts/test-connection-test.mjs
       - name: Dependency vulnerabilities
         run: |
           uv export --locked --no-dev --no-emit-project --format requirements-txt -o /tmp/requirements.txt
