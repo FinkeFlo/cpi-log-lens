@@ -73,12 +73,14 @@ class CpiClient:
         *,
         transport: httpx.AsyncBaseTransport | None = None,
         retry_backoff: float | None = None,
+        retries: int = MAX_RETRIES,
         timeout: httpx.Timeout | float = DOWNLOAD_TIMEOUT,
     ) -> None:
         self.api_url = api_url.rstrip("/")
         self.oauth_url = oauth_url
         self._credentials = (client_id, client_secret)
         self._retry_backoff = retry_backoff
+        self._retries = retries
         self._token: str | None = None
         self._http = httpx.AsyncClient(
             timeout=timeout,
@@ -171,11 +173,11 @@ class CpiClient:
         return await self._retry(_do, what=f"download_to_file({file.name})")
 
     async def _retry(self, fn: Callable[[], Awaitable[T]], *, what: str) -> T:
-        """Run a CPI call, retrying transient failures with exponential backoff.
-        Raises the last exception if all attempts fail."""
+        """Run a CPI call, retrying transient failures with exponential backoff
+        (`retries` attempts in all). Raises the last exception if all attempts fail."""
         backoff = RETRY_BACKOFF_BASE if self._retry_backoff is None else self._retry_backoff
         last_exc: Exception | None = None
-        for attempt in range(1, MAX_RETRIES + 1):
+        for attempt in range(1, self._retries + 1):
             try:
                 return await fn()
             except (httpx.TimeoutException, httpx.TransportError) as e:
@@ -184,7 +186,7 @@ class CpiClient:
                 if e.response.status_code not in RETRY_STATUS:
                     raise
                 last_exc = e
-            if attempt < MAX_RETRIES:
+            if attempt < self._retries:
                 delay = backoff * (2 ** (attempt - 1))
                 log.warning(
                     "%s failed (%s), retrying in %.0fs (attempt %d of %d)",
@@ -192,10 +194,10 @@ class CpiClient:
                     type(last_exc).__name__,
                     delay,
                     attempt + 1,
-                    MAX_RETRIES,
+                    self._retries,
                 )
                 await asyncio.sleep(delay)
-        # Every failed attempt sets last_exc; with MAX_RETRIES < 1 nothing was tried.
+        # Every failed attempt sets last_exc; with retries < 1 nothing was tried.
         if last_exc is None:
-            raise RuntimeError(f"{what}: no attempt made (MAX_RETRIES={MAX_RETRIES})")
+            raise RuntimeError(f"{what}: no attempt made (retries={self._retries})")
         raise last_exc
