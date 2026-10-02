@@ -57,7 +57,8 @@ Docker builds the stylesheet into the image, and the development Compose file wa
 sources and rebuilds it. To build it directly, run `scripts/build-css.sh`. Run
 `scripts/vendor-frontend.sh` only when vendoring or updating Alpine or Chart.js.
 Run `node scripts/test-browse-url.mjs` to check Browse URL round-tripping and invalid-state handling,
-the result states (no data yet, no matches, failed requests) and the log entry drawer,
+paging (newer, older, jump to time, page size), the result states (no data yet, no matches, failed
+requests) and the log entry drawer,
 `node scripts/test-fetch-progress.mjs` to check fetch progress per tenant and log type,
 `node scripts/test-schedules.mjs` for the schedule durations, gap warning, next run and last result,
 and `node scripts/test-connection-test.mjs` for the wording of connection test results.

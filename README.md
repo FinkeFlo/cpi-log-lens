@@ -233,8 +233,10 @@ but get slower the deeper the page. Use only one of `page`, `cursor` and `at`.
 Log timestamps are stored as timezone-naive CPI timestamps and interpreted as UTC for filtering.
 Timezone-less API datetimes are interpreted as UTC; offset-aware values are converted to UTC before
 comparison. Browse date-time controls and quick ranges use UTC; their timezone-less ISO values in
-the `#browse` URL mean the same instant in every browser. The URL also carries its filters, current
-page (`page`), and opened entry (`entry`).
+the `#browse` URL mean the same instant in every browser. The URL also carries its filters, its
+place in the list (`cursor` after Newer or Older, `at` after Jump to time) and the opened entry
+(`entry`); links with a page number (`page`) from earlier versions open that page. The number of
+rows per page is remembered per browser.
 
 ## Log format
 
