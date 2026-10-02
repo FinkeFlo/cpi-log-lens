@@ -73,3 +73,16 @@ async def list_runs(db: Database, limit: int) -> list[dict]:
 
 async def get_run(db: Database, run_id: str) -> dict | None:
     return _row(await db.read(db.fetch_one, f"SELECT {_COLUMNS} FROM fetch_runs WHERE id = ?", [run_id]))
+
+
+async def latest_by_trigger(db: Database, triggers: list[str]) -> dict[str, dict]:
+    """The newest run of each of the given triggers that has one."""
+    if not triggers:
+        return {}
+    rows = await db.read(
+        db.fetch_all,
+        f"""SELECT {_COLUMNS} FROM fetch_runs WHERE list_contains(?, trigger)
+            QUALIFY row_number() OVER (PARTITION BY trigger ORDER BY started_at DESC) = 1""",
+        [triggers],
+    )
+    return {r["trigger"]: r for r in (_row(r) for r in rows) if r is not None}

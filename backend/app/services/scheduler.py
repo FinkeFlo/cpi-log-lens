@@ -74,6 +74,23 @@ class ScheduleService:
     def job_ids(self) -> list[str]:
         return sorted(job.id for job in self._scheduler.get_jobs())
 
+    def next_runs(self) -> dict[str, datetime]:
+        """When each enabled schedule runs next, by schedule id."""
+        return {
+            job.kwargs["schedule_id"]: job.next_run_time
+            for job in self._scheduler.get_jobs()
+            if job.id.startswith(_SCHEDULE_PREFIX) and job.next_run_time is not None
+        }
+
+    async def run_now(self, schedule_id: str) -> fetch_service.FetchJob | None:
+        """Start a schedule's fetch right away, also when the schedule is disabled; None
+        if it does not exist, JobAlreadyRunning if a fetch runs. The timing of its next
+        runs stays as it is; a success counts as its last run."""
+        sched = await schedules_repo.get_schedule(self.db, schedule_id)
+        if sched is None:
+            return None
+        return await self._start(sched)
+
     async def reload(self) -> None:
         """Rebuild the schedule jobs from the database (after any change)."""
         schedules = await schedules_repo.get_schedules(self.db)
