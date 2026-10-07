@@ -3,7 +3,7 @@
 ARG PYTHON_VERSION=3.12
 
 # uv installs the locked dependencies (backend/uv.lock); pinned, kept current by Dependabot.
-FROM ghcr.io/astral-sh/uv:0.12.21 AS uv
+FROM ghcr.io/astral-sh/uv:0.12.23 AS uv
 
 # ── CSS build stage: pinned standalone tools are not copied to runtime ────────
 FROM debian:bookworm-slim AS css-builder
