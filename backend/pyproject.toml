@@ -6,24 +6,24 @@ version = "0.0.0"
 description = "Self-hosted tool to fetch, store and search SAP Cloud Integration logs"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi==0.142.2",
+    "fastapi==0.146.0",
     "uvicorn[standard]==0.54.0",
     "httpx==0.28.1",
     # Upgrade DuckDB deliberately: newer versions can change the storage format.
     "duckdb==1.5.6",
-    "json5==0.15.0",
+    "json5==0.17.3",
     "pyarrow==25.0.1",
-    "pydantic-settings==2.15.0",
+    "pydantic-settings==2.16.0",
     "apscheduler==3.11.3",
 ]
 
 [dependency-groups]
 dev = [
     "asgi-lifespan==2.1.0",
-    "mypy==2.3.1",
+    "mypy==2.4.0",
     "pytest==9.1.1",
     "pytest-cov==7.1.0",
-    "ruff==0.16.9",
+    "ruff==0.17.1",
 ]
 
 [tool.uv]
